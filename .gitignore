@@ -1,0 +1,25 @@
+# Runtime/private data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.bak
+*.tmp
+*.pid
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build/cache
+.gradle/
+build/
+out/
+**/.cache/
+
+# Local external CP files; keep the directory placeholder only
+scripts/external-cp/*
+!scripts/external-cp/.gitkeep

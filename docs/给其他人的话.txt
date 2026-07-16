@@ -1,0 +1,19 @@
+我不建议你在没有ai编程工具的情况下搞这个项目
+
+# 为什么？
+在写代码时，我没有时刻把关，也没有经过严格的架构设计，模型把应当分开的逻辑混在一个文件里是难免的，因此，如果你想要吃透理解这个项目，很难，因为在我这里它基本就是个黑箱。
+
+# 我使用的工具
+CODEX+gpt5.5xhigh，未安装skill/mcp，我体验下来让其解决问题还是十分顺利的，文档也是其进行维护的
+
+# 需要纠正的误区
+vibe coding的产物不是一个个脚本，而是一整个产品，单看某个脚本可能会让你陷入迷茫，甚至满头困惑，此时的你需要扩大目光，整体巡视，最重要的：你也需要一个能够帮助你理解与分析的工具，不然，本项目这个巨大的“脚本”，你仅靠文档仍是难以上手的。
+
+# 该怎么开始？
+mdtserver\config\scripts为插件总目录
+mdtserver\config\scripts\mapScript为地图玩法脚本
+mdtserver\config\scripts\coreMindustry菜单栏积分板都在这里
+mdtserver\config\scripts\wayzer重点改动区
+mdtserver\config\scripts\wayzer\user商店系统信任系统
+scripts-maintenance.md -脚本总维护文档
+总之，参照好文档，大部分脚本都有说明，欢迎来到 MDT（ShiShan） DO ！
