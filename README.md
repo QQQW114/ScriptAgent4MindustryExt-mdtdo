@@ -23,4 +23,6 @@ MDT DO 服务器使用的 ScriptAgent 脚本与维护文档开源仓库。
 
 - 注意：当前适配159版本，但非sa3.4，仍是sa3.3.2基础上改进而来
 
+- 部分mapScript来自：<https://github.com/lemon3357/ScriptAgent4MindustryExt>
+
 本仓库保留上游脚本中的原作者信息。上游脚本、第三方脚本及本仓库新增脚本分别遵循其文件内声明和 `LICENSE.md` 中的说明。
