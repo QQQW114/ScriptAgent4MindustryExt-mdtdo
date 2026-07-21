@@ -88,7 +88,8 @@ private fun trustLevelCodeFromStats(stats: MdtStorage.TrustPromotionStats, playe
 }
 
 private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionStats, current: String): String {
-    if (current == "4") return "4"
+    // 3++/4 都是人工任命层级，自动晋升系统既不产生，也不降级。
+    if (current == "3++" || current == "4") return current
 
     val bound = player != null && PlayerData[player].authed || with(trustLevel) { trustLevelOrder(current) >= 10 }
     val receivedLikes = stats.reputation.receivedLikes
@@ -128,7 +129,7 @@ private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionSta
         else -> "0"
     }
 
-    // 3/3+ 玩家最多因动态条件掉到 2 级。
+    // 自然等级 3/3+ 玩家最多因动态条件掉到 2 级。
     return if (with(trustLevel) { trustLevelOrder(current) } >= 20 &&
         with(trustLevel) { trustLevelOrder(target) } < 20
     ) "2" else target

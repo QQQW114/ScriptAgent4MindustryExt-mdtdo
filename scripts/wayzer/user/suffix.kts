@@ -1,4 +1,5 @@
 @file:Depends("wayzer/user/nameExt", "玩家名字前后缀")
+@file:Depends("wayzer/user/trustLevel", "3++协管后缀权限")
 
 package wayzer.user
 
@@ -6,6 +7,7 @@ import arc.util.Strings
 import cf.wayzer.placehold.DynamicVar
 import mindustry.gen.Iconc
 import wayzer.lib.PlayerData
+import wayzer.lib.TrustLevelChangedEvent
 
 private val nameExt = contextScript<NameExt>()
 
@@ -16,6 +18,12 @@ private val MAX_CUSTOM_SUFFIX_VISIBLE_LENGTH = 16
 
 val cache = mutableMapOf<String, String>()
 listen<EventType.PlayerLeave> { cache.remove(it.player.uuid()) }
+listenTo<TrustLevelChangedEvent> {
+    Groups.player.filter { PlayerData[it].id == uid }.forEach { player ->
+        cache.remove(player.uuid())
+        with(nameExt) { player.updateName() }
+    }
+}
 
 @Savable
 val customSuffixMark = mutableMapOf<String, String>()
@@ -31,6 +39,7 @@ fun Player.getSuffix(): String? {
     launch {
         cache[uuid()] = when {
             hasPermission("suffix.admin") -> "${Iconc.admin}"
+            hasPermission("suffix.staffMark") -> "${Iconc.admin}"
             hasPermission("suffix.vip") -> "[gold]V[]"
             else -> return@launch
         }
@@ -127,6 +136,8 @@ registerVarForType<Player>().apply {
 }
 
 PermissionApi.registerDefault("suffix.admin", group = "@admin")
+// 3++ 协管只获得与管理员相同的图标，不获得 /suffixmark 修改/隐藏能力。
+PermissionApi.registerDefault("suffix.staffMark", group = "@pluginAdmin")
 PermissionApi.registerDefault("suffix.vip", group = "@vip")
 
 command("suffixmark", "管理指令：自定义或隐藏名字后缀标记") {

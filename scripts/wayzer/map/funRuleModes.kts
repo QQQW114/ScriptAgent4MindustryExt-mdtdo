@@ -104,17 +104,10 @@ private suspend fun disableMapScriptOnly(info: ScriptInfo): List<String> {
     }.toList()
 
     ScriptManager.disableScript(info, "手动关闭地图模式")
-    if (info.scriptState == ScriptState.ToEnable) {
-        info.stateUpdateForce(ScriptState.Loaded)
-    }
 
     val accidentallyDisabled = protectedEnabled.filter { !it.enabled && it.scriptState != ScriptState.Removed }
     if (accidentallyDisabled.isNotEmpty()) {
-        ScriptManager.transaction {
-            addAll(accidentallyDisabled)
-            load()
-            enable()
-        }
+        ScriptManager.transactionV2 { enable(accidentallyDisabled) }.printResult()
     }
     return accidentallyDisabled.map { it.id }
 }
@@ -130,11 +123,7 @@ suspend fun setMapScriptEnabled(raw: String, enabled: Boolean): ManualMapScriptR
 
     if (enabled) {
         MindustryDispatcher.safeBlocking {
-            ScriptManager.transaction {
-                add(info)
-                load()
-                enable()
-            }
+            ScriptManager.transactionV2 { enable(info) }.printResult()
         }
     } else {
         // 关闭地图模式时只停用目标脚本本身；若 ScriptAgent 递归禁用误伤了依赖/常驻脚本，
@@ -412,7 +401,7 @@ private fun maintainInfiniteFireBuildings() {
 fun currentMapScriptStatuses(activeOnly: Boolean = true): List<MapScriptStatus> =
     ScriptRegistry.allScripts {
         it.id.startsWith("mapScript/") &&
-                (!activeOnly || it.scriptState == ScriptState.ToEnable)
+                (!activeOnly || it.enabled)
     }.sortedBy { it.id }.map {
         MapScriptStatus(
             scriptId = it.id,

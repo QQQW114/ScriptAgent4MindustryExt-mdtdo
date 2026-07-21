@@ -2,12 +2,6 @@
 @file:Depends("coreMindustry/contentsTweaker", "修改核心单位,单位属性")
 @file:Depends("coreMindustry/utilMapRule", "修改单位ai")
 @file:Depends("lemon/user/achievement", "成就")
-@file:Suppress(
-    "unused", "unused", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName",
-    "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName",
-    "KotlinDeprecation", "KotlinDeprecation", "KotlinDeprecation", "Deprecated", "MemberVisibilityCanBePrivate"
-)
-
 package mapScript
 
 import arc.func.Func

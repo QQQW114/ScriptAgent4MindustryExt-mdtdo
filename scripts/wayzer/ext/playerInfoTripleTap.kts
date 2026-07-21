@@ -161,6 +161,7 @@ private fun normalizeTrustCodeForProfile(level: String?): String? = when (level?
     "2" -> "2"
     "3" -> "3"
     "3+", "3p", "3plus" -> "3+"
+    "3++", "3pp", "3plusplus" -> "3++"
     "4", "admin", "4+admin", "4admin" -> "4"
     else -> null
 }
@@ -458,12 +459,13 @@ private suspend fun askReason(viewer: Player, title: String, targetName: String)
 private suspend fun askReason(viewer: Player, title: String, target: Player): String? =
     askReason(viewer, title, target.plainName())
 
-private suspend fun askBanMinutes(viewer: Player, title: String, targetName: String): Int? {
+private suspend fun askBanMinutes(viewer: Player, title: String, targetName: String, maxMinutes: Int? = null): Int? {
+    val maxTip = maxMinutes?.let { "\n你的协管单次封禁上限为 $it 分钟。" }.orEmpty()
     val text = with(textInput) {
         textInput(
             viewer,
             title,
-            "目标：$targetName\n请输入封禁时长（分钟），例如 60、1440。\n留空或取消则不执行。",
+            "目标：$targetName\n请输入封禁时长（分钟），例如 60、1440。$maxTip\n留空或取消则不执行。",
             lengthLimit = 8,
             isNumeric = true,
             timeoutMillis = 60_000,
@@ -472,6 +474,10 @@ private suspend fun askBanMinutes(viewer: Player, title: String, targetName: Str
     val minutes = text?.toIntOrNull()?.takeIf { it > 0 }
     if (minutes == null) {
         viewer.sendMessage("[yellow]已取消操作")
+        return null
+    }
+    if (maxMinutes != null && minutes > maxMinutes) {
+        viewer.sendMessage("[red]封禁时长超过协管上限：最多 [white]$maxMinutes[red] 分钟。")
         return null
     }
     return minutes
@@ -505,16 +511,39 @@ private suspend fun quickCommand(viewer: Player, command: String) {
     RootCommands.handleInput(command, viewer, "/")
 }
 
+private fun canStaffBanTarget(viewer: Player, data: PlayerData): Boolean =
+    with(trustLevel) { canModerateTrustTarget(viewer, data.id, data.player) }
+
+private fun staffBanMaxMinutes(viewer: Player): Int? = with(trustLevel) {
+    pluginAdminMaxBanMinutes().takeIf { isPluginAdmin(viewer) }
+}
+
 private suspend fun banAccountFlow(viewer: Player, targetName: String, data: PlayerData) {
-    val minutes = askBanMinutes(viewer, "封禁账号时长", targetName) ?: return
+    if (!canStaffBanTarget(viewer, data)) {
+        viewer.sendMessage("[red]你不能封禁同级或更高等级的玩家。")
+        return
+    }
+    val minutes = askBanMinutes(viewer, "封禁账号时长", targetName, staffBanMaxMinutes(viewer)) ?: return
     val reason = askReason(viewer, "封禁账号理由", targetName) ?: return
+    if (!canStaffBanTarget(viewer, data)) {
+        viewer.sendMessage("[red]目标等级已变化，本次封禁已取消。")
+        return
+    }
     with(banImpl) { ban(data, minutes, reason, viewer) }
     viewer.sendMessage("[green]已封禁 [white]$targetName[green] 的账号/主体 [yellow]${minutes}分钟[green]。")
 }
 
-private suspend fun banIpFlow(viewer: Player, targetName: String, ip: String, targetUuid: String? = null) {
-    val minutes = askBanMinutes(viewer, "封禁IP时长", targetName) ?: return
+private suspend fun banIpFlow(viewer: Player, targetName: String, ip: String, data: PlayerData, targetUuid: String? = null) {
+    if (!canStaffBanTarget(viewer, data)) {
+        viewer.sendMessage("[red]你不能封禁同级或更高等级玩家的IP。")
+        return
+    }
+    val minutes = askBanMinutes(viewer, "封禁IP时长", targetName, staffBanMaxMinutes(viewer)) ?: return
     val reason = askReason(viewer, "封禁IP理由", targetName) ?: return
+    if (!canStaffBanTarget(viewer, data)) {
+        viewer.sendMessage("[red]目标等级已变化，本次IP封禁已取消。")
+        return
+    }
     val bannedIp = with(securityGuard) { manualBanIp(ip, minutes.toLong(), reason, viewer, targetUuid, targetName) }
     if (bannedIp == null) {
         viewer.sendMessage("[red]无法封禁目标IP（可能是本地/内网IP，或安全风控已关闭）。")
@@ -533,18 +562,24 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val viewerOrder = trustOrder(viewerLevelCode)
     val order1 = trustOrder("1")
     val order2 = trustOrder("2")
-    val order3Plus = trustOrder("3+")
+    val order3 = trustOrder("3")
+    val order3PlusPlus = trustOrder("3++")
     val order4 = trustOrder("4")
     val canVotePunishZero = !isSelf && profile.level == "0" && viewerOrder >= order1
     val canDirectForceOb = !isSelf && (
-            (profile.level == "0" && viewerOrder >= order2) ||
-                    (viewerOrder >= order3Plus && profile.levelOrder < order3Plus)
+            (!PlayerData[target].authed && viewerOrder >= order3) ||
+                    with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
             )
-    val canModerateBelow3Plus = !isSelf && viewerOrder >= order3Plus && profile.levelOrder < order3Plus
-    val canAdminBan = !isSelf && viewerOrder >= order4
-    val targetForceOb = canDirectForceOb && with(voteOb) { isForceOb(target) }
+    val canModerateTarget = !isSelf && with(trustLevel) { canModerateTrustTarget(viewer, target) }
+    val canAdminBan = !isSelf && viewerOrder >= order3PlusPlus && canModerateTarget
+    val targetForceOb = with(voteOb) { isForceOb(target) }
+    val canReleaseForceOb = !isSelf && targetForceOb && (
+            viewerOrder >= order4 ||
+                    (viewerOrder >= order3PlusPlus && canModerateTarget) ||
+                    with(voteOb) { isForceObOwnedBy(target, viewerUid) }
+            )
     // 禁言/强制观战属于即时状态，不放入资料缓存，避免管理按钮显示滞后。
-    val targetMuted = canModerateBelow3Plus && with(playerMute) { isMuted(target) }
+    val targetMuted = canModerateTarget && with(playerMute) { isMuted(target) }
     val canBuildBanTarget = !isSelf && with(playerBuildBan) { canManageBuildBan(viewer, target) }
     val targetBuildBanned = canBuildBanTarget && with(playerBuildBan) { isBuildBanned(target) }
 
@@ -594,23 +629,74 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     with(voteOb) { startObVote(viewer, target, reason) }
                 }
             }
-            if (canDirectForceOb) {
+            if ((!targetForceOb && canDirectForceOb) || canReleaseForceOb) {
                 newRow()
                 if (targetForceOb) {
                     option("解除ta强制观战") {
-                        if (with(voteOb) { releaseForceObPlayer(target) })
+                        val currentViewerUid = playerUid(viewer)
+                        val currentViewerOrder = with(trustLevel) { getTrustLevelOrder(currentViewerUid, viewer) }
+                        val released = with(voteOb) {
+                            if (currentViewerOrder >= order4 ||
+                                (currentViewerOrder >= order3PlusPlus && with(trustLevel) { canModerateTrustTarget(viewer, target) })
+                            ) releaseForceObPlayer(target)
+                            else releaseOwnForceObPlayer(target, currentViewerUid)
+                        }
+                        if (released)
                             viewer.sendMessage("[green]已解除 [white]${target.name}[green] 的强制观战")
                         else
-                            viewer.sendMessage("[yellow]目标当前不在强制观战状态")
+                            viewer.sendMessage("[yellow]目标当前不在你可解除的强制观战状态")
                     }
                 } else {
                     option("强制观战此玩家") {
+                        var currentViewerUid = playerUid(viewer)
+                        var currentViewerOrder = with(trustLevel) { getTrustLevelOrder(currentViewerUid, viewer) }
+                        var currentAllowed = viewer !== target && currentViewerUid != playerUid(target) && (
+                                (!PlayerData[target].authed && currentViewerOrder >= order3) ||
+                                        with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
+                                )
+                        if (!currentAllowed) {
+                            viewer.sendMessage("[yellow]操作者权限或目标状态已变化，无法直接强制观战。")
+                            return@option
+                        }
+                        if (currentViewerOrder < order4) {
+                            val left = with(voteOb) { directForceObCooldownLeft(currentViewerUid) }
+                            if (left > 0L) {
+                                viewer.sendMessage("[yellow]直接强制观战冷却中，还需 [white]${(left + 999L) / 1000L}[yellow] 秒。")
+                                return@option
+                            }
+                        }
                         val reason = askReason(viewer, "强制观战理由", target) ?: return@option
-                        with(voteOb) { forceObPlayer(target, reason, viewer) }
+
+                        // 理由输入期间玩家可能完成登录、等级变化或已被其他人处理，执行前必须再次校验。
+                        currentViewerUid = playerUid(viewer)
+                        currentViewerOrder = with(trustLevel) { getTrustLevelOrder(currentViewerUid, viewer) }
+                        currentAllowed = viewer !== target && currentViewerUid != playerUid(target) && (
+                                (!PlayerData[target].authed && currentViewerOrder >= order3) ||
+                                        with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
+                                )
+                        if (!currentAllowed) {
+                            viewer.sendMessage("[yellow]操作者权限或目标状态已变化，本次强制观战已取消。")
+                            return@option
+                        }
+                        if (with(voteOb) { isForceOb(target) }) {
+                            viewer.sendMessage("[yellow]目标已处于强制观战状态。")
+                            return@option
+                        }
+                        if (currentViewerOrder < order4) {
+                            val left = with(voteOb) { directForceObCooldownLeft(currentViewerUid) }
+                            if (left > 0L) {
+                                viewer.sendMessage("[yellow]直接强制观战冷却中，还需 [white]${(left + 999L) / 1000L}[yellow] 秒。")
+                                return@option
+                            }
+                        }
+
+                        val directOwnerUid = currentViewerUid.takeIf { currentViewerOrder < order4 }
+                        with(voteOb) { forceObPlayer(target, reason, viewer, directOwnerUid) }
+                        if (directOwnerUid != null) with(voteOb) { markDirectForceObCooldown(directOwnerUid) }
                     }
                 }
             }
-            if (canModerateBelow3Plus) {
+            if (canModerateTarget) {
                 newRow()
                 if (targetMuted) {
                     option("解除ta禁言") {
@@ -654,7 +740,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     banAccountFlow(viewer, target.plainName(), PlayerData[target])
                 }
                 option("ban掉ta的ip") {
-                    banIpFlow(viewer, target.plainName(), with(securityGuard) { playerIpForAdmin(target) }, target.uuid())
+                    banIpFlow(viewer, target.plainName(), with(securityGuard) { playerIpForAdmin(target) }, PlayerData[target], target.uuid())
                 }
             }
         }
@@ -665,7 +751,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
 
 private fun canUseRecentPlayerPanel(viewer: Player): Boolean {
     val uid = playerUid(viewer)
-    return trustOrder(with(trustLevel) { getTrustLevelCode(uid, viewer) }) >= trustOrder("4")
+    return trustOrder(with(trustLevel) { getTrustLevelCode(uid, viewer) }) >= trustOrder("3++")
 }
 
 private suspend fun showRecentPlayerPanel(viewer: Player, record: RecentPlayerRecord) {
@@ -694,11 +780,14 @@ private suspend fun showRecentPlayerPanel(viewer: Player, record: RecentPlayerRe
             |[cyan]被认可：[white]${profile.receivedRecognitions}
             |[cyan]当前/累计MDC：[white]${profile.points}/${profile.totalPoints}
         """.trimMargin()
-        option("ban掉ta") {
-            banAccountFlow(viewer, record.name, record.toPlayerData())
-        }
-        option("ban掉ta的ip") {
-            banIpFlow(viewer, record.name, record.ip, record.uuid)
+        val targetData = record.toPlayerData()
+        if (canStaffBanTarget(viewer, targetData)) {
+            option("ban掉ta") {
+                banAccountFlow(viewer, record.name, targetData)
+            }
+            option("ban掉ta的ip") {
+                banIpFlow(viewer, record.name, record.ip, targetData, record.uuid)
+            }
         }
         newRow()
         option("返回最近玩家") { openRecentPlayersMenu(viewer) }
@@ -708,7 +797,7 @@ private suspend fun showRecentPlayerPanel(viewer: Player, record: RecentPlayerRe
 
 private suspend fun openRecentPlayersMenu(viewer: Player) {
     if (!canUseRecentPlayerPanel(viewer)) {
-        viewer.sendMessage("[red]权限不足：只有4级玩家可以查看最近玩家管理面板。")
+        viewer.sendMessage("[red]权限不足：只有3++协管、4级/admin可以查看最近玩家管理面板。")
         return
     }
     val records = loadRecentPlayersCached()

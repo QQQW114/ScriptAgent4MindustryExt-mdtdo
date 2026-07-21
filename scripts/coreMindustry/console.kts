@@ -7,6 +7,8 @@ package coreMindustry
 
 import org.jline.reader.*
 import org.jline.utils.AttributedString
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import java.io.ByteArrayOutputStream
 import java.io.InterruptedIOException
 import java.io.PrintStream
@@ -112,13 +114,27 @@ fun start() {
                 .build()
         }
         val bakOut = System.out
+        // JLine 的 printAbove/flush 可能被慢磁盘、宿主面板或管道输出阻塞数十秒。
+        // 绝不能让写日志的游戏主线程直接执行它；使用有界队列转移到 IO 线程，
+        // 队列拥塞时只丢弃旧的终端展示行，文件日志仍由独立日志 Handler 保存。
+        val outputQueue = Channel<String>(
+            capacity = 1024,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+        val outputJob = launch(Dispatchers.IO + CoroutineName("Console Output")) {
+            for (line in outputQueue) {
+                reader.printAbove(AttributedString.fromAnsi(line))
+            }
+        }
         System.setOut(MyPrintStream {
-            reader.printAbove(AttributedString.fromAnsi(it))
+            if (it.isNotEmpty()) outputQueue.trySend(it)
         })
         try {
             handleInput(reader)
         } finally {
             System.setOut(bakOut)
+            outputQueue.close()
+            outputJob.cancelAndJoin()
             reader.terminal.close()
         }
     }

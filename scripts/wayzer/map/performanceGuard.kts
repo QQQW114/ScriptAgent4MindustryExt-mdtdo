@@ -14,7 +14,7 @@ import wayzer.lib.MdtStorage
 import wayzer.user.TrustLevel
 import kotlin.math.roundToInt
 
-name = "常驻性能优化系统"
+name = "统一性能优化系统"
 
 private val trustLevel = contextScript<TrustLevel>()
 
@@ -44,8 +44,14 @@ private var activeLevel = 0
 private var recoverSamples = 0
 private var snapshot: RuleSnapshot? = null
 private var performanceModeCache: String? = null
+private var roundDisabledByVote = false
+private var restoreRequestVersion = 0L
+
+fun pressureRestoreRequestVersion(): Long = restoreRequestVersion
+private fun requestPressureRestore() { restoreRequestVersion++ }
 
 fun performanceMode(): String {
+    if (roundDisabledByVote) return "off"
     performanceModeCache?.let { return it }
     val mode = MdtStorage.getSetting(PERFORMANCE_MODE_KEY)?.lowercase() ?: "normal"
     performanceModeCache = mode
@@ -180,20 +186,31 @@ fun restoreConservative(reason: String = "TPS已恢复", silent: Boolean = false
 }
 
 fun enableConservative(operatorName: String = "系统") {
+    roundDisabledByVote = false
     setPerformanceMode("normal")
-    broadcast("[green]{operator}[green] 已开启常驻保守性能优化。".with("operator" to operatorName))
+    broadcast("[green]{operator}[green] 已开启统一性能优化系统。".with("operator" to operatorName))
 }
 
 fun disablePerformanceGuard(operatorName: String = "系统") {
     restoreConservative("性能优化被关闭", silent = true)
     setPerformanceMode("off")
+    requestPressureRestore()
     broadcast("[yellow]{operator}[yellow] 已关闭性能优化系统。".with("operator" to operatorName))
+}
+
+fun disableForCurrentRound(operatorName: String = "投票") {
+    restoreConservative("本局性能优化被投票关闭", silent = true)
+    roundDisabledByVote = true
+    requestPressureRestore()
+    broadcast("[yellow]{operator}[yellow] 已关闭本局性能优化；下局将恢复服务器默认设置。".with("operator" to operatorName))
 }
 
 fun switchToExperimental(operatorName: String = "系统") {
     restoreConservative("实验性性能优化接管", silent = true)
-    setPerformanceMode("experimental")
-    broadcast("[yellow]{operator}[yellow] 已启用实验性性能优化，常驻保守优化暂停。".with("operator" to operatorName))
+    // v159 后标准/实验性两套执行器已统一由 serverPressureActions 接管，
+    // 保留旧指令只作兼容别名，不再设置独立 experimental 模式。
+    setPerformanceMode("normal")
+    broadcast("[yellow]{operator}[yellow] 已启用统一性能优化系统（旧实验性指令已兼容）。".with("operator" to operatorName))
 }
 
 fun conservativeStatusText(): String {
@@ -201,10 +218,10 @@ fun conservativeStatusText(): String {
     val avg = if (tpsSamples.isEmpty()) currentTps().toDouble() else tpsSamples.sum().toDouble() / tpsSamples.size
     return """
         |[cyan]性能优化模式：[white]$mode
-        |[cyan]保守优化等级：[white]$activeLevel
+        |[cyan]性能优化等级：[white]$activeLevel
         |[cyan]TPS均值：[white]${avg.roundToInt()}[] / 当前：[white]${currentTps()}
         |[cyan]PVP自动介入：[white]开启[]（标准性能优化也会介入PVP，但优先清理火焰/子弹/非玩家单位）
-        |[gray]当前脚本主要负责模式、指令与投票兼容；实际自动检测/执行由 serverPressure + serverPressureActions 负责。
+        |[gray]标准/旧实验性模式已合并；自动检测/执行由 serverPressure + serverPressureActions 统一负责。
     """.trimMargin()
 }
 
@@ -240,23 +257,24 @@ private fun tickConservative() {
 }
 
 private suspend fun startPerfVote(starter: Player, enable: Boolean): Boolean {
-    val desc = if (enable) "开启常驻保守性能优化" else "关闭性能优化系统"
+    val desc = if (enable) "开启统一性能优化" else "关闭本局性能优化系统"
     val event = VoteEvent(
         thisScript,
         starter,
         voteDesc = desc.with(),
         extDesc = if (enable)
-            "[yellow]通过后，TPS/压力过高时会自动执行保守优化；PVP地图也会介入，但会尽量避免破坏玩法。"
+            "[yellow]通过后，TPS/游戏同步上行过高时会按等级执行统一优化；世界/音乐/CP流不会触发清单位。"
         else
-            "[yellow]通过后，常驻与实验性性能优化都不会自动介入，已生效的保守措施会恢复。",
+            "[yellow]通过后本局不再自动清理单位/关闭处理器/兜底换图，已生效的可逆规则会恢复。",
         supportSingle = true,
     )
     if (!event.awaitResult()) return false
-    if (enable) enableConservative(starter.name) else disablePerformanceGuard(starter.name)
+    if (enable) enableConservative(starter.name) else disableForCurrentRound(starter.name)
     return true
 }
 
 listen<EventType.WorldLoadEvent> {
+    roundDisabledByVote = false
     snapshot = null
     activeLevel = 0
     recoverSamples = 0
@@ -264,6 +282,7 @@ listen<EventType.WorldLoadEvent> {
 }
 
 listen<EventType.ResetEvent> {
+    roundDisabledByVote = false
     snapshot = null
     activeLevel = 0
     recoverSamples = 0
@@ -276,7 +295,7 @@ onDisable {
 
 onEnable {
     val storedMode = MdtStorage.getSetting(PERFORMANCE_MODE_KEY)?.lowercase()
-    if (storedMode.isNullOrBlank()) {
+    if (storedMode.isNullOrBlank() || storedMode == "experimental") {
         setPerformanceMode("normal")
     } else {
         performanceModeCache = storedMode
@@ -324,6 +343,7 @@ command("perf", "性能优化系统") {
             "reset", "恢复" -> {
                 if (!canManagePerf(player)) returnReply("[red]权限不足：只有 3+级 和 4级/admin 可以恢复性能优化状态。".with())
                 restoreConservative("管理员手动恢复")
+                requestPressureRestore()
             }
             else -> replyUsage()
         }

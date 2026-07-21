@@ -19,6 +19,7 @@ import wayzer.lib.TrustLevelLockChangedEvent
  * - 2级：有一定MDC与被认可度的玩家
  * - 3级：更高活跃度与认可度的玩家
  * - 3+级：位于 3 与 4 之间的高可信+层级
+ * - 3++级：人工任命的插件协管，只获得明确白名单权限
  * - 4级：admin 层级；在线 admin 永远视为 4 级
  */
 
@@ -28,6 +29,7 @@ private fun normalizeLevelCode(level: String): String? = when (level.trim().lowe
     "2" -> "2"
     "3" -> "3"
     "3+", "3p", "3plus" -> "3+"
+    "3++", "3pp", "3plusplus" -> "3++"
     "4", "admin", "4+admin", "4admin" -> "4"
     else -> null
 }
@@ -48,16 +50,17 @@ fun trustLevelOrder(levelCode: String): Int = when (normalizeLevelCode(levelCode
     "2" -> 20
     "3" -> 30
     "3+" -> 35
+    "3++" -> 38
     "4" -> 40
     else -> 0
 }
 
-/** 用于赞踩额度等旧逻辑：3+ 按 3 级处理，4 级按管理员处理。 */
+/** 用于赞踩额度等旧逻辑：3+/3++ 按 3 级处理，4 级按管理员处理。 */
 fun trustQuotaLevel(levelCode: String): Int = when (normalizeLevelCode(levelCode) ?: "0") {
     "0" -> 0
     "1" -> 1
     "2" -> 2
-    "3", "3+" -> 3
+    "3", "3+", "3++" -> 3
     "4" -> 4
     else -> 0
 }
@@ -94,6 +97,50 @@ fun getTrustLevelOrder(player: Player): Int = getTrustLevelOrder(PlayerData[play
 fun hasTrustLevel(player: Player, requiredLevelCode: String): Boolean =
     getTrustLevelOrder(player) >= trustLevelOrder(requiredLevelCode)
 fun isTrustAdmin(player: Player): Boolean = hasTrustLevel(player, "4")
+fun isPluginAdmin(player: Player): Boolean = getTrustLevelCode(player) == "3++"
+fun isPluginAdminOrHigher(player: Player): Boolean = hasTrustLevel(player, "3++")
+
+/**
+ * 分层玩家管理边界：3+ 只能处理低于 3+，3++ 可处理低于 3++，4 级保留全局管理。
+ */
+fun canModerateTrustTarget(operator: Player, targetUid: String, target: Player? = null): Boolean {
+    val operatorUid = PlayerData[operator].id
+    if (operatorUid == targetUid || operator === target) return false
+    val operatorOrder = getTrustLevelOrder(operatorUid, operator)
+    val targetOrder = getTrustLevelOrder(targetUid, target)
+    return when {
+        operatorOrder >= trustLevelOrder("4") -> true
+        operatorOrder >= trustLevelOrder("3++") -> targetOrder < trustLevelOrder("3++")
+        operatorOrder >= trustLevelOrder("3+") -> targetOrder < trustLevelOrder("3+")
+        else -> false
+    }
+}
+
+fun canModerateTrustTarget(operator: Player, target: Player): Boolean =
+    canModerateTrustTarget(operator, PlayerData[target].id, target)
+
+/**
+ * 直接强制观战/禁建的更严格目标边界：
+ * 3+ 只能处理 0/1/2 级，3++ 可处理低于 3++，4 级保留全局管理。
+ */
+fun canDirectRestrictTrustTarget(operator: Player, targetUid: String, target: Player? = null): Boolean {
+    val operatorUid = PlayerData[operator].id
+    if (operatorUid == targetUid || operator === target) return false
+    val operatorOrder = getTrustLevelOrder(operatorUid, operator)
+    val targetOrder = getTrustLevelOrder(targetUid, target)
+    return when {
+        operatorOrder >= trustLevelOrder("4") -> true
+        operatorOrder >= trustLevelOrder("3++") -> targetOrder < trustLevelOrder("3++")
+        operatorOrder >= trustLevelOrder("3+") -> targetOrder < trustLevelOrder("3")
+        else -> false
+    }
+}
+
+fun canDirectRestrictTrustTarget(operator: Player, target: Player): Boolean =
+    canDirectRestrictTrustTarget(operator, PlayerData[target].id, target)
+
+private val pluginAdminMaxBanMinutesConfig by config.key(7 * 24 * 60, "3++协管单次账号/IP封禁最长时间(分钟)")
+fun pluginAdminMaxBanMinutes(): Int = pluginAdminMaxBanMinutesConfig.coerceAtLeast(1)
 
 fun setTrustLevel(uid: String, levelCode: String): String {
     val normalized = normalizeLevelCode(levelCode) ?: error("Invalid trust level: $levelCode")
@@ -132,6 +179,7 @@ fun trustLevelName(levelCode: String): String = when (normalizeLevelCode(levelCo
     "2" -> "可信"
     "3" -> "高可信"
     "3+" -> "高可信+"
+    "3++" -> "插件协管"
     "4" -> if (levelCode.trim().lowercase().contains("admin")) "管理员+admin" else "管理员"
     else -> "未知"
 }
@@ -201,6 +249,25 @@ PermissionApi.registerDefault(
     group = "@admin",
 )
 
+// 3++ 不进入 @admin，只获得这里明确列出的协管白名单。
+PermissionApi.registerDefault(
+    "suffix.staffMark",
+    "wayzer.admin.skipKick",
+    "wayzer.maps.host",
+    "wayzer.maps.gameover",
+    "wayzer.admin.ban",
+    "wayzer.admin.unban",
+    "wayzer.admin.banList",
+    "wayzer.admin.banIp",
+    "wayzer.admin.forceOb",
+    "wayzer.admin.recentPlayers",
+    "wayzer.admin.forceObClean",
+    "wayzer.admin.logicDraw",
+    "wayzer.admin.blockBan",
+    "wayzer.staff.musicControl",
+    group = "@pluginAdmin",
+)
+
 listenTo<RequestPermissionEvent>(Event.Priority.After) {
     val p = subject as? Player ?: return@listenTo
     if (!isSessionAuthed(p)) {
@@ -212,16 +279,20 @@ listenTo<RequestPermissionEvent>(Event.Priority.After) {
         directReturn = null
         return@listenTo
     }
-    if (getTrustLevelCode(p) == "4" && "@admin" !in group) {
+    val levelCode = getTrustLevelCode(p)
+    if (levelCode == "3++" && "@pluginAdmin" !in group) {
+        group += "@pluginAdmin"
+    }
+    if (levelCode == "4" && "@admin" !in group) {
         group += "@admin"
     }
-    if (getTrustLevelCode(p) == "4") {
+    if (levelCode == "4") {
         directReturn = null
     }
 }
 
 command("setlevel", "管理指令：设置玩家信任等级") {
-    usage = "<uuid/3位id> <0|1|2|3|3+|4>"
+    usage = "<uuid/3位id> <0|1|2|3|3+|3++|4>"
     permission = "wayzer.admin.trustLevel"
     body {
         if (!canSetLevel(player)) {
@@ -319,7 +390,7 @@ command("setadmin", "管理指令：设置/取消玩家原生管理员") {
 registerVarForType<Player>().apply {
     registerChild("trustLevel", "MDT信任等级") { getTrustLevelDisplayCode(it) }
     registerChild("trustLevelCode", "MDT信任等级代码(不含原生admin标记)") { getTrustLevelCode(it) }
-    registerChild("trustLevelQuota", "MDT信任等级数值(3+按3级处理)") { getTrustLevel(it) }
+    registerChild("trustLevelQuota", "MDT信任等级数值(3+/3++按3级处理)") { getTrustLevel(it) }
     registerChild("trustLevelName", "MDT信任等级名称") { trustLevelName(getTrustLevelDisplayCode(it)) }
     registerChild("trustLevelLocked", "MDT信任等级是否锁定") { isTrustLevelLocked(PlayerData[it].id) }
 }

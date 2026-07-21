@@ -1,4 +1,5 @@
 @file:Depends("wayzer/user/ext/skills", "技能系统核心")
+@file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
 package wayzer.user.ext
 
@@ -64,6 +65,7 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private val skillsCore = contextScript<Skills>()
+private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 private val contentsTweaker get() = skillsCore.contentsTweaker
 private val trustPoint get() = skillsCore.trustPoint
 private fun levelOrder(player: Player): Int = skillsCore.levelOrder(player)
@@ -1308,17 +1310,8 @@ private fun rebuildAllAdvancedHybridUnits() {
     rebuildHybridRuntimeUnits(advancedHybridRecords.keys.mapNotNull(::unitTypeByName))
 }
 
-private fun sendWorldDataCompat(player: Player) {
-    val con = player.con ?: return
-    Call.worldDataBegin(con)
-    val sendWorldAndAssets = Vars.netServer.javaClass.methods.firstOrNull { method ->
-        method.name == "sendWorldAndAssets" && method.parameterTypes.size == 1
-    }
-    if (sendWorldAndAssets != null) {
-        sendWorldAndAssets.invoke(Vars.netServer, player)
-    } else {
-        Vars.netServer.sendWorldData(player)
-    }
+private suspend fun sendWorldDataCompat(player: Player) {
+    with(worldResync) { resyncWorldAndAssets(player, "技能基因杂交变更") }
 }
 
 private fun syncHybridContentToClients() {

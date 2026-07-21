@@ -1,17 +1,12 @@
 @file:Depends("coreMindustry/menu", "调用菜单")
 @file:Depends("coreMindustry/contentsTweaker", "修改核心单位,单位属性")
 @file:Depends("lemon/user/achievement", "成就")
-@file:Suppress("unused", "unused", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName",
-    "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName", "PropertyName",
-    "KotlinDeprecation", "KotlinDeprecation", "KotlinDeprecation", "Deprecated"
-)
-
 import arc.Events
 import arc.math.geom.Geometry
 import arc.math.geom.Point2
 import arc.math.geom.Vec2
 import arc.util.Time
-import lemon.lib.dao.PlayerData
+import lemon.lib.dao.PlayerData as LemonPlayerData
 import mindustry.Vars
 import mindustry.game.Team
 import mindustry.gen.Bullet
@@ -37,7 +32,7 @@ name = "TankWars"
 
 val achievement = contextScript<lemon.user.Achievement>()
 fun Player.achievement(name: String, exp: Int) {
-    val profile = PlayerData[uuid()].profile
+    val profile = LemonPlayerData[uuid()].profile
     if (profile != null)
         achievement.finishAchievement(profile, name, exp, true)
 }

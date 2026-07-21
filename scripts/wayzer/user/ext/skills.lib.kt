@@ -6,6 +6,7 @@ import coreLibrary.lib.CommandContext
 import coreLibrary.lib.CommandHandler
 import coreLibrary.lib.CommandInfo
 import coreLibrary.lib.Commands
+import coreLibrary.lib.returnReply
 import coreMindustry.lib.ClientOnly
 import coreMindustry.lib.broadcast
 import coreMindustry.lib.player
@@ -21,20 +22,20 @@ import java.time.Duration
 object SkillPrecheck : CommandHandler {
     private val mapDisabled get() = Vars.state.rules.tags.getBool("@noSkills")
 
-    context(CommandContext) override suspend fun handle() {
-        ClientOnly.handle()
-        val unit = player!!.unit()
+    override suspend fun CommandContext.handle() {
+        val player = player ?: returnReply("[red]该技能只能由游戏内玩家使用".with())
+        val unit = player.unit()
         if (mapDisabled) returnReply("[red]当前地图禁用技能".with())
-        if (player!!.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
+        if (player.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
     }
 }
 
 /** 技能基础检查：仅要求玩家在游戏内且未死亡，不检查 @noSkills。用于 3级技能/管理员技能/特殊技能的显式绕过。 */
 object SkillPrecheckIgnoreNoSkills : CommandHandler {
-    context(CommandContext) override suspend fun handle() {
-        ClientOnly.handle()
-        val unit = player!!.unit()
-        if (player!!.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
+    override suspend fun CommandContext.handle() {
+        val player = player ?: returnReply("[red]该技能只能由游戏内玩家使用".with())
+        val unit = player.unit()
+        if (player.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
     }
 }
 
@@ -42,16 +43,16 @@ object SkillPrecheckIgnoreNoSkills : CommandHandler {
 object SkillPrecheckLevel3 : CommandHandler {
     private val pureModeDisabled get() = Vars.state.rules.tags.getBool("@pureNoLevel3Skills")
 
-    context(CommandContext) override suspend fun handle() {
-        ClientOnly.handle()
-        val unit = player!!.unit()
+    override suspend fun CommandContext.handle() {
+        val player = player ?: returnReply("[red]该技能只能由游戏内玩家使用".with())
+        val unit = player.unit()
         if (pureModeDisabled) returnReply("[red]当前处于纯净模式，3级技能已禁用".with())
-        if (player!!.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
+        if (player.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
     }
 }
 
 object SkillNoPvp : CommandHandler {
-    context(CommandContext) override suspend fun handle() {
+    override suspend fun CommandContext.handle() {
         if (Vars.state.rules.pvp) returnReply("[red]当前技能PVP模式禁用".with())
     }
 }
@@ -66,11 +67,11 @@ class SkillCooldown(val coolDown: Int = -1) : CommandHandler {
         SkillCommands.allCooldown.add(this)
     }
 
-    context(CommandContext) override suspend fun handle() {
+    override suspend fun CommandContext.handle() {
         if (!checkCoolDown()) CommandInfo.Return()
     }
 
-    context(CommandContext) fun checkCoolDown(): Boolean {
+    fun CommandContext.checkCoolDown(): Boolean {
         val key = player!!.uuid()
         val usedAt = lastUsed[key]
         if (usedAt != null) {
@@ -93,7 +94,7 @@ class SkillCooldown(val coolDown: Int = -1) : CommandHandler {
         return true
     }
 
-    context(CommandContext) fun setCoolDown() {
+    fun CommandContext.setCoolDown() {
         val key = player!!.uuid()
         lastUsed[key] = System.currentTimeMillis()
     }
@@ -171,7 +172,15 @@ object SkillMenuRegistry {
 object SkillCommands : Commands() {
     val allCooldown = mutableListOf<SkillCooldown>()
     @Suppress("MemberVisibilityCanBePrivate")
-    class SkillScope(val player: Player) {
+    class SkillScope(
+        val player: Player,
+        /**
+         * Kotlin 2.3 的匿名 context parameter 只用于满足上下文约束，
+         * 不再保证可直接解析 CommandContext 的成员；显式透出参数列表，
+         * 兼容现有 skillBody 中对 arg 的直接访问。
+         */
+        val arg: List<String>,
+    ) {
         fun broadcastSkill(skill: String) = broadcast(
             "[yellow][技能][green]{player.name}[white]使用了[green]{skill}[white]技能."
                 .with("player" to player, "skill" to skill), quite = true
@@ -216,7 +225,10 @@ object SkillCostManager {
 @CommandInfo.CommandBuilder
 fun CommandInfo.skillBody(body: suspend context(CommandContext) SkillCommands.SkillScope.() -> Unit) {
     body {
-        body.invoke(context, SkillCommands.SkillScope(player!!))
-        attrs.filterIsInstance<SkillCooldown>().singleOrNull()?.setCoolDown()
+        val commandContext = this
+        body.invoke(commandContext, SkillCommands.SkillScope(player!!, commandContext.arg))
+        attrs.filterIsInstance<SkillCooldown>().singleOrNull()?.let { cooldown ->
+            with(cooldown) { commandContext.setCoolDown() }
+        }
     }
 }

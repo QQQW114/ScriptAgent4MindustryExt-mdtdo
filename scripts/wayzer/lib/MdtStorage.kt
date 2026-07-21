@@ -1,6 +1,8 @@
 package wayzer.lib
 
-import coreLibrary.DBApi.DB.WithUpgrade
+import coreLib.db.DBApi
+import coreLib.db.DBApi.WithUpgrade
+import coreLibrary.lib.get
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.dao.id.IntIdTable
@@ -9,6 +11,7 @@ import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greaterEq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.neq
 import org.jetbrains.exposed.sql.Table
@@ -577,7 +580,7 @@ object MdtStorage {
         val start = System.nanoTime()
         var error: Throwable? = null
         try {
-            return exposedTransaction { block() }
+            return exposedTransaction(DBApi.db.get()) { block() }
         } catch (t: Throwable) {
             error = t
             throw t
@@ -850,6 +853,14 @@ object MdtStorage {
 
     fun getSubjectName(uid: String): String? = transaction {
         subjectNameInTx(uid)
+    }
+
+    fun getSubjectNames(uids: Iterable<String>): Map<String, String?> = transaction {
+        val fixed = uids.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (fixed.isEmpty()) return@transaction emptyMap()
+        val found = PlayerSubjects.selectAll().where { PlayerSubjects.id inList fixed }
+            .associate { it[PlayerSubjects.id].value to it[PlayerSubjects.lastName] }
+        fixed.associateWith { found[it] }
     }
 
     fun getSubjectLastIp(uid: String): String? = transaction {

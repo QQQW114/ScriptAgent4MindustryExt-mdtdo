@@ -1,3 +1,5 @@
+@file:Depends("wayzer/user/trustLevel", "3++协管高风险地图操作保护")
+
 package wayzer
 
 import arc.Events
@@ -7,12 +9,54 @@ import mindustry.game.EventType.WorldLoadBeginEvent
 import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.io.SaveIO
+import mindustry.gen.Player
+import wayzer.lib.PlayerData
+import wayzer.user.TrustLevel
 import java.time.Duration
 import mindustry.maps.Map as MdtMap
 
 name = "基础: 地图控制与管理"
 
 private val patchLoadHooks = mutableListOf<Pair<Class<Any>, Cons<Any>>>()
+private val trustLevel = contextScript<TrustLevel>()
+
+private data class PluginAdminPendingAction(val key: String, val untilMillis: Long)
+private val pluginAdminPendingActions = mutableMapOf<String, PluginAdminPendingAction>()
+private val pluginAdminMapActionCooldownUntil = mutableMapOf<String, Long>()
+private val pluginAdminMapActionConfirmMillis by config.key(15_000L, "3++强制换图/结束游戏二次确认有效期(ms)")
+private val pluginAdminMapActionCooldownMillis by config.key(5 * 60_000L, "3++强制换图/结束游戏成功后冷却(ms)")
+
+private fun requirePluginAdminMapActionConfirmation(player: Player?, actionKey: String, commandText: String): Boolean {
+    if (player == null || !with(trustLevel) { isPluginAdmin(player) }) return true
+    val uid = PlayerData[player].id
+    val now = System.currentTimeMillis()
+    val cooldownUntil = pluginAdminMapActionCooldownUntil[uid] ?: 0L
+    if (cooldownUntil > now) {
+        player.sendMessage("[yellow]协管高风险地图操作冷却中，还需 [white]${(cooldownUntil - now + 999L) / 1000L}[yellow] 秒。")
+        return false
+    }
+    pluginAdminMapActionCooldownUntil.remove(uid)
+    val pending = pluginAdminPendingActions[uid]
+    if (pending?.key == actionKey && pending.untilMillis >= now) {
+        pluginAdminPendingActions.remove(uid)
+        return true
+    }
+    pluginAdminPendingActions[uid] = PluginAdminPendingAction(
+        actionKey,
+        now + pluginAdminMapActionConfirmMillis.coerceAtLeast(5_000L),
+    )
+    player.sendMessage(
+        "[red]这是高风险协管操作。[orange]请在 ${pluginAdminMapActionConfirmMillis.coerceAtLeast(5_000L) / 1000L} 秒内再次输入 [white]$commandText[orange] 确认。"
+    )
+    return false
+}
+
+private fun markPluginAdminMapActionSuccess(player: Player?, action: String) {
+    if (player == null || !with(trustLevel) { isPluginAdmin(player) }) return
+    val uid = PlayerData[player].id
+    pluginAdminMapActionCooldownUntil[uid] = System.currentTimeMillis() + pluginAdminMapActionCooldownMillis.coerceAtLeast(0L)
+    logger.warning("[3++协管] ${player.plainName()}($uid) 执行了高风险操作：$action")
+}
 
 val configEnableInternMaps by config.key(false, "是否开启原版内置地图")
 val nextSameMode by config.key(false, "自动换图是否选择相同模式地图,否则选择生存模式")
@@ -175,8 +219,11 @@ command("host", "管理指令: 换图") {
         val map = if (arg.isEmpty()) MapRegistry.nextMapInfo(MapManager.current)
         else arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
             ?: returnReply("[red]请输入正确的地图ID".with())
+        val commandText = if (arg.isEmpty()) "/host" else "/host ${arg[0]}"
+        if (!requirePluginAdminMapActionConfirmation(player, "host:${map.provider}:${map.id}", commandText)) return@body
         if (MapManager.loadMapSync(map)) {
             broadcast("[green]强制换图为{info}".with("info" to map))
+            markPluginAdminMapActionSuccess(player, commandText)
         }
     }
 }
@@ -198,6 +245,10 @@ command("gameover", "管理指令: 结束游戏") {
     body {
         val winner = arg.firstOrNull()?.let { Team.all.firstOrNull { t -> t.name == it } }
             ?: state.rules.waveTeam
+        val commandText = if (arg.isEmpty()) "/gameover" else "/gameover ${arg.joinToString(" ")}"
+        if (!requirePluginAdminMapActionConfirmation(player, "gameover:${winner.id}", commandText)) return@body
+        player?.let { broadcast("[yellow]${it.name}[yellow] 手动结束了当前游戏。".with()) }
+        markPluginAdminMapActionSuccess(player, commandText)
         Events.fire(EventType.GameOverEvent(winner))
     }
 }

@@ -105,8 +105,7 @@ private fun hasTeamCommandTrust(player: Player?): Boolean {
 }
 
 private val teamCommandAccess = object : Commands.Hidden {
-    context(CommandContext)
-    override suspend fun visible(): Boolean {
+    override suspend fun CommandContext.visible(): Boolean {
         val p = player ?: return true
         return hasPermission("wayzer.ext.team.change") || hasTeamCommandTrust(p)
     }

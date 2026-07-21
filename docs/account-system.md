@@ -78,6 +78,7 @@
 - `/banX <玩家3位ID> <分钟> <原因>` / `/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`
   - 权限：`wayzer.admin.ban` / `wayzer.admin.unban`，默认 `@admin`。
   - 封禁记录会保存玩家当前主体 UID 与已知游戏 UUID；`/unbanX` 优先按玩家3位ID、完整 UUID 或账号主体 UID 查找未过期封禁并解除。
+  - `/banlist`（别名 `/bans`、`/封禁列表`）会将未到期的账号封禁与安全风控 IP 封禁合并为一个管理菜单，显示原因、剩余时间、操作人和关联标识，并支持快速解封。
   - 旧的封禁记录数字 ID 仍可作为兼容输入；如果输入正好是 3 位数字，优先按玩家短 ID 处理。
 - `/guestob [on|off|status|release]`
   - 权限：`wayzer.admin.account`。

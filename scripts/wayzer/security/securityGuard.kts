@@ -48,6 +48,15 @@ private data class IpBanRecord(
     val targetName: String? = null,
 )
 
+data class IpBanInfo(
+    val ip: String,
+    val until: Long,
+    val reason: String,
+    val operatorUid: String?,
+    val targetUuid: String?,
+    val targetName: String?,
+)
+
 private data class RecentIdentity(
     val identity: String,
     val uuid: String,
@@ -419,6 +428,29 @@ private fun activeBans(): List<IpBanRecord> {
     return list
 }
 
+fun activeIpBanInfos(): List<IpBanInfo> = activeBans().map { record ->
+    IpBanInfo(
+        ip = record.ip,
+        until = record.until,
+        reason = record.reason,
+        operatorUid = record.operatorUid,
+        targetUuid = ipBanTargetUuid(record),
+        targetName = ipBanTargetName(record),
+    )
+}
+
+fun unbanIpForAdmin(ip: String): Boolean = unbanIp(ip)
+
+private fun canUnbanIpRecord(operator: Player, record: IpBanRecord): Boolean = with(trustLevel) {
+    isTrustAdmin(operator) || (isPluginAdmin(operator) && record.operatorUid == PlayerData[operator].id)
+}
+
+fun unbanIpForOperator(ip: String, operator: Player): Boolean {
+    val record = activeBan(ip) ?: return false
+    if (!canUnbanIpRecord(operator, record)) return false
+    return unbanIp(ip)
+}
+
 private fun ipBanTargetUuid(record: IpBanRecord): String? =
     record.targetUuid
         ?: Groups.player.find { playerIp(it) == record.ip }?.uuid()
@@ -457,10 +489,12 @@ private fun ipBanDetail(record: IpBanRecord): String {
 private suspend fun openIpBanDetailMenu(player: Player, record: IpBanRecord) {
     MenuBuilder<Unit>("IP封禁详情") {
         msg = ipBanDetail(record)
-        option("解除此IP封禁") {
-            if (unbanIp(record.ip)) player.sendMessage("[green]已解除IP封禁：[white]${record.ip}")
-            else player.sendMessage("[yellow]该IP封禁已不存在：[white]${record.ip}")
-            openIpBanListMenu(player)
+        if (canUnbanIpRecord(player, record)) {
+            option("解除此IP封禁") {
+                if (unbanIpForOperator(record.ip, player)) player.sendMessage("[green]已解除IP封禁：[white]${record.ip}")
+                else player.sendMessage("[yellow]该IP封禁已不存在或你无权解除：[white]${record.ip}")
+                openIpBanListMenu(player)
+            }
         }
         option("返回列表") { openIpBanListMenu(player) }
         newRow()
@@ -1275,7 +1309,21 @@ command("banip", "管理指令：根据在线玩家封禁其IP") {
         if (arg.isEmpty()) replyUsage()
         val target = resolveOnlineBanIpTarget(arg[0])
             ?: returnReply("[red]未找到在线玩家，离线玩家可从 /recentplayers 最近玩家面板封禁IP。".with())
-        val minutes = arg.getOrNull(1)?.toLongOrNull()?.takeIf { it > 0 }
+        var minutes = arg.getOrNull(1)?.toLongOrNull()?.takeIf { it > 0 }
+        player?.let { operator ->
+            if (!with(trustLevel) { canModerateTrustTarget(operator, target) }) {
+                returnReply("[red]你不能封禁同级或更高等级玩家的IP。".with())
+            }
+            val maxMinutes = with(trustLevel) { pluginAdminMaxBanMinutes() }
+            if (with(trustLevel) { isPluginAdmin(operator) }) {
+                if (minutes != null && minutes!! > maxMinutes) {
+                    returnReply("[red]3++协管单次IP封禁最长 [white]$maxMinutes[red] 分钟。".with())
+                }
+                if (minutes == null) {
+                    minutes = (ipBanMillis / 60_000L).coerceAtLeast(1L).coerceAtMost(maxMinutes.toLong())
+                }
+            }
+        }
         val reasonStart = if (minutes == null) 1 else 2
         val reason = arg.drop(reasonStart).joinToString(" ").ifBlank { "管理员根据玩家封禁IP: ${target.plainName()}" }
         val ip = manualBanIp(playerIp(target), minutes, reason, player, target.uuid(), target.plainName())
@@ -1291,8 +1339,10 @@ command("unbanip", "管理指令：解除IP封禁") {
     body {
         if (arg.isEmpty()) replyUsage()
         val ip = normalizeIp(arg[0])
-        if (unbanIp(ip)) reply("[green]已解除IP封禁：[white]$ip".with())
-        else reply("[yellow]未找到该IP封禁：[white]$ip".with())
+        val operator = player
+        val success = if (operator == null) unbanIp(ip) else unbanIpForOperator(ip, operator)
+        if (success) reply("[green]已解除IP封禁：[white]$ip".with())
+        else reply("[yellow]未找到该IP封禁，或你只能解除自己施加的记录：[white]$ip".with())
     }
 }
 

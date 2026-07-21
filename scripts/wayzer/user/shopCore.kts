@@ -25,6 +25,7 @@ fun normalizeShopLevelCode(text: String): String? = when (text.trim().lowercase(
     "2" -> "2"
     "3" -> "3"
     "3+", "3p", "3plus" -> "3+"
+    "3++", "3pp", "3plusplus" -> "3++"
     "4" -> "4"
     else -> null
 }

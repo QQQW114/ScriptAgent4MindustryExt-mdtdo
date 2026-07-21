@@ -58,14 +58,7 @@ fun buildBanReason(player: Player): String? {
 fun isBuildBanned(player: Player): Boolean = buildBanReason(player) != null
 
 fun canManageBuildBan(operator: Player, target: Player): Boolean {
-    val operatorUid = PlayerData[operator].id
-    val targetUid = PlayerData[target].id
-    if (operator === target || operatorUid == targetUid) return false
-    val operatorOrder = with(trustLevel) { getTrustLevelOrder(operatorUid, operator) }
-    val targetOrder = with(trustLevel) { getTrustLevelOrder(targetUid, target) }
-    val order3Plus = with(trustLevel) { trustLevelOrder("3+") }
-    val order4 = with(trustLevel) { trustLevelOrder("4") }
-    return operatorOrder >= order4 || (operatorOrder >= order3Plus && targetOrder < order3Plus)
+    return with(trustLevel) { canDirectRestrictTrustTarget(operator, target) }
 }
 
 fun disableBuild(target: Player, reason: String, operator: Player? = null): Boolean {
@@ -200,7 +193,7 @@ command("buildban", "管理指令：禁止玩家建造") {
             }.with())
         }
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
-        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+级只能处理低于3+级的玩家，4级可处理所有普通目标。".with())
+        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理低于3+的玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
         val reason = arg.drop(1).joinToString(" ").ifBlank { "未填写理由" }
         disableBuild(target, reason, player)
         reply("[green]已禁止 [white]{target.name}[green] 建造/拆除".with("target" to target))
@@ -214,7 +207,7 @@ command("buildunban", "管理指令：解除玩家禁建") {
         if (arg.isEmpty()) replyUsage()
         if (!canUseBuildBanCommand(player)) returnReply("[red]权限不足：需要3+级或4级。".with())
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
-        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+级只能处理低于3+级的玩家，4级可处理所有普通目标。".with())
+        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理低于3+的玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
         if (enableBuild(target, player)) {
             reply("[green]已解除 [white]{target.name}[green] 的建造/拆除限制".with("target" to target))
         } else {

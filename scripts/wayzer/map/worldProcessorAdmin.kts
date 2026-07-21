@@ -1,5 +1,6 @@
 @file:Depends("coreMindustry/contentsTweaker", "读取当前已加载CP")
 @file:Depends("coreMindustry/menu", "CP管理菜单")
+@file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
 package wayzer.map
 
@@ -20,6 +21,7 @@ import kotlinx.coroutines.delay
 name = "世界处理器与CP管理"
 
 private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
+private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 private val cpNameRegex = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"")
 private var cpAdminContentBaseline: Any? = null
 
@@ -155,17 +157,8 @@ private fun applyCpPatches(patches: List<String>, reason: String) {
     sanitizeInvalidTurretAmmo(reason)
 }
 
-private fun sendWorldDataCompat(player: mindustry.gen.Player) {
-    val con = player.con ?: return
-    Call.worldDataBegin(con)
-    val sendWorldAndAssets = Vars.netServer.javaClass.methods.firstOrNull { method ->
-        method.name == "sendWorldAndAssets" && method.parameterTypes.size == 1
-    }
-    if (sendWorldAndAssets != null) {
-        sendWorldAndAssets.invoke(Vars.netServer, player)
-    } else {
-        Vars.netServer.sendWorldData(player)
-    }
+private suspend fun sendWorldDataCompat(player: mindustry.gen.Player) {
+    with(worldResync) { resyncWorldAndAssets(player, "CP管理变更") }
 }
 
 private fun syncWorldAfterCpChange(reason: String) {

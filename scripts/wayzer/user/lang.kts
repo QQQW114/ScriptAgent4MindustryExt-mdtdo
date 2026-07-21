@@ -8,7 +8,12 @@ import org.h2.mvstore.type.StringDataType
 
 name = "玩家语言设置"
 
-val settings = contextScript<coreLibrary.extApi.KVStore>().open("langSettings", StringDataType.INSTANCE)
+// MVMap 必须完全封装在本脚本 ClassLoader 内，不能作为公开属性跨脚本访问。
+// SA 3.4 下其它脚本若直接调用 settings[uid]，会要求两个脚本加载器中的
+// org.h2.mvstore.MVMap 满足同一类型约束，与 MDT H2 JDBC 驱动发生 LinkageError。
+private val settings = contextScript<coreLibrary.extApi.KVStore>().open("langSettings", StringDataType.INSTANCE)
+
+fun hasManualLangSetting(uid: String): Boolean = settings[uid] != null
 
 var PlayerData.lang: String
     get() = settings[id] ?: player?.locale ?: "zh"

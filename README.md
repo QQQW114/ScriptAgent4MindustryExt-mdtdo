@@ -21,7 +21,7 @@ MDT DO 服务器使用的 ScriptAgent 脚本与维护文档开源仓库。
 
 上游项目：<https://github.com/way-zer/ScriptAgent4MindustryExt>
 
-- 注意：当前适配159版本，但非sa3.4，仍是sa3.3.2基础上改进而来
+- 当前生产基线为 Mindustry v159 / MindustryX B480 / ScriptAgent 3.4.0；脚本已完成 SA 3.4 模块元数据、数据库模块与 Command API 兼容迁移。
 
 - 部分mapScript来自：<https://github.com/lemon3357/ScriptAgent4MindustryExt>
 

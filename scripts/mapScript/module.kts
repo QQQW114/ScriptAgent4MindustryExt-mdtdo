@@ -25,29 +25,18 @@ private val hintedCommandKeys = mutableSetOf<String>()
 private val patchLoadHooks = mutableListOf<Pair<Class<Any>, Cons<Any>>>()
 private val scanRootOnReset by config.key(false, "每次换图/Reset时重新扫描地图脚本目录。生产服建议关闭，避免每局结束时磁盘扫描和脚本卸载造成卡顿")
 
-onEnable {
-    //Disable all non-controller scripts
-    children.forEach {
-        if (it.scriptState == ScriptState.ToEnable && it.inst?.mapScriptController != true) {
-            it.stateUpdateForce(ScriptState.Loaded)
-        }
-    }
-}
-
 private fun disableCurrentMapScripts(reason: String) {
     val startedAt = System.currentTimeMillis()
     MindustryDispatcher.safeBlocking {
-        ScriptManager.transaction {
-            addAll(children)
-            disable()
-            getForState(ScriptState.ToEnable).forEach {
-                it.stateUpdateForce(ScriptState.Loaded)
-            }
-            val stillEnabled = toList().filter { it.enabled && it.inst?.mapScriptController != true }
+        val targets = children.filter { it.enabled && it.inst?.mapScriptController != true }
+        ScriptManager.transactionV2 {
+            disable(targets)
+            execute().printResult()
+            val stillEnabled = targets.filter { it.enabled }
             if (stillEnabled.isNotEmpty()) {
                 logger.warning("地图脚本卸载后仍有脚本处于启用状态(reason=$reason): ${stillEnabled.joinToString { it.id }}")
             }
-        }
+        }.printResult()
     }
     val cost = System.currentTimeMillis() - startedAt
     if (cost >= 250L) logger.warning("地图脚本卸载耗时 ${cost}ms(reason=$reason)")
@@ -65,13 +54,14 @@ listen<EventType.ResetEvent> {
     val startedAt = System.currentTimeMillis()
     ScriptRegistry.scanRoot()
     MindustryDispatcher.safeBlocking {
-        ScriptManager.transaction {
-            addAll(children)
-            removeIf { it.compiledScript?.source.run { this == null || this == it.source } }
-            if (isEmpty()) return@transaction
-
-            logger.info("Unload outdated script: ${toList()}")
-            unload()//unload all updatable
+        val outdated = children.filter {
+            it.compiledScript?.source.run { this != null && this != it.source }
+        }
+        if (outdated.isNotEmpty()) {
+            logger.info("Reload outdated script: $outdated")
+            ScriptManager.transactionV2 {
+                outdated.forEach { reload(it) }
+            }.printResult()
         }
     }
     val cost = System.currentTimeMillis() - startedAt
@@ -145,10 +135,7 @@ fun loadCurrentMapScripts() {
     loadedMapScriptKey = key
     val startedAt = System.currentTimeMillis()
     MindustryDispatcher.safeBlocking {
-        ScriptManager.transaction {
-            addAll(toLoad)
-            load(); enable()
-        }
+        ScriptManager.transactionV2 { enable(toLoad) }.printResult()
     }
     val cost = System.currentTimeMillis() - startedAt
     if (cost >= 250L) logger.warning("地图脚本加载耗时 ${cost}ms: ${toLoad.joinToString { it.id }}")

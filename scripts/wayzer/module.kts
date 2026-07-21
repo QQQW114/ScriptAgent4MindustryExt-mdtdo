@@ -1,4 +1,4 @@
-@file:Depends("coreLibrary/DBApi", "数据库储存")
+@file:Depends("coreLibrary/db", "数据库储存API")
 @file:Depends("coreMindustry")
 @file:Import("com.google.guava:guava:30.1-jre", mavenDepends = true)
 @file:Import("wayzer.lib.*", defaultImport = true)

@@ -219,10 +219,10 @@ private fun prepareUseError(player: Player, def: SkillShopDefinition): String? {
 private class ShopSkillPrecheck(private val def: SkillShopDefinition) : CommandHandler {
     private val mapDisabled get() = Vars.state.rules.tags.getBool("@noSkills")
 
-    context(CommandContext) override suspend fun handle() {
-        ClientOnly.handle()
-        val unit = player!!.unit()
-        if (player!!.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
+    override suspend fun CommandContext.handle() {
+        val player = player ?: returnReply("[red]该技能只能由游戏内玩家使用".with())
+        val unit = player.unit()
+        if (player.dead() || unit == null || unit.dead) returnReply("[red]死亡状态无法使用技能".with())
         if (!def.ignoreNoSkills && mapDisabled) returnReply("[red]当前地图禁用技能".with())
         if (def.pvpDisabled && Vars.state.rules.pvp) returnReply("[red]当前技能PVP模式禁用".with())
     }

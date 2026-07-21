@@ -82,7 +82,9 @@ fun levelOrder(player: Player): Int {
 }
 
 fun requiredOrder(code: String): Int = with(seniorityLevel) { seniorityLevelOrder(code) }
-fun skillAdmin(player: Player): Boolean = with(seniorityLevel) { isSeniorityAdmin(player) }
+// 3++ 是有限插件协管；即使被手动设置为资历4，也不开放管理员技能。
+fun skillAdmin(player: Player): Boolean =
+    !with(trustLevel) { isPluginAdmin(player) } && with(seniorityLevel) { isSeniorityAdmin(player) }
 fun godMenuAllowed(player: Player): Boolean = with(trustLevel) { isTrustAdmin(player) }
 
 fun levelError(player: Player, required: String): String? =

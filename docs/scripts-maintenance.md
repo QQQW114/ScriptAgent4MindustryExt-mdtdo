@@ -10,6 +10,92 @@
 
 > 维护规则：后续只要新增、重命名、拆分、删除或明显修改脚本职责，都应同步更新本文档。
 
+## 2026-07-21：MindustryX B480 / v159.7 网络同步与性能链路定稿
+
+- 参考项目更新到 Mindustry `v159.7`、MindustryX `prerelease-2026.07.20.B480`。上游的大世界发送修复仅影响 Steam `SNet`，headless 专服仍需本项目补丁。
+- B480 自定义补丁补齐批量 `Net.send` 的 `SendPacketEvent`，事件携带 `connections`、`targetCount`、`reliable`；`trafficMonitor.kts` 按实际目标数统计批量上行。游戏同步改用白名单分类，握手、欢迎、插件、音乐、CP、杂交世界流不再触发性能清理。
+- `coreUnitRespawnCompat.kts` 在首次加入、内部重同步、核心单位变化和主动取消附身后可靠补发 `PlayerSpawn`，按 0/1/3/8 秒重试 `Unit -> Player`；第一轮实体快照可靠，后续 UDP，不执行全量 `/sync`。
+- `worldResyncCoordinator.kts` 统一接管点歌、SFX、技能/地图杂交、外部 CP 与管理 CP。优先级为 CP 300、杂交 200、普通 150、点歌 100、SFX 50；队列上限 32、排队 180 秒、任务后恢复 2.5 秒。L1 与首次加入共享 2 槽，L2+ 全服 1 槽且首次加入优先；确认超时会继续持槽最多 120 秒。
+- `syncThrottle.kts` 删除快照拦截与重路，只把原生间隔保守调整为 240/280/320ms；可靠建筑血量包不再降级为 UDP。
+- `serverPressureActions.kts` 每轮只使用当前级预算，L4 默认最多 400，并处理数量前三的压力单位。`performanceGuardExperimental.kts` 已收缩为兼容入口，第二套清单位、暂停与直接换图执行器彻底移除。
+- 构建：`gradle --no-daemon server:dist -x tools:doPack`；产物 `mdtserver/server-2026.07.20.B480-mdtdo.jar`；SHA-256 `8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。冷启动：156 个脚本、加载 152、启用 148、出错 0。
+
+## 2026-07-18：v159 网络同步保护与性能优化统一
+
+类型：网络同步适配、上行统计重构、性能措施合并
+
+涉及文件：
+
+- `mdtserver/config/scripts/wayzer/reGrief/trafficMonitor.kts`
+- `mdtserver/config/scripts/wayzer/map/serverPressure.kts`
+- `mdtserver/config/scripts/wayzer/map/serverPressureActions.kts`
+- `mdtserver/config/scripts/wayzer/reGrief/connectSyncGuard.kts`
+- `mdtserver/config/scripts/wayzer/reGrief/syncThrottle.kts`
+- `mdtserver/config/scripts/wayzer/map/performanceGuard.kts`
+- `mdtserver/config/scripts/wayzer/map/performanceGuardExperimental.kts`
+- `mdtserver/config/scripts/wayzer/map/adaptivePlayerLimit.kts`
+- `mdtserver/config/scripts/wayzer/reGrief/inactivePressureCheck.kts`
+
+改动：
+
+- 上行拆分为总上行、游戏同步上行、世界/资产流；积分板显示“总上行 / 同步上行”。
+- 世界流、玩家加入、音乐与 CP 只进入网络保护，不参与清单位、关闭处理器等性能判断。
+- 新增仅在网络压力时启用的入服同步门控；正常状态不限制，超时/异常/压力数据失效/卸载均 fail-open。
+- X35 的逐玩家同步接管替换为 v159 原生 `snapshotInterval` 调整；待加入连接快照重路失败时回退原版广播，不能丢快照。
+- 标准/实验性性能执行器合并，旧 `/xperf` 仅保留兼容入口；投票可关闭本局性能优化。
+- 原有分级清单位、PPS 异常退出、严重超量和等级4数量前三清理继续保留；PPS 保护 `mono/pulsar/quasar/poly/mega` 辅助线。
+- 最终换图改为 TPS 滑动均值连续 2 分钟低于 5 才触发。
+
+验证：
+
+- SA 3.4 + MindustryX B477 冷启动：`共找到155脚本,加载成功151,启用成功147,出错0`。
+- 首次冷编译期间 watchdog 可记录十余秒启动停顿；服务器开放端口后的运行期需另行实机观察多人加入和上行满载。
+
+## 2026-07-17：ScriptAgent 3.4 迁移与159核心机重生修复
+
+类型：基础框架迁移、数据库服务迁移、客户端单位同步兼容
+
+涉及文件：
+
+- `mdtserver/config/mods/ScriptAgent4MindustryExt-3.4.0-allInOne.jar`
+- `mdtserver/config/scripts/bootStrap/default.kts`
+- `mdtserver/config/scripts/coreLibrary/.metadata`
+- `mdtserver/config/scripts/coreLibrary/db/.metadata`
+- `mdtserver/config/scripts/coreLibrary/db/module.kts`
+- `mdtserver/config/scripts/coreLibrary/db/lib/DBApi.kt`
+- `mdtserver/config/scripts/coreLibrary/DBConnector.kts`
+- `mdtserver/config/scripts/coreLibrary/lib/ServicesExt.kt`
+- `mdtserver/config/scripts/coreLibrary/lib/CommandApi.kt`
+- `mdtserver/config/scripts/coreLibrary/lib/CommandApiExt.kt`
+- `mdtserver/config/scripts/coreLibrary/lib/ContextScriptCompat.kt`
+- `mdtserver/config/scripts/wayzer/module.kts`
+- `mdtserver/config/scripts/wayzer/mdtDatabase.kts`
+- `mdtserver/config/scripts/wayzer/lib/MdtStorage.kt`
+- `mdtserver/config/scripts/wayzer/user/banStore.kts`
+- `mdtserver/config/scripts/wayzer/user/ext/skills.lib.kt`
+- `mdtserver/config/scripts/wayzer/reGrief/coreUnitRespawnCompat.kts`
+
+改动：
+
+- ScriptAgent 从 3.3.2 迁移到 3.4.0；旧 JAR 保留为 `.disabled`，SA 编译缓存备份移到 `mdtserver/sa-cache-backups/`，不得放回 `config/scripts/` 让扫描器误识别。
+- 按 SA 3.4 模块规则补充 `.metadata`，Kotlin 编译参数改为 `-Xcontext-parameters`；同步迁移控制指令、热加载、配置、Command API 与 Mindustry 命令实现。
+- 新增 `ContextScriptCompat.kt`，反射兼容本项目大量旧 `contextScript<T>()` 调用；后续新脚本优先使用 SA 3.4 官方 Services/上下文 API，不继续扩大兼容层。
+- 数据库从旧 `coreLibrary/DBApi.kts` 的 `ServiceRegistry` 迁移到独立 `coreLibrary/db` 模块和 SA 3.4 `Services`。旧方式会因脚本类加载器隔离出现“连接器已 provide、业务仍 No Provider”；当前 `DBConnector` 连接并初始化表结构后调用 `Services.provide(db)`，同时保留 H2 预热/保活和慢 IO 提示。
+- `wayzer/module.kts` 依赖 `coreLibrary/DBConnector`；`MdtStorage`、`mdtDatabase`、`banStore` 改用 `coreLib.db.DBApi`。启动日志已确认 Provider 注册成功，`No Provider` 消失。
+- Kotlin 2.3 下匿名 context parameter 不再让技能 lambda 直接解析 `CommandContext.arg`；`SkillScope` 显式暴露参数列表，恢复管理员技能、杂交、三级技能与集合/传送脚本编译。
+- `CommandApi` 的注册/移除/重建操作增加同步保护，避免 SA 3.4 集中卸载脚本时并发修改 `registeredCommands` 触发 `ConcurrentModificationException`。
+- 新增159核心机重生兼容：主动取消附身后调用 `checkSpawn()`，并按“新核心单位 -> Player”顺序给目标客户端补发两个实体的定向快照及可靠 `PlayerSpawnCallPacket`。不进行全量世界/资产同步。
+- 重点地图 `14668`、`15450`、`@hybrid`、`@flood` 已在 SA 3.4 下恢复加载；`15450` 的柠檬 `PlayerData` 使用别名避免 Kotlin 2.3 同名冲突。
+
+验证状态：
+
+- 数据库连接、表初始化、Provider 注册成功。
+- 修复后控制台 `sa fail` 无输出。
+- 核心机兼容脚本已编译/热加载；仍需真实客户端验证取消附身、正常死亡、换队、观战与换图。
+- 生产服若首次迁移后在 `ScriptClassLoader.kt:24` 实例化 `wayzer/user/achievement` 时空指针，优先判定为旧 `config/scripts/cache` 或 SA 3.4 并行实例化竞态；先在依赖全部启用后重载 achievement/playerInfoTripleTap，仍失败再停服清空编译缓存。不要误删 `config/scripts/data`。
+- 生产服复测发现 H2 JDBC 2.0.206 与 KVStore 的 h2-mvstore 2.3.232 同时进入 WayZer 业务 ClassLoader，玩家加入时 `regionAutoLang` 稳定触发 `MVMap loader constraint violation`。已从 `coreLibrary/db` 移除 H2、将 `wayzer` 依赖改回纯 DB API，并让 `DBConnector` 使用 Connection lambda 隔离驱动。全量清缓存冷启动验证为154脚本、出错0。
+- `coreMindustry/console.kts` 的 System.out 包装不再在日志调用线程直接执行 JLine `printAbove`；改为容量1024的 IO 输出队列，避免生产宿主控制台/磁盘输出阻塞 HeadlessApplication 主线程数十秒至数分钟。
+
 ## 文档索引
 
 - `docs/scripts-maintenance.md`：项目级脚本维护总览，也就是本文档。
@@ -29,7 +115,7 @@
 - `docs/forum-posts.md`：帖子系统、评论、为作者赞踩、自动清理和权限说明。
 - `docs/tips-system.md`：Tips 小提示系统、随机轮播、管理指令和存储说明。
 - `docs/server-description.md`：服务器列表介绍轮播、管理指令和存储说明。
-- `docs/performance-guard.md`：常驻/实验性性能优化系统、TPS 分级措施与兜底换图说明。
+- `docs/performance-guard.md`：v159统一性能优化、网络同步保护、TPS分级措施与极端换图说明。
 - `docs/security-guard.md`：安全风控、聊天/菜单/连接限速、IP封禁与同IP共票说明。
 - `docs/vote-save.md`：投票创建存档、存档槽位与回档说明。
 - `docs/logic-draw-guard.md`：逻辑绘图/显示器/画布方块开关与服务器列表内容安全说明。
@@ -1042,103 +1128,99 @@
 
 ### `mdtserver/config/scripts/wayzer/map/performanceGuard.kts`
 
-类型：性能优化模式入口/兼容脚本
-职责：维护 `performanceGuard.mode`、`/perf` 与 `/vote perf`；实际自动检测与执行已拆到 `serverPressure.kts` / `serverPressureActions.kts`。
+类型：统一性能优化模式入口
+职责：维护 `performanceGuard.mode`、本局投票关闭状态、`/perf` 与 `/vote perf`；实际检测和执行由 `serverPressure.kts` / `serverPressureActions.kts` 完成。
 
 当前功能：
 
 - `/perf status`：查看当前性能优化模式与兼容状态。
 - `/perf on`、`/perf off`、`/perf reset`：3+级、4级/admin 或控制台管理常驻性能优化。
-- `/vote perf on|off|status`：玩家投票开启/关闭/查看性能优化。
+- `/vote perf off` 只关闭本局性能优化，下次 `WorldLoadEvent` 恢复服务器持久模式；`/vote perf on` 可在本局重新开启。
 - 旧本地 TPS 清理循环通过 `legacyLocalLoopEnabled=false` 默认关闭，避免双重检测/双重覆盖。
-- 标准性能优化现在也介入 PVP；具体清理优先级由 `serverPressureActions.kts` 控制。
+- 标准与实验性执行逻辑已经合并；PVP 同样受保护，但按压力单位优先级尽量最后处理玩家队伍。
 - `performanceGuard.mode` 运行中使用内存缓存，管理指令/投票切换模式时同步写库与更新缓存。
 
 存储：
 
-- 使用 `MdtSettings` 的 `performanceGuard.mode` 与实验性系统互斥。
+- `performanceGuard.mode`：持久模式，只使用 `normal` / `off`；旧 `experimental` 启动时自动迁移为 `normal`。
 
 备注：
 
-- 常驻模式只允许标准措施；关闭处理器、同步限速、挂机检测和兜底换图只在实验性模式中启用。
-- 实验性系统恢复到此前模式时必须通过常驻脚本的 `setPerformanceMode(...)` 更新缓存，不要直接只写 `MdtSettings`。
+- 投票关闭本局性能优化不会关闭网络 fail-open 保护和快照安全保护；只停止世界清理、规则修改与极端换图。
 - 详细说明见 `docs/performance-guard.md`。
 
 ---
 
 ### `mdtserver/config/scripts/wayzer/map/performanceGuardExperimental.kts`
 
-类型：实验性性能优化入口/兼容脚本
-职责：手动/投票开启的强力性能模式入口，用于切换 `experimental` 模式；实际自动检测与执行已拆到 `serverPressure.kts` / `serverPressureActions.kts`。
+类型：旧实验性性能指令兼容层
+职责：保留既有 `/xperf`、`/vote xperf` 和手动阶段入口，实际统一切换 `performanceGuard.kts` 的 `normal/off` 状态。
 
 当前功能：
 
-- `/xperf status`：查看实验性兼容状态。
-- `/xperf on`、`/xperf off`：3+级、4级/admin 或控制台直接开启/关闭实验性性能优化。
-- `/xperf stage <1-4>`：直接进入指定实验性优化阶段（兼容旧手动入口）。
-- `/xperf fallback`：直接触发兜底强制换图（兼容旧手动入口）。
-- `/vote xperf on|off|status`：玩家投票开启/关闭/查看实验性性能优化。
-- 启用后会调用常驻系统切换模式，避免常驻与实验性逻辑同时接管。
-- 旧本地实验性检测循环通过 `legacyLocalLoopEnabled=false` 默认关闭；自动阶段由 `serverPressureActions.kts` 执行。
-- 实验性不受 PVP、地图标签等限制，并且会启用上行优化、同步限速和挂机检测。
+- `/xperf on` 等价于开启统一性能优化，不再写入独立 `experimental` 模式。
+- `/xperf off` / `/vote xperf off` 使用统一关闭接口；投票关闭为本局状态。
+- `/xperf stage <1-4>`、`/xperf fallback` 仅作为旧管理入口保留，不应成为自动执行主链路。
+- 旧本地实验性检测循环默认关闭，避免与 `serverPressureActions.kts` 重复执行。
 
 存储：
 
-- `performanceGuard.experimental.previousMode`：记录开启实验性前的性能优化模式。
-- `performanceGuard.experimental.disabledLogicPositions`：记录被实验性措施关闭的逻辑处理器位置。
-- `performanceGuard.experimental.forceChangingMap`：兜底换图期间临时绕过地图筛选拦截。
+- `performanceGuard.experimental.disabledLogicPositions`：记录压力措施关闭的逻辑处理器位置。
+- `performanceGuard.experimental.forceChangingMap`：极端兜底换图期间临时绕过地图筛选拦截。
 
 备注：
 
-- 兜底换图成功后实验性优化会退出，并恢复到开启前的性能优化模式。
-- 恢复性能优化模式时会调用常驻脚本接口同步更新内存缓存，避免常驻/实验性模式状态与数据库写入不一致。
+- 不要重新扩展第二套自动压力判断；新措施统一添加到 `serverPressureActions.kts`。
 - 详细说明见 `docs/performance-guard.md`。
 
 ---
 
 ### `mdtserver/config/scripts/wayzer/reGrief/trafficMonitor.kts`
 
-类型：新增上行流量估算脚本
-职责：监听 `mindustryX.events.SendPacketEvent`，按包大小与目标连接数估算应用层上行同步需求，换算为 Mbps。
+类型：v159 上行与世界流监控
+职责：统计总上行、游戏同步上行、世界/资产流，并观察待加入连接与 TCP 待发积压。
 
 当前功能：
 
-- `/traffic status`：查看当前/平均估算上行、预算、恢复线、最近主要包类型。
-- `/traffic budget <Mbps>`：4级/admin 或控制台设置实验性上行预算，默认 18 Mbps。
+- `/traffic status`：查看总上行、游戏同步上行、世界/资产流、预算、活动流、待加入、TCP待发与主要包类型。
+- `/traffic budget <Mbps>`：4级/admin 或控制台设置上行预算，默认 18 Mbps。
 - `/traffic reset`：重置采样窗口。
-- 注册 `scoreboard.ext.traffic`，在积分板显示 `估算上行`。
+- 注册 `scoreboard.ext.traffic`，在积分板显示 `总上行 / 同步上行`。
+- `NetworkTransferSnapshot` 提供活动流、待加入、最老等待、TCP待发、最大单连接待发和拥塞连接数。
 
 存储：
 
-- `trafficMonitor.budgetMbps`：实验性上行预算。
+- `trafficMonitor.budgetMbps`：上行预算。
 
 备注：
 
-- 统计的是服务端应用层“尝试发送/同步需求”，不是云服务器网卡硬限速后的实际出口流量。
-- 被 `serverPressure.kts` 读取，用于实验性上行优化判断。
+- 普通包是应用层发送需求估算；世界/资产流按 `ByteArrayInputStream.available()` 的实际读取进度统计。
+- MindustryX 有 `SendPacketEvent` 时统计普通包；官方端缺少该事件时仍可统计世界/资产流与 TCP 状态。
+- 游戏同步分类排除连接、菜单、聊天、音频、资产、世界开始等包；世界/资产流不会进入游戏同步上行。
 
 ---
 
 ### `mdtserver/config/scripts/wayzer/map/serverPressure.kts`
 
-类型：新增服务器压力判断脚本
-职责：综合 TPS、估算上行、玩家数、单位数、子弹数、同步实体数，输出压力等级与同步限制建议。
+类型：统一性能/网络压力判断
+职责：分别计算性能等级与网络保护等级，输出 v159 快照间隔建议。
 
 当前功能：
 
-- `/pressure status`：查看综合压力、TPS/上行等级、同步限制等级、实体统计。
+- `/pressure status`：查看性能等级、TPS等级、游戏同步等级、网络等级、快照限制、总/同步/世界流与连接状态。
 - `/pressure tps`：查看当前 TPS 分级阈值。
 - `/pressure tps <L1> <L2> <L3> <L4> [恢复]`：3+级、4级/admin 或控制台修改 TPS 触发阈值；阈值会持久化到数据库。
 - `/pressure tps reset`：恢复默认 TPS 阈值。
-- 注册 `scoreboard.ext.pressure`，仅在有压力时显示等级。
-- 在 `normal` 模式下主要按 TPS 判断；在 `experimental` 模式下同时纳入上行超限。
+- 注册 `scoreboard.ext.pressure`，有性能压力或快照限制时显示。
+- 性能等级只取 TPS 与游戏同步上行；网络等级取总上行、活动世界流、TCP积压和待加入时间。
+- 世界/资产流不得进入单位清理等级，只能推动快照保护和入服门控。
 - 非零压力降级需要连续稳定采样，退出压力也需要连续达到恢复线，避免 TPS/上行在阈值附近反复横跳。
 - 同步限制另有独立滞回：默认启用后至少保持约 45 秒，降级需连续 3 次稳定采样，退出需连续 6 次低于恢复线，避免上行限速在波次流量波动中频繁启停。
 
 备注：
 
 - 只负责判断，不直接清理世界，避免检测与执行耦合。
-- 上行超限只在实验性模式提升同步限制等级。
+- 快照限制可由游戏同步或网络压力触发；即使本局投票关闭性能优化，网络保护仍可工作。
 - 压力升高播报只在当前压力周期首次升到更高等级时触发；完全恢复后才会重置播报等级，减少刷屏。
 
 ---
@@ -1152,9 +1234,12 @@
 
 - 等级1：关闭火焰并清理火焰/子弹，同时少量清理 1 阶低级单位。
 - 等级2：暂停波次、推迟 `wavetime`、设置临时单位上限并清理更多 1-2 阶非玩家压力单位。
-- 等级3：仅实验性模式关闭世界/逻辑处理器并清理更多/更高阶单位。
-- 等级4：标准模式暂停游戏；实验性模式兜底强制换图。
+- 等级3：关闭世界/逻辑处理器，扩大到玩家队伍并清理 T1-T3 压力单位。
+- 等级4：继续清理到配置阶级；TPS与游戏同步同时超限时额外清理数量前三种单位，并在持续过低后暂停游戏。
 - 压力等级降低时会逐步回退高等级措施：降到1级恢复波次/单位上限/处理器，降到2级恢复处理器，降到0级恢复全部。
+- 游戏同步达到预算60%且2秒内多人退出时执行 PPS 兜底；保留 `mono/pulsar/quasar/poly/mega`，额外清理导弹单位与 `scathe`。
+- 游戏同步超过预算200%时清理 T4 及以下单位；世界/音乐/CP流不会触发。
+- 最终换图仅在当前TPS与滑动均值每次采样都低于5、连续2分钟时允许执行。
 - `/gamepause on|off|status`：3+级/4级/admin 或控制台管理暂停状态。
 - `/vote pause`、`/vote resume`：玩家投票暂停/继续。
 
@@ -1165,7 +1250,7 @@
 
 备注：
 
-- 标准模式也介入 PVP，但优先清理火焰、子弹、非玩家单位。
+- 统一模式介入 PVP，但优先清理火焰、子弹、波次队伍和非玩家队伍。
 - 不使用单纯 `unitBuildSpeedMultiplier = 0` 作为单位限制核心，改为设置 `rules.unitCap` 与压力分级清理单位。
 - 单位清理使用显式 Serpulo/Erekir 阶级表，避免按血量/权重排序导致 Erekir 低阶单位压过 Serpulo 高阶单位；并使用 `kill()` 走原版死亡同步链路，不再直接 `remove()`。
 - 压力规则同步使用 `Call.setRule` 逐字段发送实际变更，不再在每轮压力执行时 `Call.setRules(state.rules)`；避免反复覆盖客户端本地显示类 Rules（如 fog/staticFog）并降低上行浪费。
@@ -1206,33 +1291,49 @@
 
 备注：
 
-- 脚本依赖 `serverPressure.kts`，以 `trafficLevel`、`throttleLevel` 与“上行”原因识别最近上行压力。
-- `PlayerConnect` 时新玩家尚未加入 `Groups.player`，因此脚本使用“当前人数 + 待确认连接 + 1”判断是否超员，并在 `PlayerJoin`/`PlayerLeave` 或超时后清理待确认连接。
+- 脚本依赖 `serverPressure.kts`，以网络/快照压力识别最近上行繁忙状态。
+- 人数统计包含 `Groups.player`、`PlayerConnect` 待处理、`connectSyncGuard` 已预留和等待连接，防止未完成 `connectConfirm` 的幽灵连接绕过人数限制。
+
+---
+
+### `mdtserver/config/scripts/wayzer/reGrief/connectSyncGuard.kts`
+
+类型：v159 网络压力入服同步门控
+职责：只在网络压力时限制同时进行世界/资产同步的连接数，减少上行满载时的幽灵玩家与长期无核心机。
+
+当前功能：
+
+- 网络等级0完全不限制；等级1默认允许2名、等级2+默认允许1名同时同步。
+- 只把已经放行进入同步的连接计入名额，等待者不占自己的名额。
+- 等待队列默认最多8人、最长12秒；超时提示稍后重试。
+- 压力数据20秒未更新、脚本关闭、协程取消、异常或卸载时 fail-open。
+- `PlayerConnectionConfirmed`、退出和断线时释放预留。
+
+备注：
+
+- 该脚本依赖 `ConnectAsyncEvent`，位置必须在原版 `sendWorldAndAssets` 之前。
+- 不得改成常态门控，也不得在异常时 fail-close；重要入服链路宁可回原版高流量，不能永久拒绝所有新玩家。
 
 ---
 
 ### `mdtserver/config/scripts/wayzer/reGrief/syncThrottle.kts`
 
-类型：新增实验性同步频率限制脚本
-职责：参考柠檬 `betterSync.kts`，在实验性上行超限时临时接管玩家同步快照发送频率。
+类型：v159 原生快照频率保护
+职责：使用 v159 原生快照间隔和批量发送，不再逐玩家手工序列化全部实体。
 
 当前功能：
 
-- 只在 `serverPressure.kts` 给出同步限制间隔时启用。
-- 通过调整 `NetConnection.syncTime` 推迟原版同步，并按当前限制间隔发送 `stateSnapshot` / `entitySnapshot` / `hiddenSnapshot`。
-- 隐藏实体 `hiddenSnapshot` 现在带按玩家缓存和最小刷新间隔：隐藏列表不变时不再每次受限同步都重复发送，仅在列表变化或刷新到期时发送，减少上行浪费。
-- 受限同步实体遍历不再每次按类名排序，避免高实体量时每玩家每次同步都产生排序开销；写入实体同步前补调用 `beforeWrite()` 与原版流程保持一致。
-- 上行恢复后自动解除接管并恢复原版同步。
-- 开启/解除同步限制的聊天播报带冷却，避免预算线附近波动时反复刷屏。
-- 限制期间会记录单位生成/销毁：生成后按冷却触发额外快照；销毁事件在下一帧额外向受限连接补发 `UnitDestroy` 包，降低客户端错过单位消失造成幽灵单位/不同步的概率。
-- `syncThrottleEnabled` 可单独关闭实验性同步频率接管；关闭后 `targetInterval()` 返回 0，会恢复原版实体同步，但不影响服务器压力检测本身。
-- 单玩家快照发送耗时超过 `sendCostWarnMillis`（默认 120ms）会按 `sendCostWarnCooldownMillis` 冷却输出日志，便于定位“同步快照发送过重”。
+- 反射读取 `Administration.Config.snapshotInterval`，保存原始值。
+- 压力时按 `serverPressure` 建议增大间隔，默认280/420/560ms，上限800ms；绝不低于原生间隔。
+- 恢复或卸载后还原原始 `snapshotInterval`。
+- MindustryX `SendPacketEvent` 可用且存在待加入连接时，将状态/实体/建筑快照批量发送给 `hasConnected=true` 的玩家。
+- 重路必须先发送成功再取消原广播；任一失败会禁用重路并 fail-open 回退原版广播，避免在线玩家丢快照或每帧异常。
 
 备注：
 
-- 仅实验性模式启用；标准模式不会限制同步频率。
-- 同步限制有最大间隔上限，防止同步过慢导致体验完全不可用。
-- 如果玩家反馈“聊天正常但单位/世界卡住后回弹”，优先结合 `mainThreadWatchdog.kts` 堆栈与同步限制启停日志判断；必要时可先关闭 `syncThrottleEnabled` 做对照测试。
+- 官方端没有 `SendPacketEvent` 时仍可调整原生间隔，但不执行待加入连接重路。
+- 不要恢复 X35 的 `syncTime/snapshotsSent` 逐玩家实现；它会绕过 v159 共享序列化优化。
+- 若玩家反馈世界卡住，应对照 `/pressure status`、`/traffic status` 与 watchdog，确认是主线程停顿还是网络上行满载。
 
 ---
 
@@ -1275,12 +1376,12 @@
 
 ### `mdtserver/config/scripts/wayzer/reGrief/inactivePressureCheck.kts`
 
-类型：新增上行压力挂机检测脚本
-职责：实验性上行超限时发送挂机确认，移出长期无响应玩家，降低玩家数量带来的同步倍数压力。
+类型：游戏同步压力挂机检测脚本
+职责：仅游戏同步上行超限时发送挂机确认，移出长期无响应玩家，降低同步倍数压力。
 
 当前功能：
 
-- 上行超限时发送弹窗/聊天提示，后续每 15 分钟最多提示一次。
+- `serverPressure.trafficLevel > 0` 时发送弹窗/聊天提示，后续每 15 分钟最多提示一次。
 - 玩家点击“我还在”、聊天或点击地图均视为响应。
 - 到期无响应则踢出服务器。
 
@@ -1288,6 +1389,7 @@
 
 - 不对 3+级/4级做豁免，避免额外复杂逻辑。
 - 与菜单自动超时区分：弹窗自动关闭不会立刻判定挂机，只有超时前没有任何响应才会踢出。
+- 世界/资产流、音乐、CP和玩家加入不会触发挂机检测。
 
 ---
 
@@ -3534,7 +3636,7 @@
 
 - 确认官方/B477 的运行时 Data Asset 表是全服共享的：只要把排队歌曲提前挂入 `state.data`，期间进入服务器的新玩家也会被原版进服握手要求下载这些歌曲。旧实现还会同时保留同步队列内多首歌曲，可能让新玩家一次被动同步全部排队音乐，表现为在线人数已经增加但客户端长时间没有核心机，并持续占满上行。
 - 点歌歌曲不再在玩家点击同意时立刻注册；仅轮到某一名玩家实际同步时挂载当前一首歌曲，任务结束或超时立即卸载。排队歌曲不进入全局资产表，超时后也不再额外保留两分钟“迟到确认”资产，避免扩大到后来进服玩家。
-- 运行时新音乐同步默认只允许在线人数不超过 6 人，队列最多 6 人；每名玩家完成后至少等待 5 秒。开始下一次同步前还会检查上行估算和其他玩家是否正处于资产/世界加载阶段。管理员可用 `/music limit syncplayers <人数>` 调整，但 20Mbps 上行不建议高于 6。
+- 运行时新音乐同步不再按全服在线人数直接禁用，避免人多时所有玩家都无法点歌。同步仍使用单人串行队列（默认最多等待 6 人），每名玩家完成后至少等待 5 秒；开始下一次同步前还会检查上行估算和其他玩家是否正处于资产/世界加载阶段。旧 `/music limit syncplayers` 参数仅返回已移除提示。
 - 已同步歌曲仍可在高人数下直接播放，不触发资产/世界重同步。同步成功后无论玩家是否在过程中切换投票选择，都会记录资产已经到达，避免再次同意时重复下载同一首歌。
 - `/music queue` 增加正常、协商资产、接收资产、等待世界确认等连接状态，后台也会记录容量保护取消及“新玩家在临时音乐资产挂载期间进入”的警告，便于定位无核心机与人数异常。
 - 小音效因官方 sound ID 问题借用 `playMusic` 通道，过去会用 `interrupt=true` 直接停止正在播放的点歌。现在对正在听点歌的玩家跳过该次小音效，优先保证长音乐不中断；管理员 `/sfx sync` 在音乐同步期间或在线超过 4 人时会被拒绝，防止一次让全服重新加载世界。
@@ -3582,3 +3684,48 @@
 - X35 的单连接快照节流接口在 B477/v159 已被移除或更改，`syncThrottle.kts` 保持反射探测失败后 no-op；警告文案已改为明确说明 B477 API 变化。不要在生产切换这一轮同时重写实体同步接管。
 - 正常启动期间无脚本错误。测试主动退出后，SA 3.3.2 集中卸载多个脚本时出现 3 秒停止超时，并触发一次 watchdog 停顿记录；这是停服阶段的既有卸载行为，不计入 B477 运行错误。
 - 生产观察重点：玩家进出、换图、外部 CP 加载/卸载、点歌资产同步、上行统计与逻辑包保护。运行中若出现 watchdog 停顿，应与停服卸载日志区分。
+# 2026-07-22：崩溃自动重启与 v159 ZIP CP 热重载
+
+- `start-server.ps1` / `start-server.sh` 默认启用异常退出自动重启；正常 `exit`、常见 Ctrl+C/终止信号以及退出码 0 不重启，服务端主动退出码 2 仍按原逻辑快速重启。
+- 连续崩溃按 5、10、20、40、60 秒退避；稳定运行 300 秒后清零连续崩溃计数，可通过 `server.properties` 调整或关闭。
+- `externalCpHotReload.kts` 新增 `.json5` 与 Mindustry v159 `.zip` Data Assets 支持，ZIP可同时提供 patches、content、bundles、sprites、sounds、music。
+- 热重载改为重建完整 `DataManager` 资产集合；卸载 ZIP 会撤销其新增内容与二进制资产，不再只处理补丁字符串。
+- 增加 ZIP 路径、数量、单文件/累计解压大小、压缩比、PNG尺寸、资产冲突、Patch/Content错误、缓存缺失和并发操作保护。
+- 失败时恢复操作前的完整 Data Assets，再执行建筑、电网、炮塔和实体兼容修复；JVM级崩溃由启动监督器兜底重启。
+- 实际冒烟验证通过：156脚本、加载152、启用148、错误0；临时ZIP的 Patch/Content/Bundle/Sprite 成功加载并完整卸载。
+- 详细格式和边界见 `docs/v159-data-assets-hot-reload.md`。
+# 2026-07-22：点歌同意率与统一封禁菜单
+
+- 点歌冷却判定的同意率分母改为“同意+中立+拒绝”的已表态人数；未表态玩家仍在投票结果中单独显示，但不再拉低同意率、触发不必要冷却。
+- `/banlist`（`/bans`、`/封禁列表`、`/封禁管理`）新增统一管理菜单，合并数据库 `PlayerBanV2` 未到期玩家封禁和安全风控 IP 封禁。
+- 列表按到期时间排序，显示封禁类型、玩家/IP、原因和剩余时长；详情页显示关联ID/UUID、操作人及起止时间，并可快速解封。
+- `PlayerBanStore` 增加 `listActive()`；`securityGuard` 提供只读 IP 封禁视图与管理解封接口；`MdtStorage` 增加批量主体名称查询，避免逐条数据库事务。
+- 冷启动验证：156脚本、加载152、启用148、错误0；通过命令Socket实际执行 `/banlist`，成功读取并合并当前玩家封禁和 IP 封禁。
+
+# 2026-07-22：玩家面板直接强制观战收紧
+
+- `playerInfoTripleTap.kts` 将“直接强制未登录游客观战”的门槛从信任2级提高到3级；游客边界改为实时检查 `PlayerData[target].authed == false`，不再把已登录但资料等级显示0的玩家当作游客。
+- 3+对低于3+玩家的原有直接处理权保留；二级玩家仍可使用 `/vote ob`。
+- `voteOb.kts` 新增非管理员面板直接强制观战成功冷却，默认120秒，按登录主体 UID 计时；只在实际成功施加后记录。
+- 强制观战元数据记录 `direct/admin/vote/system` 来源与操作者 UID；非管理员仅可解除自己的 `direct` 记录，等级后续下降也仍可主动撤回。管理员保留全局解除，旧记录按 `legacy` 处理。
+- 面板按钮执行前与理由输入后各做一次实时权限/目标状态/冷却校验，防止菜单打开后目标登录、操作者降级或其他人已经处理造成竞态。
+- 冷启动脚本编译验证通过：`156` 个脚本、加载 `152`、启用 `148`、出错 `0`；`voteOb` 与 `playerInfoTripleTap` 均成功加载/启用。
+
+# 2026-07-22：3++ 插件协管等级
+
+- 信任层级新增 `3++`（别名 `3pp` / `3plusplus`），排序位于3+与4之间，赞踩额度按3级处理。`3++` 与4级一样不会自然晋升，也不被自动晋升系统降级，只能由4级/admin或控制台手动任命/撤销。
+- `trustLevel.kts` 为3++加入独立 `@pluginAdmin` 组，不加入 `@admin`、不设置原生admin，只注册明确白名单权限。3++继承3+玩法/社区权限，可处理低于3++的目标，4级保留全局管理。
+- `suffix.kts` 将管理图标与 `/suffixmark` 命令权限拆分：3++通过 `suffix.staffMark` 显示与4级相同的管理图标，但不获得 `suffix.admin`，不能修改/隐藏后缀。等级变化会清理后缀缓存并刷新名字。
+- 3++获得 `wayzer.admin.skipKick`，普通投票踢出/投票强制观战无法对其生效；玩家面板、`/forceOB`、禁建和封禁入口都改为分层目标检查。高人数强制观战/同IP清理也保护3++/4级。
+- 白名单指令：`/host`、`/gameover`、`/banX`、`/unbanX`、`/banlist`、`/banip`、`/unbanip`、`/banips`、`/forceOB`、`/recentplayers`、`/logicdraw`、`/blockban`、`/blockunban`、`/forceobclean status|run`、`/music stopall|cancel`；`/gamepause` 等原3+直接权限自动继承。
+- 3++账号/IP封禁默认上限7天，仅可解除自己施加的记录；统一封禁菜单和IP菜单都根据操作者UID决定是否显示解封按钮。
+- `/host` / `/gameover` 对3++增加15秒重复输入确认、成功后共享5分钟冷却与审计日志；4级/admin和控制台保持原行为。
+- 明确不授权：`@admin` 通配、`/achat`、`/suffixmark`、信任/资历/MDC/账号管理、神权/管理员技能、ScriptAgent、CP/世界处理器、存档加载、重启/退出及其他世界改写权限。
+- `skills.kts` 的管理员技能前置对3++增加硬性排除；即使某个3++被手动设为资历4，也不会看到/使用管理员技能。神权菜单原本就仅检查信任4级/admin。
+- 最终冷启动验证通过：`共找到156脚本,加载成功152,启用成功148,出错0`；目标日志未发现 `Unresolved reference`、编译失败或字段保存异常。主动 `exit` 后仍有少量既有脚本卸载超时，属于停服阶段，不影响本轮3++脚本加载与启用。
+
+# 2026-07-22：收紧3+直接限制目标
+
+- 3+通过玩家面板或相关脚本直接强制观战、禁建时，只能处理信任等级低于3的玩家，即0/1/2级；不能再直接处理3级玩家。
+- 目标边界使用独立的 `canDirectRestrictTrustTarget` 判断，避免把禁言、账号封禁等其他分层权限一并误收紧。3++仍可处理低于3++的目标，4级保留全局管理。
+- 冷启动验证通过：`共找到156脚本,加载成功152,启用成功148,出错0`；未发现本轮相关编译或启用错误。

@@ -205,6 +205,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("banip", "[red]封禁玩家IP", "按在线玩家三位UID/#ID/名字封禁IP"),
     HelpEntryDef("unbanip", "[red]解除IP封禁", "解除安全风控IP封禁"),
     HelpEntryDef("banips", "[cyan]IP封禁列表", "查看当前被封禁IP、UUID与玩家名"),
+    HelpEntryDef("banlist", "[cyan]统一封禁管理", "分页查看玩家/账号与IP封禁、原因、剩余时长并快速解封"),
     HelpEntryDef("recentplayers", "[cyan]最近玩家", "查看最近80名玩家并打开离线管理面板"),
     HelpEntryDef("cp", "[green]CP列表", "列出当前已经加载的数据包/属性修改"),
     HelpEntryDef("externalcp", "[purple]外部CP", "管理 scripts/external-cp 下的外部JSON/HJSON CP热重载"),
@@ -227,7 +228,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("pressure", "[green]服务器压力", "查看TPS/上行压力/设置TPS阈值"),
     HelpEntryDef("adaptiveplayerlimit", "[green]人数上限", "查看/设置自适应人数上限"),
     HelpEntryDef("tipadmin", "[pink]Tips管理", "添加/删除/发送服务器小提示"),
-    HelpEntryDef("setlevel", "[yellow]设置信任等级", "设置玩家0/1/2/3/3+/4级"),
+    HelpEntryDef("setlevel", "[yellow]设置信任等级", "设置玩家0/1/2/3/3+/3++/4级"),
     HelpEntryDef("setadmin", "[yellow]原生管理员", "设置/取消玩家admin"),
     HelpEntryDef("locklevel", "[yellow]锁定等级", "锁定/解除自动晋升控制"),
     HelpEntryDef("trustcheck", "[yellow]信任检查", "检查玩家晋升条件"),
@@ -758,6 +759,7 @@ onEnable {
                       hasPermission("wayzer.admin.kill") ||
                       hasPermission("wayzer.admin.logicDraw") ||
                       hasPermission("wayzer.admin.blockBan") ||
+                      hasPermission("wayzer.admin.banList") ||
                       hasPermission("wayzer.ext.team.change") ||
                       hasPermission("wayzer.map.adaptivePlayerLimit") ||
                       hasPermission("wayzer.map.resourceProxy") ||

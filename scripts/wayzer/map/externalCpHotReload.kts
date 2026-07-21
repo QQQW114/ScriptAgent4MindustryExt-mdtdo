@@ -1,6 +1,6 @@
 @file:Depends("coreMindustry/menu", "外部CP菜单")
-@file:Depends("coreMindustry/contentsTweaker", "CP热重载")
 @file:Depends("wayzer/vote", "投票系统")
+@file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
 package wayzer.map
 
@@ -16,6 +16,14 @@ import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.game.EventType
 import mindustry.gen.Building
+import mindustry.ctype.ContentType
+import mindustry.mod.data.BundleAsset
+import mindustry.mod.data.ContentAsset
+import mindustry.mod.data.DataAsset
+import mindustry.mod.data.ImageAsset
+import mindustry.mod.data.MusicAsset
+import mindustry.mod.data.PatchAsset
+import mindustry.mod.data.SoundAsset
 import mindustry.world.blocks.defense.turrets.ContinuousTurret
 import mindustry.world.blocks.defense.turrets.ItemTurret
 import mindustry.world.blocks.defense.turrets.LiquidTurret
@@ -28,18 +36,29 @@ import mindustry.world.modules.LiquidModule
 import mindustry.world.modules.PowerModule
 import wayzer.VoteService
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.time.Instant
+import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import kotlin.math.ceil
 
 name = "外部CP热重载"
 
-private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
+private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 private val externalCpDirName by config.key("external-cp", "外部CP目录名，位于 config/scripts/ 下")
 private val slowExternalCpBytes by config.key(2_000_000L, "外部CP慢同步阈值，超过后不拒绝但使用更长同步间隔")
 private val hardExternalCpBytes by config.key(64_000_000L, "外部CP硬读取上限，0为不限制")
 private val worldSyncDelayMillis by config.key(350L, "外部CP变更后分批同步玩家间隔(ms)")
 private val largeWorldSyncDelayMillis by config.key(1500L, "大文件外部CP变更后分批同步玩家间隔(ms)")
-private val supportedExternalCpExtensions = setOf("json", "hjson")
+private val maxZipEntries by config.key(2048, "v159 ZIP CP允许的最大文件数")
+private val maxZipEntryBytes by config.key(32_000_000L, "v159 ZIP CP单文件解压上限")
+private val maxZipExpandedBytes by config.key(128_000_000L, "v159 ZIP CP累计解压上限")
+private val maxZipCompressionRatio by config.key(200, "v159 ZIP CP最大压缩比，防止ZIP炸弹")
+private val maxExternalCpAssets by config.key(4096, "单个v159 CP最多允许的数据资产数")
+private val supportedExternalCpExtensions = setOf("json", "hjson", "json5", "zip")
+private val textAssetExtensions = setOf("json", "hjson", "json5")
+private val zipAssetFolders = setOf("patches", "content", "bundles", "sprites", "sounds", "music")
 
 private data class ExternalCpFile(
     val index: Int,
@@ -53,7 +72,10 @@ private data class ExternalCpFile(
 private data class LoadedExternalCp(
     val fileName: String,
     val displayName: String,
-    val patch: String,
+    val assets: List<DataAsset>,
+    val preview: String,
+    val parseMode: String,
+    val assetSummary: String,
     val loadedAt: Instant,
     val operator: String,
     val warnings: List<String>,
@@ -65,16 +87,18 @@ private data class ExternalCpResult(
 )
 
 private data class ExternalCpReadResult(
-    val patch: String,
+    val assets: List<DataAsset>,
+    val preview: String,
     val parseMode: String,
+    val assetSummary: String,
+    val warnings: List<String> = emptyList(),
     val slowSync: Boolean,
     val syncDelayMillis: Long,
     val notice: String = "",
 )
 
 private val loadedExternalCps = linkedMapOf<String, LoadedExternalCp>()
-private var serverContentBaseline: Any? = null
-private var externalContentBaseline: Any? = null
+private var cpMutationInProgress = false
 
 private fun externalCpDir(): File = File(Vars.dataDirectory.file(), "scripts/$externalCpDirName")
 
@@ -196,6 +220,180 @@ private fun stripSupportedExtension(name: String): String {
     return out
 }
 
+private fun safePackPathSegment(name: String): String =
+    stripSupportedExtension(name).replace(Regex("[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]+"), "_").take(80).ifBlank { "cp" }
+
+private fun createPatchAsset(path: String, rawPatch: String): Pair<PatchAsset, String> {
+    val (patch, mode) = normalizeCpPatch(rawPatch)
+    return PatchAsset(patch).also { it.setPath(path) } to mode
+}
+
+private fun normalizeZipEntryPath(raw: String): String {
+    val path = raw.replace('\\', '/').trimStart('/')
+    require(path.isNotBlank()) { "ZIP中存在空路径" }
+    require(!path.contains('\u0000') && !path.contains(':')) { "ZIP路径包含非法字符：$raw" }
+    val parts = path.split('/').filter { it.isNotBlank() }
+    require(parts.none { it == "." || it == ".." }) { "ZIP路径越界：$raw" }
+    return parts.joinToString("/")
+}
+
+private fun readZipEntryBytes(zip: ZipFile, entry: ZipEntry, totalBefore: Long): ByteArray {
+    val declared = entry.size
+    if (declared > maxZipEntryBytes) {
+        throw IllegalArgumentException("ZIP单文件过大：${entry.name} = ${formatBytes(declared)}，上限 ${formatBytes(maxZipEntryBytes)}")
+    }
+    val compressed = entry.compressedSize
+    if (declared > 0 && compressed >= 0) {
+        val ratio = if (compressed == 0L) Long.MAX_VALUE else declared / compressed.coerceAtLeast(1L)
+        if (ratio > maxZipCompressionRatio.coerceAtLeast(1)) {
+            throw IllegalArgumentException("ZIP压缩比异常：${entry.name} = ${ratio}:1")
+        }
+    }
+    val out = ByteArrayOutputStream(if (declared in 1..1_048_576) declared.toInt() else 8192)
+    zip.getInputStream(entry).use { input ->
+        val buffer = ByteArray(8192)
+        var entryBytes = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            entryBytes += read
+            if (entryBytes > maxZipEntryBytes) throw IllegalArgumentException("ZIP单文件解压后过大：${entry.name}")
+            if (totalBefore + entryBytes > maxZipExpandedBytes) throw IllegalArgumentException("ZIP累计解压大小超过 ${formatBytes(maxZipExpandedBytes)}")
+            out.write(buffer, 0, read)
+        }
+    }
+    return out.toByteArray()
+}
+
+private fun validatePngDimensions(path: String, bytes: ByteArray) {
+    if (!path.endsWith(".png", true) || bytes.size < 24) return
+    val png = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+    require(bytes.copyOfRange(0, 8).contentEquals(png)) { "PNG文件头无效：$path" }
+    fun intAt(offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 24) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+            (bytes[offset + 3].toInt() and 0xff)
+    val width = intAt(16)
+    val height = intAt(20)
+    require(width in 1..2000 && height in 1..2000) { "PNG尺寸超限：$path = ${width}x${height}，v159上限2000x2000" }
+}
+
+private fun readStandaloneCp(cp: ExternalCpFile): ExternalCpReadResult {
+    val raw = cp.file.readText(Charsets.UTF_8)
+    val assetPath = "external-cp/${safePackPathSegment(cp.name)}/${cp.name}"
+    val (asset, mode) = try {
+        createPatchAsset(assetPath, raw)
+    } catch (t: Throwable) {
+        throw IllegalArgumentException("解析 ${cp.name} 失败：${t.message ?: t.javaClass.simpleName}", t)
+    }
+    val slow = cp.bytes > slowExternalCpBytes.coerceAtLeast(1L)
+    return ExternalCpReadResult(
+        assets = listOf(asset),
+        preview = asset.patch,
+        parseMode = mode,
+        assetSummary = "patches=1",
+        slowSync = slow,
+        syncDelayMillis = if (slow) largeWorldSyncDelayMillis.coerceAtLeast(worldSyncDelayMillis) else worldSyncDelayMillis,
+        notice = slowSyncNotice(cp),
+    )
+}
+
+private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
+    val warnings = mutableListOf<String>()
+    val assets = mutableListOf<DataAsset>()
+    val counts = linkedMapOf<String, Int>()
+    val seenPaths = hashSetOf<String>()
+    val packPrefix = "external-cp/${safePackPathSegment(cp.name)}"
+    var expandedBytes = 0L
+    var entryCount = 0
+    var firstPatchPreview = ""
+
+    ZipFile(cp.file, Charsets.UTF_8).use { zip ->
+        val rawEntries = mutableListOf<Pair<ZipEntry, String>>()
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            val entry = entries.nextElement()
+            if (entry.isDirectory) continue
+            entryCount++
+            if (entryCount > maxZipEntries.coerceAtLeast(1)) throw IllegalArgumentException("ZIP文件数超过上限 $maxZipEntries")
+            val normalized = normalizeZipEntryPath(entry.name)
+            if (normalized.startsWith("__MACOSX/") || normalized.endsWith("/.DS_Store") || normalized == ".DS_Store") continue
+            rawEntries += entry to normalized
+        }
+
+        val rootPrefix = rawEntries.map { it.second.substringBefore('/') }.distinct().singleOrNull()
+            ?.takeIf { prefix -> rawEntries.all { pair -> pair.second.substringAfter('/', "").substringBefore('/').lowercase() in zipAssetFolders } }
+
+        rawEntries.forEach { (entry, normalizedRaw) ->
+            val normalized = if (rootPrefix != null) normalizedRaw.substringAfter('/') else normalizedRaw
+            val folder = normalized.substringBefore('/').lowercase(Locale.ROOT)
+            val relative = normalized.substringAfter('/', "")
+            if (folder !in zipAssetFolders || relative.isBlank()) {
+                warnings += "忽略未知ZIP条目：$normalized"
+                return@forEach
+            }
+            val ext = relative.substringAfterLast('.', "").lowercase(Locale.ROOT)
+            val allowed = when (folder) {
+                "patches", "content" -> ext in textAssetExtensions
+                "bundles" -> ext == "properties"
+                "sprites" -> ext == "png"
+                "sounds", "music" -> ext == "mp3" || ext == "ogg"
+                else -> false
+            }
+            if (!allowed) {
+                warnings += "忽略不受支持的资产：$normalized"
+                return@forEach
+            }
+            val duplicateKey = "$folder/${relative.lowercase(Locale.ROOT)}"
+            require(seenPaths.add(duplicateKey)) { "ZIP内存在重复资产路径：$normalized" }
+
+            val bytes = readZipEntryBytes(zip, entry, expandedBytes)
+            expandedBytes += bytes.size
+            val asset: DataAsset = when (folder) {
+                "patches" -> {
+                    val raw = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+                    val (patchAsset, mode) = createPatchAsset("$packPrefix/patches/$relative", raw)
+                    if (firstPatchPreview.isBlank()) firstPatchPreview = patchAsset.patch
+                    if (mode != "Jval原生JSON/HJSON") warnings += "$relative 使用了旧CP兼容预处理"
+                    patchAsset
+                }
+                "content" -> {
+                    val contentFolder = relative.substringBefore('/')
+                    val contentPath = relative.substringAfter('/', "")
+                    require(contentPath.isNotBlank()) { "content资产缺少类型子目录：$normalized" }
+                    val contentType = ContentAsset.loadableContent.firstOrNull { it.folderName.equals(contentFolder, true) }
+                        ?: throw IllegalArgumentException("不支持的content类型：$contentFolder（$normalized）")
+                    val raw = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+                    runCatching { Jval.read(raw) }.getOrElse { throw IllegalArgumentException("content预解析失败：$normalized：${briefError(it)}", it) }
+                    ContentAsset(contentPath, contentType, raw)
+                }
+                "bundles" -> BundleAsset().also { it.setPath(relative); it.updateData(bytes) }
+                "sprites" -> ImageAsset().also { validatePngDimensions(relative, bytes); it.setPath(relative); it.updateData(bytes) }
+                "sounds" -> SoundAsset().also { it.setPath(relative); it.updateData(bytes) }
+                "music" -> MusicAsset().also { it.setPath(relative); it.updateData(bytes) }
+                else -> error("unreachable")
+            }
+            assets += asset
+            counts[folder] = (counts[folder] ?: 0) + 1
+            if (assets.size > maxExternalCpAssets.coerceAtLeast(1)) throw IllegalArgumentException("CP资产数超过上限 $maxExternalCpAssets")
+        }
+    }
+    require(assets.isNotEmpty()) { "ZIP内没有找到v159数据资产；需要 patches/content/bundles/sprites/sounds/music 目录" }
+    val slow = cp.bytes > slowExternalCpBytes.coerceAtLeast(1L) || expandedBytes > slowExternalCpBytes.coerceAtLeast(1L)
+    val summary = zipAssetFolders.mapNotNull { folder -> counts[folder]?.let { "$folder=$it" } }.joinToString(", ")
+    return ExternalCpReadResult(
+        assets = assets,
+        preview = firstPatchPreview.ifBlank { "v159 ZIP Data Assets: $summary" },
+        parseMode = "Mindustry v159 ZIP Data Assets",
+        assetSummary = "$summary / expanded=${formatBytes(expandedBytes)}",
+        warnings = warnings,
+        slowSync = slow,
+        syncDelayMillis = if (slow) largeWorldSyncDelayMillis.coerceAtLeast(worldSyncDelayMillis) else worldSyncDelayMillis,
+        notice = if (slow) "[yellow]ZIP资产较大（压缩 ${formatBytes(cp.bytes)}，解压 ${formatBytes(expandedBytes)}），将使用更长同步间隔。" else "",
+    )
+}
+
 private fun readExternalCpPatch(cp: ExternalCpFile): ExternalCpReadResult {
     if (!isSafeExternalCpFile(cp.file)) {
         throw IllegalArgumentException("文件路径不安全或不是受支持的CP文件：${cp.name}；支持 ${supportedExternalCpExtensions.joinToString("/")}")
@@ -204,39 +402,7 @@ private fun readExternalCpPatch(cp: ExternalCpFile): ExternalCpReadResult {
     if (hardLimit > 0 && cp.bytes > hardLimit) {
         throw IllegalArgumentException("文件过大：${formatBytes(cp.bytes)}，超过硬上限 ${formatBytes(hardLimit)}；如确需加载请调高 hardExternalCpBytes")
     }
-    val raw = cp.file.readText(Charsets.UTF_8)
-    val (patch, mode) = try {
-        normalizeCpPatch(raw)
-    } catch (t: Throwable) {
-        throw IllegalArgumentException("解析 ${cp.name} 失败：${t.message ?: t.javaClass.simpleName}", t)
-    }
-    val slow = cp.bytes > slowExternalCpBytes.coerceAtLeast(1L)
-    return ExternalCpReadResult(
-        patch = patch,
-        parseMode = mode,
-        slowSync = slow,
-        syncDelayMillis = if (slow) largeWorldSyncDelayMillis.coerceAtLeast(worldSyncDelayMillis) else worldSyncDelayMillis,
-        notice = slowSyncNotice(cp),
-    )
-}
-private fun currentAppliedPatchStrings(): List<String> = with(contentsTweaker) { currentPatchStrings() }
-
-private fun ensureServerContentBaseline(): Any {
-    serverContentBaseline?.let { return it }
-    return with(contentsTweaker) { captureContentStateSnapshotAny("外部CP脚本启用基线") }
-        .also { snapshot ->
-            serverContentBaseline = snapshot
-            logger.info("外部CP已记录服务器内容基线")
-        }
-}
-
-private fun ensureExternalContentBaseline(reason: String): Any {
-    externalContentBaseline?.let { return it }
-    return with(contentsTweaker) { captureContentStateSnapshotAny("外部CP加载前基线:$reason") }
-        .also { snapshot ->
-            externalContentBaseline = snapshot
-            logger.info("外部CP已记录加载前内容基线($reason)")
-        }
+    return if (cp.file.extension.equals("zip", true)) readZipCp(cp) else readStandaloneCp(cp)
 }
 
 private fun turretHasNoValidAmmoType(turret: Turret): Boolean = when (turret) {
@@ -562,45 +728,120 @@ private fun repairExistingBuildingModulesAfterCp(
     return stats
 }
 
-private fun applyPatchStringsAndSanitize(patches: List<String>, reason: String) {
+private fun dataAssetPathKey(asset: DataAsset): String =
+    "${asset.getType().name.lowercase(Locale.ROOT)}:${asset.path.lowercase(Locale.ROOT)}"
+
+private fun dataAssetNameKey(asset: DataAsset): String? =
+    if (asset is PatchAsset) null else "${asset.getType().name.lowercase(Locale.ROOT)}:${asset.name.lowercase(Locale.ROOT)}"
+
+private fun externalAssetRecords(): List<LoadedExternalCp> = loadedExternalCps.values.toList()
+
+private fun baseAssetsExcluding(records: Collection<LoadedExternalCp>): List<DataAsset> {
+    val externalAssets = records.flatMap { it.assets }
+    val ownedPaths = externalAssets.mapTo(hashSetOf(), ::dataAssetPathKey)
+    val remainingPatchCounts = externalAssets.filterIsInstance<PatchAsset>()
+        .groupingBy { it.patch }.eachCount().toMutableMap()
+    val current = Vars.state.data.allAssets.toList().toMutableList()
+
+    // Normally the original asset objects and paths are still present. Remove those first.
+    var index = current.lastIndex
+    while (index >= 0) {
+        val asset = current[index]
+        if (dataAssetPathKey(asset) in ownedPaths) {
+            current.removeAt(index)
+            if (asset is PatchAsset) {
+                val left = (remainingPatchCounts[asset.patch] ?: 0) - 1
+                if (left <= 0) remainingPatchCounts.remove(asset.patch) else remainingPatchCounts[asset.patch] = left
+            }
+        }
+        index--
+    }
+
+    // contentsTweaker.reloadPatches may recreate PatchAsset objects with random paths. In that case,
+    // remove only the last N matching patch strings, preserving an older identical map/server patch.
+    remainingPatchCounts.forEach { (patch, count) ->
+        repeat(count) {
+            val patchIndex = current.indexOfLast { it is PatchAsset && it.patch == patch }
+            if (patchIndex >= 0) current.removeAt(patchIndex)
+        }
+    }
+    return current
+}
+
+private fun mergedDataAssets(base: List<DataAsset>, records: Collection<LoadedExternalCp>): List<DataAsset> {
+    val out = mutableListOf<DataAsset>()
+    val pathOwners = linkedMapOf<String, String>()
+    val nameOwners = linkedMapOf<String, String>()
+
+    fun add(asset: DataAsset, owner: String, external: Boolean) {
+        val pathKey = dataAssetPathKey(asset)
+        val pathConflict = pathOwners[pathKey]
+        if (external && pathConflict != null) throw IllegalArgumentException("数据资产路径冲突：${asset.getFullPath()}（$pathConflict 与 $owner）")
+        val nameKey = dataAssetNameKey(asset)
+        val nameConflict = nameKey?.let(nameOwners::get)
+        if (external && nameConflict != null) throw IllegalArgumentException("数据资产名称冲突：${asset.name}（$nameConflict 与 $owner）")
+        pathOwners[pathKey] = owner
+        if (nameKey != null) nameOwners[nameKey] = owner
+        out += asset
+    }
+
+    base.forEach { add(it, "当前地图/服务端", false) }
+    records.forEach { record -> record.assets.forEach { add(it, record.fileName, true) } }
+    return out
+}
+
+private fun applyDataAssetsAndSanitize(assets: List<DataAsset>, externalAssets: List<DataAsset>, reason: String): List<String> {
     val buildStatsBeforePatch = captureExistingBuildStats()
     val unitStatsBeforePatch = captureExistingUnitStats()
-    with(contentsTweaker) { applyPatchStrings(patches) }
+    val seq = Seq<DataAsset>()
+    assets.forEach { seq.add(it) }
+    seq.sort()
+    Vars.state.data.load(seq)
+
+    val failures = mutableListOf<String>()
+    val warnings = mutableListOf<String>()
+    externalAssets.forEach { asset ->
+        when (asset) {
+            is PatchAsset -> {
+                if (asset.error) failures += "patch失败：${asset.path}"
+                asset.warnings.forEach { warnings += "${asset.path}: $it" }
+            }
+            is ContentAsset -> {
+                if (asset.errored) failures += "content失败：${asset.getFullPath()}"
+                asset.warnings.forEach { warnings += "${asset.getFullPath()}: $it" }
+            }
+        }
+        if (!asset.isAlwaysEmbedded && !asset.isCached) failures += "资产缓存缺失：${asset.getFullPath()}"
+    }
+    if (failures.isNotEmpty()) throw IllegalStateException(failures.take(8).joinToString("；"))
+    repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
+    sanitizeInvalidTurretAmmo(reason)
+    return warnings.distinct()
+}
+
+private fun restoreDataAssetsAfterFailure(previousAssets: List<DataAsset>, reason: String) {
+    val buildStatsBeforePatch = captureExistingBuildStats()
+    val unitStatsBeforePatch = captureExistingUnitStats()
+    val seq = Seq<DataAsset>()
+    previousAssets.forEach { seq.add(it) }
+    seq.sort()
+    Vars.state.data.load(seq)
     repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
     sanitizeInvalidTurretAmmo(reason)
 }
 
-private fun applyPatchStringsFromBaselineAndSanitize(
-    patches: List<String>,
-    reason: String,
-    baseline: Any?,
-) {
-    val buildStatsBeforePatch = captureExistingBuildStats()
-    val unitStatsBeforePatch = captureExistingUnitStats()
-    if (baseline != null) {
-        with(contentsTweaker) { restoreContentStateSnapshotAny(baseline, "外部CP重放前恢复:$reason") }
+private fun mutateExternalCp(action: () -> ExternalCpResult): ExternalCpResult {
+    if (cpMutationInProgress) return ExternalCpResult(false, "[yellow]已有CP加载/卸载操作正在执行，请稍后重试。")
+    cpMutationInProgress = true
+    return try {
+        action()
+    } finally {
+        cpMutationInProgress = false
     }
-    with(contentsTweaker) { applyPatchStrings(patches) }
-    repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
-    sanitizeInvalidTurretAmmo(reason)
 }
 
-private fun applyPatchStringsFromExternalBaselineAndSanitize(patches: List<String>, reason: String) {
-    val baseline = externalContentBaseline ?: ensureExternalContentBaseline(reason)
-    applyPatchStringsFromBaselineAndSanitize(patches, reason, baseline)
-}
-
-private fun sendWorldDataCompat(player: mindustry.gen.Player) {
-    val con = player.con ?: return
-    Call.worldDataBegin(con)
-    val sendWorldAndAssets = Vars.netServer.javaClass.methods.firstOrNull { method ->
-        method.name == "sendWorldAndAssets" && method.parameterTypes.size == 1
-    }
-    if (sendWorldAndAssets != null) {
-        sendWorldAndAssets.invoke(Vars.netServer, player)
-    } else {
-        Vars.netServer.sendWorldData(player)
-    }
+private suspend fun sendWorldDataCompat(player: mindustry.gen.Player) {
+    with(worldResync) { resyncWorldAndAssets(player, "外部CP热重载") }
 }
 
 private fun syncWorldAfterExternalCpChange(reason: String, delayMillis: Long = worldSyncDelayMillis) {
@@ -620,124 +861,98 @@ private fun syncWorldAfterExternalCpChange(reason: String, delayMillis: Long = w
     }
 }
 
-private fun removeRuntimeExternalPatch(patch: String) {
-    with(contentsTweaker) {
-        val keep = contentPatches.toList().filterNot { it == patch }
-        contentPatches.clear()
-        keep.forEach { contentPatches.add(it) }
-    }
-}
-
-private fun restoreTweakerRuntime(previous: List<String>) {
-    with(contentsTweaker) {
-        contentPatches.clear()
-        previous.forEach { contentPatches.add(it) }
-    }
-}
-
 private fun applyExternalCp(cp: ExternalCpFile, operator: String): ExternalCpResult {
-    val key = fileKey(cp.name)
-    val readResult = try {
-        readExternalCpPatch(cp)
-    } catch (t: Throwable) {
-        logger.warning("外部CP读取失败 ${cp.name}: ${t.stackTraceToString()}")
-        return ExternalCpResult(false, "[red]读取外部CP失败：[white]${safeMessage(t.message ?: t.javaClass.simpleName)}")
-    }
-    val readPatch = readResult.patch
-
-    val previousActive = currentAppliedPatchStrings()
-    val previousRuntime = with(contentsTweaker) { contentPatches.toList() }
-    val previousLoaded = LinkedHashMap(loadedExternalCps)
-    val oldPatch = loadedExternalCps[key]?.patch
-    val nextActive = previousActive.filterNot { oldPatch != null && it == oldPatch } + readPatch
-
-    return runCatching {
-        ensureExternalContentBaseline("加载:${cp.name}")
-        if (oldPatch != null) removeRuntimeExternalPatch(oldPatch)
-        with(contentsTweaker) { contentPatches.add(readPatch) }
-        applyPatchStringsFromExternalBaselineAndSanitize(nextActive, "外部CP加载:${cp.name}")
-        val patchSet = with(contentsTweaker) { patchInfoFor(readPatch) }
-        if (patchSet == null || patchSet.error) {
-            val warnings = patchSet?.warnings?.joinToString("; ").orEmpty().ifBlank { "补丁未进入当前patcher或解析失败" }
-            throw IllegalStateException("外部CP解析失败：${cp.name}：$warnings")
+    return mutateExternalCp {
+        val key = fileKey(cp.name)
+        val readResult = try {
+            readExternalCpPatch(cp)
+        } catch (t: Throwable) {
+            logger.warning("外部CP读取失败 ${cp.name}: ${t.stackTraceToString()}")
+            return@mutateExternalCp ExternalCpResult(false, "[red]读取外部CP失败：[white]${safeMessage(t.message ?: t.javaClass.simpleName)}")
         }
-        val warnings = patchSet.warnings
-        loadedExternalCps[key] = LoadedExternalCp(cp.name, cp.displayName, readPatch, Instant.now(), operator, warnings)
-        syncWorldAfterExternalCpChange("加载:${cp.name}", readResult.syncDelayMillis)
-        logger.info("外部CP已${if (oldPatch == null) "加载" else "热重载"}: ${cp.name} by $operator parse=${readResult.parseMode} slow=${readResult.slowSync} warnings=${warnings.size}")
-        val warnText = if (warnings.isEmpty()) "" else "\n[yellow]该CP加载后有 ${warnings.size} 条警告，可在管理菜单查看。"
-        val slowText = readResult.notice.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: ""
-        ExternalCpResult(true, "[green]外部CP已${if (oldPatch == null) "加载" else "热重载"}：[gold]${cp.displayName}[]$warnText$slowText\n[gray]解析模式：${readResult.parseMode}；已分批同步世界数据；若客户端显示异常，可手动 /sync 或重进。")
-    }.getOrElse { error ->
+        val previousAssets = Vars.state.data.allAssets.toList()
+        val previousLoaded = LinkedHashMap(loadedExternalCps)
+        val wasReload = loadedExternalCps.containsKey(key)
+        val baseAssets = baseAssetsExcluding(previousLoaded.values)
+        val provisional = LoadedExternalCp(
+            fileName = cp.name,
+            displayName = cp.displayName,
+            assets = readResult.assets,
+            preview = readResult.preview,
+            parseMode = readResult.parseMode,
+            assetSummary = readResult.assetSummary,
+            loadedAt = Instant.now(),
+            operator = operator,
+            warnings = readResult.warnings,
+        )
+        loadedExternalCps[key] = provisional
+
         runCatching {
-            restoreTweakerRuntime(previousRuntime)
+            val merged = mergedDataAssets(baseAssets, externalAssetRecords())
+            val runtimeWarnings = applyDataAssetsAndSanitize(merged, externalAssetRecords().flatMap { it.assets }, "外部CP加载:${cp.name}")
+            val warnings = (readResult.warnings + runtimeWarnings).distinct()
+            loadedExternalCps[key] = provisional.copy(warnings = warnings)
+            syncWorldAfterExternalCpChange("加载:${cp.name}", readResult.syncDelayMillis)
+            logger.info("外部CP已${if (wasReload) "热重载" else "加载"}: ${cp.name} by $operator parse=${readResult.parseMode} assets=${readResult.assetSummary} slow=${readResult.slowSync} warnings=${warnings.size}")
+            val warnText = if (warnings.isEmpty()) "" else "\n[yellow]该CP加载后有 ${warnings.size} 条警告，可在管理菜单查看。"
+            val slowText = readResult.notice.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: ""
+            ExternalCpResult(true, "[green]外部CP已${if (wasReload) "热重载" else "加载"}：[gold]${cp.displayName}[]$warnText$slowText\n[gray]格式：${readResult.parseMode}；资产：${readResult.assetSummary}；已串行同步世界数据。")
+        }.getOrElse { error ->
             loadedExternalCps.clear()
             loadedExternalCps.putAll(previousLoaded)
-            val baseline = externalContentBaseline ?: serverContentBaseline
-            applyPatchStringsFromBaselineAndSanitize(previousActive, "外部CP失败回滚:${cp.name}", baseline)
-            syncWorldAfterExternalCpChange("加载失败回滚:${cp.name}", readResult.syncDelayMillis)
-        }.onFailure { rollback ->
-            logger.warning("外部CP回滚失败 ${cp.name}: ${rollback.stackTraceToString()}")
+            runCatching {
+                restoreDataAssetsAfterFailure(previousAssets, "外部CP失败回滚:${cp.name}")
+                syncWorldAfterExternalCpChange("加载失败回滚:${cp.name}", readResult.syncDelayMillis)
+            }.onFailure { rollback -> logger.warning("外部CP回滚失败 ${cp.name}: ${rollback.stackTraceToString()}") }
+            logger.warning("外部CP加载失败 ${cp.name}: ${error.stackTraceToString()}")
+            ExternalCpResult(false, "[red]外部CP加载失败：[white]${safeMessage(error.message ?: error.javaClass.simpleName)}\n[gray]阶段：合并/应用/校验v159数据资产；格式：${readResult.parseMode}；已尝试恢复完整加载前资产。")
         }
-        logger.warning("外部CP加载失败 ${cp.name}: ${error.stackTraceToString()}")
-        ExternalCpResult(false, "[red]外部CP加载失败：[white]${safeMessage(error.message ?: error.javaClass.simpleName)}\n[gray]阶段：应用/校验CP；解析模式：${readResult.parseMode}；已尝试回滚到加载前状态。")
     }
 }
 
 private fun unloadExternalCp(key: String, operator: String): ExternalCpResult {
-    val record = loadedExternalCps[key]
-        ?: return ExternalCpResult(false, "[yellow]该外部CP当前未加载。")
-    val previousActive = currentAppliedPatchStrings()
-    val previousRuntime = with(contentsTweaker) { contentPatches.toList() }
-    val previousLoaded = LinkedHashMap(loadedExternalCps)
-    return runCatching {
-        removeRuntimeExternalPatch(record.patch)
+    return mutateExternalCp {
+        val record = loadedExternalCps[key]
+            ?: return@mutateExternalCp ExternalCpResult(false, "[yellow]该外部CP当前未加载。")
+        val previousAssets = Vars.state.data.allAssets.toList()
+        val previousLoaded = LinkedHashMap(loadedExternalCps)
+        val baseAssets = baseAssetsExcluding(previousLoaded.values)
         loadedExternalCps.remove(key)
-        applyPatchStringsFromExternalBaselineAndSanitize(previousActive.filterNot { it == record.patch }, "外部CP卸载:${record.fileName}")
-        if (loadedExternalCps.isEmpty()) externalContentBaseline = null
-        syncWorldAfterExternalCpChange("卸载:${record.fileName}")
-        logger.info("外部CP已卸载: ${record.fileName} by $operator")
-        ExternalCpResult(true, "[green]已卸载外部CP：[gold]${record.displayName}\n[gray]已分批同步世界数据。")
-    }.getOrElse { error ->
         runCatching {
-            restoreTweakerRuntime(previousRuntime)
+            val merged = mergedDataAssets(baseAssets, externalAssetRecords())
+            applyDataAssetsAndSanitize(merged, externalAssetRecords().flatMap { it.assets }, "外部CP卸载:${record.fileName}")
+            syncWorldAfterExternalCpChange("卸载:${record.fileName}")
+            logger.info("外部CP已卸载: ${record.fileName} by $operator assets=${record.assetSummary}")
+            ExternalCpResult(true, "[green]已卸载外部CP：[gold]${record.displayName}\n[gray]已恢复其补丁、内容与资产，并串行同步世界数据。")
+        }.getOrElse { error ->
             loadedExternalCps.clear()
             loadedExternalCps.putAll(previousLoaded)
-            val baseline = externalContentBaseline ?: serverContentBaseline
-            applyPatchStringsFromBaselineAndSanitize(previousActive, "外部CP卸载失败回滚:${record.fileName}", baseline)
-        }.onFailure { rollback -> logger.warning("外部CP卸载回滚失败: ${rollback.message}") }
-        ExternalCpResult(false, "[red]卸载失败：[white]${error.message ?: error.javaClass.simpleName}")
+            runCatching { restoreDataAssetsAfterFailure(previousAssets, "外部CP卸载失败回滚:${record.fileName}") }
+                .onFailure { rollback -> logger.warning("外部CP卸载回滚失败: ${rollback.stackTraceToString()}") }
+            ExternalCpResult(false, "[red]卸载失败：[white]${safeMessage(error.message ?: error.javaClass.simpleName)}")
+        }
     }
 }
 
 private fun unloadAllExternalCps(operator: String): ExternalCpResult {
-    val records = loadedExternalCps.values.toList()
-    if (records.isEmpty()) return ExternalCpResult(false, "[yellow]当前没有已加载的外部CP。")
-    val previousActive = currentAppliedPatchStrings()
-    val previousRuntime = with(contentsTweaker) { contentPatches.toList() }
-    val previousLoaded = LinkedHashMap(loadedExternalCps)
-    val patches = records.mapTo(hashSetOf()) { it.patch }
-    return runCatching {
-        with(contentsTweaker) {
-            val keep = contentPatches.toList().filterNot { it in patches }
-            contentPatches.clear()
-            keep.forEach { contentPatches.add(it) }
-        }
+    return mutateExternalCp {
+        val records = externalAssetRecords()
+        if (records.isEmpty()) return@mutateExternalCp ExternalCpResult(false, "[yellow]当前没有已加载的外部CP。")
+        val previousAssets = Vars.state.data.allAssets.toList()
+        val previousLoaded = LinkedHashMap(loadedExternalCps)
+        val baseAssets = baseAssetsExcluding(records)
         loadedExternalCps.clear()
-        applyPatchStringsFromExternalBaselineAndSanitize(previousActive.filterNot { it in patches }, "外部CP全部卸载")
-        externalContentBaseline = null
-        syncWorldAfterExternalCpChange("全部卸载")
-        logger.info("外部CP已全部卸载 by $operator count=${records.size}")
-        ExternalCpResult(true, "[green]已卸载全部外部CP：[gold]${records.size}[green] 个。")
-    }.getOrElse { error ->
         runCatching {
-            restoreTweakerRuntime(previousRuntime)
-            loadedExternalCps.clear()
+            applyDataAssetsAndSanitize(baseAssets, emptyList(), "外部CP全部卸载")
+            syncWorldAfterExternalCpChange("全部卸载")
+            logger.info("外部CP已全部卸载 by $operator count=${records.size}")
+            ExternalCpResult(true, "[green]已卸载全部外部CP：[gold]${records.size}[green] 个。")
+        }.getOrElse { error ->
             loadedExternalCps.putAll(previousLoaded)
-            val baseline = externalContentBaseline ?: serverContentBaseline
-            applyPatchStringsFromBaselineAndSanitize(previousActive, "外部CP全部卸载失败回滚", baseline)
-        }.onFailure { rollback -> logger.warning("外部CP全部卸载回滚失败: ${rollback.message}") }
-        ExternalCpResult(false, "[red]全部卸载失败：[white]${error.message ?: error.javaClass.simpleName}")
+            runCatching { restoreDataAssetsAfterFailure(previousAssets, "外部CP全部卸载失败回滚") }
+                .onFailure { rollback -> logger.warning("外部CP全部卸载回滚失败: ${rollback.stackTraceToString()}") }
+            ExternalCpResult(false, "[red]全部卸载失败：[white]${safeMessage(error.message ?: error.javaClass.simpleName)}")
+        }
     }
 }
 
@@ -747,7 +962,7 @@ private fun externalCpListText(): String {
     if (files.isEmpty()) {
         return """
             |[yellow]当前没有可用外部CP文件。
-            |[gray]请将 .json / .hjson CP 文件放入：
+            |[gray]请将 .json / .hjson / .json5 或 v159 .zip CP 放入：
             |[white]${dir.absolutePath}
         """.trimMargin()
     }
@@ -785,13 +1000,15 @@ private suspend fun openExternalCpDetailMenu(player: Player, cp: ExternalCpFile)
             slowSyncNotice(cp).takeIf { it.isNotBlank() }?.let { appendLine(it) }
             if (loaded != null) {
                 appendLine("[cyan]加载时间：[white]${loaded.loadedAt}")
+                appendLine("[cyan]格式：[white]${loaded.parseMode}")
+                appendLine("[cyan]资产：[white]${loaded.assetSummary}")
                 if (warnings.isEmpty()) appendLine("[cyan]警告：[green]无")
                 else {
                     appendLine("[cyan]警告：[yellow]${warnings.size} 条")
                     warnings.take(6).forEach { appendLine("[yellow]- [white]$it") }
                     if (warnings.size > 6) appendLine("[gray]... 还有 ${warnings.size - 6} 条")
                 }
-                appendLine("[cyan]CP预览：[gray]${cpPreview(loaded.patch, 600)}")
+                appendLine("[cyan]CP预览：[gray]${cpPreview(loaded.preview, 600)}")
             }
         }
         option(if (loaded == null) "[green]管理加载" else "[yellow]管理热重载") {
@@ -839,7 +1056,8 @@ private suspend fun openExternalCpMenu(player: Player) {
             msg = """
                 |[cyan]目录：[white]${ensureExternalCpDir().absolutePath}
                 |[gray]管理可直接加载/卸载；普通玩家可通过 /vote cp load/unload <文件名|编号> 发起投票加载或卸载。
-                |[gray]支持 .json / .hjson；超过 ${formatBytes(slowExternalCpBytes)} 将慢同步而非拒绝加载。
+                |[gray]支持 .json / .hjson / .json5，以及含 patches/content/bundles/sprites/sounds/music 的 v159 ZIP。
+                |[gray]ZIP会执行路径、文件数、解压大小、压缩比、PNG尺寸、资产冲突与运行态错误校验；超过 ${formatBytes(slowExternalCpBytes)} 将慢同步。
                 |[yellow]外部CP仅当前局运行态有效，换图/Reset 后会清空记录。
             """.trimMargin()
             if (loadedExternalCps.isNotEmpty()) {
@@ -873,7 +1091,7 @@ private suspend fun openVoteExternalCpMenu(player: Player) {
 
         override suspend fun build() {
             title = "投票加载/卸载外部CP"
-            msg = "[gray]选择 scripts/$externalCpDirName 下的 JSON/HJSON CP；未加载项投票加载，已加载项投票卸载。加载/卸载均需 70% 同意；大文件会慢同步。"
+            msg = "[gray]选择 scripts/$externalCpDirName 下的 JSON/HJSON/JSON5 或 v159 ZIP CP；未加载项投票加载，已加载项投票卸载。加载/卸载均需 70% 同意；大包会慢同步。"
             if (loadedExternalCps.isNotEmpty()) {
                 option("[red]投票卸载全部已加载\n[gray]当前 ${loadedExternalCps.size} 个") {
                     startExternalCpUnloadAllVote(player)
@@ -981,7 +1199,7 @@ fun VoteService.registerExternalCpVote() {
         startExternalCpLoadVote(player!!, cp)
     }
 }
-command("externalcp", "管理指令：外部JSON/HJSON CP热重载") {
+command("externalcp", "管理指令：外部CP/v159数据资产包热重载") {
     aliases = listOf("ecp", "外部cp", "热重载cp")
     usage = "[list|loaded|load <文件名/编号>|unload <文件名/编号|all>|dir]"
     permission = "wayzer.admin.externalCp"
@@ -1020,37 +1238,28 @@ command("externalcp", "管理指令：外部JSON/HJSON CP热重载") {
 }
 
 listen<EventType.ResetEvent> {
-    // ContentsTweaker 自身会在 Reset 时清空补丁并从原始内容基线恢复；这里仅清理外部 CP 运行态，
-    // 避免换图时重复恢复内容快照造成额外主线程开销。
+    // 新世界/存档会由 v159 DataManager 重新装载资产；外部CP仅当前局有效。
     loadedExternalCps.clear()
-    externalContentBaseline = null
+    cpMutationInProgress = false
 }
 
 onEnable {
     ensureExternalCpDir()
-    ensureServerContentBaseline()
     VoteService.registerExternalCpVote()
 }
 
 onDisable {
-    val records = loadedExternalCps.values.toList()
+    val records = externalAssetRecords()
     if (records.isNotEmpty()) {
-        val patches = records.mapTo(hashSetOf()) { it.patch }
         runCatching {
-            val remaining = currentAppliedPatchStrings().filterNot { it in patches }
-            with(contentsTweaker) {
-                val keep = contentPatches.toList().filterNot { it in patches }
-                contentPatches.clear()
-                keep.forEach { contentPatches.add(it) }
-            }
-            val baseline = externalContentBaseline ?: serverContentBaseline
-            applyPatchStringsFromBaselineAndSanitize(remaining, "外部CP脚本卸载清理", baseline)
+            val baseAssets = baseAssetsExcluding(records)
+            applyDataAssetsAndSanitize(baseAssets, emptyList(), "外部CP脚本卸载清理")
         }.onFailure {
             logger.warning("外部CP脚本卸载清理失败: ${it.message}")
         }
         loadedExternalCps.clear()
-        externalContentBaseline = null
     }
+    cpMutationInProgress = false
 }
 
 PermissionApi.registerDefault("wayzer.admin.externalCp", group = "@admin")

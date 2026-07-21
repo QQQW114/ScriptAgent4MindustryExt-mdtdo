@@ -1,4 +1,5 @@
 @file:Depends("wayzer/map/serverPressure", "服务器压力判断")
+@file:Depends("wayzer/reGrief/connectSyncGuard", "网络压力入服同步门控")
 
 package wayzer.map
 
@@ -10,6 +11,7 @@ import mindustry.gen.Player
 name = "自适应人数上限"
 
 private val pressure = contextScript<ServerPressure>()
+private val syncGuard = contextScript<wayzer.reGrief.ConnectSyncGuard>()
 
 // ScriptAgent 会先加载脚本，再解析启动参数中的原版 `playerlimit 18`。
 // 因此不能在顶层立刻读取 playerLimit；需要延迟接管，避免覆盖启动参数。
@@ -61,7 +63,10 @@ private fun ensureDynamicLimit(): Int {
     return dynamicPlayerLimit
 }
 
-private fun pendingCount(): Int = pendingPlayers.size
+private fun pendingCount(): Int = maxOf(
+    pendingPlayers.size,
+    with(syncGuard) { reservedJoinCount() },
+) + with(syncGuard) { waitingJoinCount() }
 
 private fun nativeTargetLimit(): Int {
     // 不再保留管理插队槽：服务器列表显示的原生上限就是当前动态上限。

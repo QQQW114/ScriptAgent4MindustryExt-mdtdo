@@ -258,7 +258,7 @@ command("titleshopadmin", "管理指令：管理称号商店商品") {
                 }
                 val price = arg[3].toIntOrNull()?.takeIf { it >= 0 } ?: returnReply("[red]售价必须是非负整数".with())
                 val level = with(shopCore) { normalizeShopLevelCode(arg[4]) }
-                    ?: returnReply("[red]等级要求错误，请使用 0/1/2/3/3+/4".with())
+                    ?: returnReply("[red]等级要求错误，请使用 0/1/2/3/3+/3++/4".with())
                 val recognitions = if (arg.size >= 6) arg[5].toIntOrNull()?.takeIf { it >= 0 } ?: returnReply("[red]认可数要求必须是非负整数".with()) else 0
                 val changed = MdtStorage.upsertTitleShopItem(itemId, titleContent, price, level, recognitions, enabled = true)
                 clearTitleShopCache()

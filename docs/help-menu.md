@@ -51,7 +51,8 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/msg`、`/r`：私聊与回复最近私聊对象。
 - `/rank`：排行榜入口，查看MDC、帖子、赞踩、认可排行。
 - `/tips`：玩家随机 Tips。
-- `/music`、`/点歌`、`/bgm`：服务器点歌菜单；`/music vote <网易云歌曲/DJ ID或分享链接>` 或直接输入ID/链接会发起60秒点歌投票，点歌投票期间会阻止其他普通投票发起；玩家像标准投票一样直接在聊天发送单个 `1` / `.` / `0` 表示同意/中立/拒绝（也兼容 `/music yes|neutral|no`）。只有同意者进入排队同步队列，同步完成后才播放。`/music stop` 停止自己的当前音乐；管理员可 `/music limit size|duration|cache <值>` 调整单曲大小/时长/缓存数量，`/music stopall` 停止全服音乐。
+- `/playerinfo`、`/pinfo`：打开玩家信息/交互面板。直接强制未登录游客观战由信任2级提高到3级；非管理员成功操作后默认120秒冷却，且只能解除自己通过面板施加的记录。
+- `/music`、`/点歌`、`/bgm`：服务器点歌菜单；`/music vote <网易云歌曲/DJ ID或分享链接>` 或直接输入ID/链接会发起60秒点歌投票，点歌投票期间会阻止其他普通投票发起；玩家像标准投票一样直接在聊天发送单个 `1` / `.` / `0` 表示同意/中立/拒绝（也兼容 `/music yes|neutral|no`）。只有同意者进入排队同步队列，同步完成后才播放。点歌冷却的同意率只按已经明确表态的玩家计算，未表态玩家单独显示但不进入分母。`/music stop` 停止自己的当前音乐；3++可使用 `/music stopall|cancel` 停止全服音乐/取消投票，仅4级/admin可 `/music limit size|duration|cache <值>` 修改限制。
 - `/tipadmin`：管理 Tips 内容。
 - `/vote nextmap <地图ID>`：需51%同意；投票通过后在下一次自动轮换地图时换到指定地图；期间手动换图不会清空该计划。
 - `/vote perf`、`/vote xperf`：投票开启/关闭保守/实验性性能优化。
@@ -67,7 +68,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/ipguard`、`/ipregion`：IP防熊管理与玩家地区查询。
 - `/security`：安全风控管理，查看/设置风控模式、IP封禁、聊天/菜单/连接限速状态。
 - `/servertestmode`、`/testmode`、`/测试模式`：`[危险]服务器测试模式` 管理菜单；特殊测试服临时切换全员登录主体、临时 MDC/资历覆盖和结算 ×10，启用/关闭都需要明确确认。
-- `/forceobclean`：在线人数过高时清理已登录且被强制观战的玩家，占用较多位置时可由管理启停或手动执行。
+- `/forceobclean`：在线人数过高时清理已登录且被强制观战的普通玩家；3++协管可查看状态/执行单次清理，4级/admin可修改长期开关。
 - `/logicdraw`：管理画布/逻辑显示器/逻辑绘图方块，可用于处理不适当显示内容风险；`roundoff/roundon/roundclear` 为仅本局覆盖。
 - `/blockban ban <方块ID>`、`/blockban unban <方块ID>`、`/blockunban <方块ID>`：管理员本局单独禁用/解禁某个建筑方块。
 - `/vote save`：投票创建当前游戏存档；投票存档槽为 `106-110`，可在 `/slots` 查看。
@@ -80,16 +81,18 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/setBlock <方块ID> [队伍ID/队伍名]`：管理员设置脚下方块并可指定队伍；队伍留空默认当前队伍，例如 `/setBlock power-node`、`/setBlock duo crux`。
 - `/setFloor <地板ID>`：管理员设置脚下地板，例如 `/setFloor sand`。
 - `/fill <block|floor> <x1> <y1> <x2> <y2> <目标方块/地形> [-cover|-keep]`：管理员批量填充建筑层或地板层；坐标可用 `~` 表示自己当前单位所在格；`/fill block ... air` 可清理建筑层；多格建筑会按 Mindustry 锚点映射分格铺设，`-keep` 会保留已有建筑。
-- `/suffixmark hide|clear|set <标记>`：管理员隐藏/恢复/自定义自己的名字后缀标记；也可 `/suffixmark <玩家/3位ID> hide|clear|set <标记>` 修改目标。
+- `/suffixmark hide|clear|set <标记>`：仅4级/admin可隐藏/恢复/自定义名字后缀；3++会显示相同管理图标，但不能使用该指令。
 - `/kill <玩家UUID/三位UID/#游戏ID/名字|选择器>`：管理员击杀指定玩家当前单位或选择器匹配单位；主推 Minecraft 风格选择器：`@e` 全部单位、`@e[unit=mono]` 所有 mono、`@e[team=2]` 2队所有单位、`@e[team=2,unit=mono]` 2队所有 mono、`@a` 所有玩家附身单位、`@s` 自己；兼容旧写法 `@t[2]`、`@u[mono]`、`@t[2,mono]`。
 - `/tp`：管理员传送指令。无参数传送自己到鼠标；`/tp <x> <y>`、`/tp <x,y>` 或 `/tp ~ ~` 传送自己当前单位到地图格坐标；`~` 表示自己当前单位所在轴；`/tp <玩家UUID/短ID/名字>` 传送自己到该玩家；`/tp <玩家1|选择器> <玩家2|选择器>` 传送玩家/选择器单位到目标玩家/选择器位置；`/tp <玩家|选择器> <x> <y>` 可批量传送到地图格坐标；选择器同 `/kill`，目标选择器取第一个有效单位作为坐标。
 - `/effect [选择器|玩家UUID] <效果ID> [叠加数] [秒数]`：管理员为选择器或指定玩家当前单位添加可叠加状态效果；无选择器时默认自己，默认持续120秒，例如 `/effect @e[team=2,unit=mono] fast 3`；`/effect [目标] clear [效果ID]` 可清除指定效果，不写效果ID则清除全部状态效果。
 - `/mapcmd <地图脚本指令>`：打开当前地图脚本提供的特定指令，例如地图脚本 `/shop` 与服务器商店冲突时可用 `/mapcmd shop`。
 - `/team [队伍ID] [玩家ID]`：3+级/4级可调整自己的队伍，指定他人仍需管理员权限；自换队也会全服广播，列队伍/切队伍不再受地图 `@banTeam` 标签限制。
-- `/banX <3位ID> <分钟> <原因>`、`/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`：管理员封禁/解封玩家账号主体；`/unbanX` 优先按玩家3位ID/UUID/账号UID查找未过期封禁，旧封禁记录ID仍作为兼容用法。
-- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：管理员按在线玩家封禁其当前 IP。
-- `/banips`、`/unbanip <ip>`：查看当前 IP 封禁列表（含 UUID/玩家名）并解除 IP 封禁。
-- `/recentplayers`：4级/admin 查看最近80名玩家，离线玩家也可打开面板并封禁账号或最近 IP。
+- `/host [地图ID]`、`/gameover [队伍]`：3++/4级/admin强制换图或结束对局；3++需在15秒内重复输入确认，成功后共享5分钟冷却。
+- `/banX <3位ID> <分钟> <原因>`、`/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`：3++/4级封禁/解封玩家账号主体；3++只能处理低于3++的玩家、最长7天，且只能解除自己的封禁。
+- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：3++/4级按在线玩家封禁其当前 IP；3++目标/时长边界与 `/banX` 相同。
+- `/banips`、`/unbanip <ip>`：查看当前 IP 封禁列表（含 UUID/玩家名）并解除 IP 封禁；3++只能解除自己施加的记录。
+- `/banlist`、`/bans`、`/封禁列表`：统一分页查看未到期的玩家/账号封禁与 IP 封禁，显示原因、剩余时长、关联ID/UUID与操作人；点开条目可立即解封。
+- `/recentplayers`：3++/4级/admin 查看最近80名玩家，离线玩家也可打开面板并在自身层级边界内封禁账号或最近 IP。
 - `/buildban <玩家id/3位id/#游戏id> [理由]`、`/buildunban <玩家id/3位id/#游戏id>`：禁止/解除在线玩家建造与拆除；玩家信息面板执行时可输入分钟数作为临时禁建，留空为永久。
 - `/setseniority`、`/lockseniority`、`/setplaytime`、`/addplaytime`：管理玩家资历等级（手动设置会锁定）、资历锁与累计在线时长。
 - `/cp`、`/externalcp`、`/worldprocessor <status|on|off|edit on|edit off|cp>`、`/wpq <status|on|off|edit on|edit off>`：查看/卸载当前 CP、管理外部 JSON/HJSON CP、开启/关闭世界处理器；`/wpq` 为静默版本，不全局播报；`edit on` 会按原版全局规则允许所有玩家编辑世界处理器。

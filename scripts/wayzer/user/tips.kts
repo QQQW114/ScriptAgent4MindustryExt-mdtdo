@@ -52,6 +52,7 @@ private val defaultTips = listOf(
     SeedTip("tips", "我们建议每一位玩家都去看服务器的wiki!(/wiki)"),
     SeedTip("tips", "你知道吗？你可以查看其它玩家的帖子！"),
     SeedTip("tips", "当你达到3+级时，你可以直接强制观战/禁言搞破坏/不友好的玩家！"),
+    SeedTip("tips", "3++是由4级人工任命的插件协管，拥有管理图标和有限白名单权限，但不是完整admin。"),
     SeedTip("tips", "当你达到2级时，你可以直接强制观战0级可能搞破坏的玩家"),
     SeedTip("tips", "/skill解锁的技能会随等级提高，我们相信玩游戏从来是玩家更重要！"),
     SeedTip("idea", "注意你的言辞，你可能在了错误的地方"),

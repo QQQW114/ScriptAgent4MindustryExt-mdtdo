@@ -1,8 +1,8 @@
-@file:Depends("coreLibrary/DBApi", "数据库储存")
+@file:Depends("coreLibrary/db", "数据库储存")
 
 package wayzer
 
-import coreLibrary.DBApi.DB.registerTable
+import coreLib.db.DBApi
 import wayzer.lib.MdtStorage
 
-registerTable(*MdtStorage.tables())
+DBApi.registerTable(*MdtStorage.tables())

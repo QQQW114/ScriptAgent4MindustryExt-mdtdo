@@ -1,10 +1,11 @@
 @file:Depends("wayzer/user/ban")
-@file:Depends("coreLibrary/DBApi", "数据库储存")
+@file:Depends("coreLibrary/db", "数据库储存")
 
 package wayzer.user
 
 import arc.util.serialization.Base64Coder
-import coreLibrary.DBApi.DB.registerTable
+import coreLib.db.DBApi
+import coreLibrary.lib.get
 import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -25,7 +26,7 @@ object Table : IntIdTable("PlayerBanV2") {
     val createTime = timestamp("createTime").defaultExpression(CurrentTimestamp)
     val endTime = timestamp("endTime").defaultExpression(CurrentTimestamp)
 }
-registerTable(Table)
+DBApi.registerTable(Table)
 
 object ServiceImpl : UnicastRemoteObject(), Ban.PlayerBanStore {
     private val slowDbWarnMs = 200L
@@ -44,7 +45,7 @@ object ServiceImpl : UnicastRemoteObject(), Ban.PlayerBanStore {
         val start = System.nanoTime()
         var error: Throwable? = null
         try {
-            return exposedTransaction { block() }
+            return exposedTransaction(DBApi.db.get()) { block() }
         } catch (t: Throwable) {
             error = t
             throw t
@@ -114,6 +115,12 @@ object ServiceImpl : UnicastRemoteObject(), Ban.PlayerBanStore {
             .asSequence()
             .map { it.toBan() }
             .firstOrNull { ban -> ban.ids.any { it.isNotBlank() && (it == fixed || shortStrForLookup(it) == fixed) } }
+    }
+
+    override fun listActive(): List<Ban.PlayerBan> = transaction {
+        Table.selectAll().where { Table.endTime.greater(CurrentTimestamp) }
+            .orderBy(Table.endTime to SortOrder.ASC)
+            .map { it.toBan() }
     }
 
     override fun delete(record: Int): Ban.PlayerBan? = transaction {

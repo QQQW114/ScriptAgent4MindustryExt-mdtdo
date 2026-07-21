@@ -2,13 +2,17 @@
 
 ## 当前结论
 
-本项目已接入 ScriptAgent 自带的标准数据库体系：
+本项目已迁移到 ScriptAgent 3.4 的标准 `Services` 数据库体系：
 
-- 数据库入口：`coreLibrary/DBApi.kts`
+- 数据库 API 模块：`coreLibrary/db/lib/DBApi.kt`，包名 `coreLib.db.DBApi`
 - 默认连接器：`coreLibrary/DBConnector.kts`
 - 默认落盘位置：`mdtserver/config/scripts/data/h2DB.db`
 - 默认数据库：H2 文件数据库
 - 可切换 PostgreSQL：通过 `DBConnector.kts` 配置 `driverMaven/driver/url/user/password`
+
+SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRegistry` 对象中。新版本按模块/脚本使用隔离类加载器，同名 kts 对象可能在不同依赖脚本中各生成一份：连接器向其中一份 `provide`，业务脚本却从另一份读取，最终持续报 `No Provider for coreLibrary.DBApi.DB`。当前实现将 DB API 放入独立模块库，并使用 SA 3.4 的全局 `Services.get<Database>()` / `Services.provide(db)`。
+
+`coreLibrary/db` 公共 API 模块只允许包含 Exposed，不得导入 H2 驱动。H2 JDBC 驱动仅由 `coreLibrary/DBConnector.kts` 动态加载，并通过 `Database.connect { DriverManager.getConnection(...) }` 创建连接；WayZer 业务模块只依赖 `coreLibrary/db`，不依赖具体连接器。原因是 `coreLibrary/extApi/KVStore` 另有独立的 `h2-mvstore` 版本：若公共 DB 模块或 WayZer 业务依赖链暴露 H2，`wayzer/user/lang` 会同时看到两个 ClassLoader 中的 `org.h2.mvstore.MVMap`，玩家进入时触发 `LinkageError: loader constraint violation`。
 
 本轮不迁移旧 `@Savable` 数据；相关 MDT 自定义系统直接切换到新表。
 
@@ -36,10 +40,10 @@
   - 只做存储层，不放业务规则。
   - 已加入慢事务日志：单次事务超过 `200ms` 输出函数名/线程/耗时，超过 `1000ms` 标记为严重慢事务。
 - `mdtserver/config/scripts/wayzer/mdtDatabase.kts`
-  - 依赖 `coreLibrary/DBApi`。
-  - 调用 `registerTable(*MdtStorage.tables())` 注册 MDT 表。
+  - 依赖 `coreLibrary/db`。
+  - 调用 `DBApi.registerTable(*MdtStorage.tables())` 注册 MDT 表。
 - `mdtserver/config/scripts/wayzer/module.kts`
-  - 增加 `coreLibrary/DBApi` 依赖，使 `wayzer/lib/MdtStorage.kt` 可引用 Exposed 表类。
+  - 依赖 `coreLibrary/DBConnector`，确保数据库模块与连接器进入 WayZer 业务依赖链。
 - `mdtserver/config/scripts/wayzer/user/accountAuth.kts`
   - 使用账号表完成注册/登录/改密/自动登录。
 - `mdtserver/config/scripts/wayzer/user/accountGuestControl.kts`

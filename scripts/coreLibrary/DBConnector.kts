@@ -1,9 +1,11 @@
-@file:Depends("coreLibrary/DBApi")
+@file:Depends("coreLibrary/db")
 
 package coreLibrary
 
 import cf.wayzer.scriptAgent.util.DependencyManager
+import cf.wayzer.scriptAgent.util.Services
 import cf.wayzer.scriptAgent.util.maven.Dependency
+import coreLib.db.DBApi
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.DatabaseConfig
 import org.jetbrains.exposed.sql.ExperimentalKeywordApi
@@ -61,32 +63,48 @@ private fun pingDatabase(db: Database, reason: String) {
 }
 
 onEnable {
-    DependencyManager {
-        require(Dependency.parse(driverMaven))
-        loadToClassLoader(thisScript.javaClass.classLoader)
-    }
-    Class.forName(driver)
+    try {
+        logger.info("[数据库] 开始加载驱动依赖: $driverMaven")
+        DependencyManager {
+            require(Dependency.parse(driverMaven))
+            loadToClassLoader(thisScript.javaClass.classLoader)
+        }
+        Class.forName(driver)
 
-    val url = normalizeJdbcUrl(url.replace("H2DB_PATH", Config.dataDir.resolve("h2DB.db").absolutePath))
-    val isH2 = url.lowercase().startsWith("jdbc:h2:")
-    val db = Database.connect({
-        DriverManager.getConnection(url, user, password)
-    }, DatabaseConfig {
-        @OptIn(ExperimentalKeywordApi::class)
-        preserveKeywordCasing = thisScript.preserveKeywordCasing
-    })
-    DBApi.DB.provide(this, db)
+        val jdbcUrl = normalizeJdbcUrl(url.replace("H2DB_PATH", Config.dataDir.resolve("h2DB.db").absolutePath))
+        val isH2 = jdbcUrl.lowercase().startsWith("jdbc:h2:")
+        val preserveCase = preserveKeywordCasing
+        logger.info("[数据库] 开始连接: ${jdbcUrl.substringBefore(';')}")
+        // 驱动只加载到连接器自己的 ClassLoader，不能放入 coreLibrary/db 公共模块。
+        // 否则业务脚本同时依赖 H2 数据库驱动和 KVStore 的 h2-mvstore 时，SA 3.4
+        // 会让同名 MVMap 来自两个 ScriptClassLoader，最终触发 loader constraint violation。
+        val db = Database.connect(
+            { DriverManager.getConnection(jdbcUrl, user, password) },
+            DatabaseConfig {
+                @OptIn(ExperimentalKeywordApi::class)
+                preserveKeywordCasing = preserveCase
+            }
+        )
 
-    if (isH2) {
-        launch(Dispatchers.IO) {
-            pingDatabase(db, "启动预热")
-            val interval = h2KeepAliveMinutes.coerceAtLeast(0)
-            if (interval > 0) {
-                while (true) {
-                    delay(interval * 60_000L)
-                    pingDatabase(db, "保活")
+        logger.info("[数据库] 连接已建立，开始检查表结构")
+        DBApi.initDB(db)
+        Services.provide(db)
+        logger.info("[数据库] SA 3.4 Database Provider 已注册")
+
+        if (isH2) {
+            launch(Dispatchers.IO) {
+                pingDatabase(db, "启动预热")
+                val interval = h2KeepAliveMinutes.coerceAtLeast(0)
+                if (interval > 0) {
+                    while (true) {
+                        delay(interval * 60_000L)
+                        pingDatabase(db, "保活")
+                    }
                 }
             }
         }
+    } catch (e: Throwable) {
+        logger.log(Level.SEVERE, "[数据库] 初始化失败，停止启用依赖数据库的脚本", e)
+        throw e
     }
 }

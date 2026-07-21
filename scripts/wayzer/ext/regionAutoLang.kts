@@ -23,7 +23,7 @@ private fun targetLang(player: Player): String {
 }
 
 private fun hasManualLang(uid: String): Boolean =
-    with(userLang) { settings[uid] != null }
+    with(userLang) { hasManualLangSetting(uid) }
 
 private fun applyAutoLang(player: Player) {
     if (!autoLangEnabled) return

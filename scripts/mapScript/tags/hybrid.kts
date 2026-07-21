@@ -1,5 +1,6 @@
 @file:Depends("coreMindustry/menu", "地图特色杂交菜单")
 @file:Depends("coreMindustry/contentsTweaker", "运行时CP兼容")
+@file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
 package mapScript.tags
 
@@ -61,6 +62,7 @@ registerMapTag("@hybrid")
 name = "地图特色杂交"
 
 private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
+private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 
 private val statusFieldCache = mutableMapOf<Class<*>, java.lang.reflect.Field?>()
 
@@ -1031,17 +1033,8 @@ private fun rebuildAllGeneHybridUnits() {
     rebuildHybridRuntimeUnits(geneRecords.keys.mapNotNull(::unitTypeByName))
 }
 
-private fun sendWorldDataCompat(player: Player) {
-    val con = player.con ?: return
-    Call.worldDataBegin(con)
-    val sendWorldAndAssets = Vars.netServer.javaClass.methods.firstOrNull { method ->
-        method.name == "sendWorldAndAssets" && method.parameterTypes.size == 1
-    }
-    if (sendWorldAndAssets != null) {
-        sendWorldAndAssets.invoke(Vars.netServer, player)
-    } else {
-        Vars.netServer.sendWorldData(player)
-    }
+private suspend fun sendWorldDataCompat(player: Player) {
+    with(worldResync) { resyncWorldAndAssets(player, "地图杂交基因变更") }
 }
 
 private fun syncHybridContentToClients() {

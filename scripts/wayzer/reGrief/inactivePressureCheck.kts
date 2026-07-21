@@ -17,6 +17,7 @@ private val pressure = contextScript<ServerPressure>()
 private val checkIntervalMillis by config.key(5_000L, "挂机检测轮询间隔(ms)")
 private val promptCooldownMillis by config.key(15 * 60 * 1000L, "上行超限挂机提示间隔(ms)")
 private val responseTimeoutMillis by config.key(90 * 1000L, "挂机检测响应超时(ms)")
+private val pressureSamplesRequired by config.key(3, "触发挂机检测前需要的连续上行超限样本数")
 
 private data class PendingCheck(
     val playerName: String,
@@ -25,6 +26,7 @@ private data class PendingCheck(
 
 private val pending = mutableMapOf<String, PendingCheck>()
 private var lastPromptMillis = 0L
+private var pressureSamples = 0
 
 private fun playerActive(player: Player, reason: String = "互动") {
     if (pending.remove(player.uuid()) != null) {
@@ -73,10 +75,14 @@ private fun expireChecks() {
 
 private fun tickInactiveCheck() {
     val s = with(pressure) { currentPressure() }
-    if (s.mode != "experimental" || s.throttleLevel <= 0) {
+    // 仅在游戏同步上行持续超限时检查挂机；新玩家世界流/音乐/CP流不能误触发踢人。
+    if (s.trafficLevel <= 0) {
+        pressureSamples = 0
         pending.clear()
         return
     }
+    pressureSamples = (pressureSamples + 1).coerceAtMost(pressureSamplesRequired.coerceAtLeast(1))
+    if (pressureSamples < pressureSamplesRequired.coerceAtLeast(1)) return
     startPressureCheck("上行超限，同步限制等级 ${s.throttleLevel}")
     expireChecks()
 }

@@ -1,6 +1,6 @@
-# 官方 Mindustry v159.x / MindustryX v159.6 兼容层说明
+# 官方 Mindustry v159.x / MindustryX B480（v159.7）兼容层说明
 
-> 目的：让当前脚本集可以在官方 v159.x 服务端上尽量启动、测试菜单/账号/投票/点歌等功能。MindustryX 预览版已于 2026-07-15 跟进官方 v159.6，但尚未形成稳定正式版；在 X 端稳定并完成实际测试前，本文兼容层仍应保留。
+> 当前生产候选基线为 MindustryX `prerelease-2026.07.20.B480` / Mindustry v159.7，并继续保留官方端与旧 API 的反射降级。ScriptAgent 仍按项目当前版本独立维护，不与本轮网络补丁混合升级。
 
 ## 总体原则
 
@@ -8,6 +8,16 @@
 - 官方端缺少的 X API 不直接引用，改为反射检测；缺失时只降级对应边缘功能，避免整条依赖链加载失败。
 - 不为官方端硬造高风险同步/网络 Hook；无法稳定兼容的实验功能直接 no-op，并打印明确警告。
 - 兼容层集中使用 `*Compat`、运行时 `Class.forName(...)`、`javaClass.getField/getDeclaredField(...)` 等方式，方便搜索和切除。
+
+## 2026-07-21：B480 / v159.7 自定义专服补丁
+
+- 参考源码已更新到官方 Mindustry `v159.7` 与 MindustryX `prerelease-2026.07.20.B480`。上游的 “Fixed large world sending” 与连接修复位于 Steam `desktop/.../SNet.java`，不覆盖 headless 专服的 `ArcNetProvider`、`NetServer.sendWorldAndAssets`、`connectConfirm`、批量 `Net.send` 或核心机恢复链路。
+- `SendPacketEvent` 增加 `connections`、`targetCount`、`reliable`，并在批量 `Net.send(Object, Iterable<NetConnection>, boolean)` 发出事件，解决过去流量统计只覆盖单连接/广播入口而漏算批量快照的问题。
+- `NetServer.writeCustomEntitySnapshot(Player, Iterable<Syncc>, boolean)` 支持关键 `Unit -> Player` 实体快照可靠发送；脚本仅把核心机恢复的第一轮定向快照设为可靠，后续仍走 UDP 快速重试，避免把全部实体同步改成可靠流。
+- 补丁文件为 `patches/client/0075-H.API-emit-SendPacketEvent-for-bulk-sends.patch` 与 `0076-H.API-allow-reliable-custom-entity-snapshots.patch`。
+- 构建命令：`gradle --no-daemon server:dist -x tools:doPack`。普通 `server:dist` 会被无关的 `tools:doPack` ClassNotFound 阻断。
+- 部署候选：`mdtserver/server-2026.07.20.B480-mdtdo.jar`；SHA-256：`8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。
+- B480 冷启动验证结果：共找到 156 脚本、加载成功 152、启用成功 148、出错 0。
 
 ## 已处理的兼容点
 
@@ -72,32 +82,32 @@
 
 - 等 X v159 可用后，可恢复直接 import `SendPacketEvent` 与强类型监听；或保留反射版本以继续兼容官方端。
 
-### 4. 实验性同步频率限制在官方端与 B477 上 no-op
+### 4. v159/B480 快照频率保护替代 X35 单连接接管
 
 涉及文件：
 
 - `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\reGrief\syncThrottle.kts`
 
-原因：官方 v159 与 MindustryX B477 均已移除或变更 X35 时代以下接口或签名：
+原因：官方 v159 与 MindustryX B480 均已移除或变更 X35 时代以下接口或签名：
 
 - `NetConnection.syncTime`
 - `NetConnection.snapshotsSent`
 - `Call.stateSnapshot(NetConnection, ...)`
 - `Syncc.isSyncHidden(Player)`
 
-这些能力属于高风险网络同步接管，不适合在官方端硬造。
+这些能力属于 X35 的逐玩家手工同步接管，不能继续套用到 v159 的共享序列化/批量发送流程。
 
 兼容方式：
 
-- 通过反射检测上述接口是否齐全。
-- 若不齐全，`targetInterval()` 固定返回 0，脚本启用但不接管同步，并打印：
-  `当前 MindustryX v159/B477 已移除或变更旧版单连接快照接口，实验性同步频率限制已安全降级为关闭。`
-- 若 X 端接口齐全，则继续按原逻辑工作。
+- 不再反射或重写 `syncTime`、逐玩家 `stateSnapshot/entitySnapshot/hiddenSnapshot`。
+- 通过反射读取 v159 原生 `Administration.Config.snapshotInterval`，压力时只增大原生快照间隔，恢复时还原启用前值。
+- 不再拦截、取消或重发状态、实体、建筑快照；可靠的建筑血量更新也不会降级为 UDP。
+- 官方端与 X 端都只调整原生 `snapshotInterval`；B480 的 `SendPacketEvent` 仅用于统计和既有逻辑包保护。
 
 切除方式：
 
-- 若未来只跑 X 端，可恢复直接字段/方法调用，删除 `throttleRuntimeSupported` 与 `*Compat` 反射函数。
-- 若未来只跑官方端，建议直接删除/禁用该脚本，避免误以为同步限制仍生效。
+- 若未来上游提供稳定的“排除未完成连接”批量快照 API，应另行审计后接入，不能恢复事件取消后手工重发的旧方案。
+- 不建议恢复 X35 逐玩家自定义序列化；这会丢失 v159 的共享序列化优化并重新引入幽灵单位风险。
 
 ### 5. `Rules.hiddenBuildItems` 缺失
 
@@ -270,7 +280,7 @@
 - 自动播放不再按歌曲大小估算固定等待时间。脚本会等待客户端发回 `PlayerConnectionConfirmed`（表示资产接收、世界数据加载均已完成），在该事件内恢复 `hasConnected` 以阻止重复 motd/`PlayerJoin`，再稍作音频注册缓冲后发送播放包。慢线路不会再因为超过估算时间而过早播放。
 - 达到主超时后会释放同步队列，但保留默认 120 秒的迟到确认宽限；若客户端在宽限期内最终完成，歌曲会加入“我的已同步音乐”，不再擅自自动播放。宽限结束仍无确认时才释放临时资产记录。
 - 玩家可通过 `/music synced` 打开“我的已同步音乐”菜单，或 `/music replay <编号/名称>` 手动重播本次连接中已经同步完成的歌曲；手动重播只发送播放指令，不会再次传输音乐文件。
-- 原版/B477 的运行时资产清单是全服共享状态，不支持真正的“只给一个连接注册资产”。因此脚本只在目标玩家实际开始同步时临时挂载当前一首歌曲，结束或超时立即卸载；不再提前挂载整条队列。20Mbps 上行环境默认限制在线不超过 6 人才允许同步新歌曲，并在每名玩家之间保留恢复间隔。
+- 原版/B477 的运行时资产清单是全服共享状态，不支持真正的“只给一个连接注册资产”。因此脚本只在目标玩家实际开始同步时临时挂载当前一首歌曲，结束或超时立即卸载；不再提前挂载整条队列。已移除“全服在线超过 6 人便禁用新歌曲同步”的粗粒度限制，改为单人串行队列、世界同步状态检查、上行预算与玩家间恢复间隔保护。
 - 服务器浏览器人数来自 `Groups.player.size()`。音乐重同步期间玩家连接仍在服务端玩家组中，即使其客户端正停留在无核心机/世界加载状态也会计入在线人数；因此“浏览器显示20人、实际只看到7人活动”通常代表其余连接被资产/世界流拖住，而不是数据库人数或虚假机器人计数。
 
 ### 地图脚本
@@ -289,7 +299,7 @@
 ## 当前官方端测试时的预期降级
 
 - 上行估算：官方端没有 X 包事件，`/traffic` 只能查看/设置预算，实时估算不准或为 0。
-- 实验性同步限制：官方端自动关闭，不会接管实体同步。
+- 快照保护：官方端仍可调整 v159 原生 `snapshotInterval`；当前实现无论官方端还是 X 端都不执行快照拦截/重路。
 - 世界处理器发包速率保护：官方端没有 X 包事件时无法按包速率检测；仍保留其他不依赖包事件的保护。
 - CP/资产同步：官方 v159 会优先走 `sendWorldAndAssets`；旧端没有该方法时只做普通世界同步，贴图/音频类资产可能需要重进或无法热同步。
 - 小音效/点歌：依赖 v159 Data Asset。若运行端没有 `state.data` 音频资产列表或没有 `sendWorldAndAssets`，脚本会降级提示，但实际播放体验可能不完整。
@@ -300,7 +310,7 @@
 - 服务端已切换为 `server-2026.07.15.B477.jar`，本轮不升级 ScriptAgent，继续使用 `ScriptAgent4MindustryExt-3.3.2.jar`。
 - 清理旧脚本编译缓存后完成全量编译与启动验证：`共找到201脚本,加载成功197,启用成功144,出错0`。
 - B477 的 `mindustryX.events.SendPacketEvent` 可用，`trafficMonitor.kts` 与 `limitLogicPacket.kts` 恢复 X 端发包事件链路；`locale=default` 也可正常应用。
-- `syncThrottle.kts` 依赖的 X35 单连接快照字段/调用签名在 B477 中不再存在，因此继续安全降级关闭，不接管实体同步。本轮不为该高风险链路强行重写实现。
+- 当时的 `syncThrottle.kts` 因 X35 单连接接口消失而安全降级；该历史结论已在 2026-07-18 的后续实现中替换为 v159 原生快照间隔保护，不再使用旧接口。
 - 启动阶段只观察到既有的 H2 `getSetting` 慢事务提示、`tpsLimit` 冗余提醒和上述同步限制降级提醒；没有脚本编译/加载错误。
 - 测试停服时出现的脚本停止超时和 watchdog 停顿提示发生在 SA 3.3.2 的集中卸载阶段，不属于 B477 启动兼容失败；生产服仍需重点观察正常运行期间是否出现同类停顿。
 
@@ -312,8 +322,60 @@
    - `Class.forName("mindustryX`
    - `getDeclaredField("statuses")`
    - `SaveOptions`
-   - `throttleRuntimeSupported`
+   - `snapshotInterval`
+   - `connectSyncGuard`
    - `PatchAsset`
    - `DataPatchLoadEvent`
    - `sendWorldAndAssets`
 3. 等 MindustryX 跟进 v159 后，先跑脚本加载日志；如果 X 端已兼容，建议逐项删除 no-op 降级，保留低风险反射兼容也可以。
+
+## MindustryX B477 + ScriptAgent 3.4.0 迁移结果（2026-07-17）
+
+- 开发服已从 SA 3.3.2 切换到 `ScriptAgent4MindustryExt-3.4.0-allInOne.jar`，旧 JAR 改名为 `.disabled` 备份。
+- 已补齐 SA 3.4 `.metadata` 模块描述、K2 `-Xcontext-parameters`、新版 Command API/控制指令/热加载接口，以及旧脚本使用的 `contextScript<T>()` 兼容层。
+- 数据库已改用 SA 3.4 `Services`：新增 `coreLibrary/db` 模块，`DBApi` 包名为 `coreLib.db.DBApi`；连接器成功日志应包含“连接已建立”“表结构检查”“SA 3.4 Database Provider 已注册”。禁止重新把数据库服务退回 kts 内的旧 `ServiceRegistry` 对象，否则会因脚本类加载器隔离复现 `No Provider`。
+- 技能共享库适配 Kotlin 2.3：`SkillScope` 显式携带 `arg`，避免匿名 context parameter 只能满足上下文约束、却无法直接解析 `CommandContext.arg`。管理员技能、杂交、三级技能与 `/tp` 已恢复编译。
+- 重点地图脚本 `14668`、`15450`、`@hybrid`、`@flood` 均可加载；`15450` 将柠檬 DAO 的 `PlayerData` 使用别名导入，避免与地图内部同名数据类冲突。
+- 当前冷启动修复后 `sa fail` 无输出。首次全量 K2 编译/集中启用阶段可能触发 watchdog 的启动期长停顿；应与服务器已经开放端口后的运行时停顿区分。
+
+### 159 取消附身后核心机定向恢复
+
+新增：`mdtserver/config/scripts/wayzer/reGrief/coreUnitRespawnCompat.kts`
+
+- 只处理“玩家原附身单位仍然存活，但玩家单位变为 null”的主动取消附身场景；原单位正常死亡仍走原版死亡延迟。
+- 100ms 后若服务端仍无玩家单位，调用 `player.checkSpawn()` 请求核心机。
+- 159 的实体快照可能先写 Player、后写新核心单位；客户端读取 Player 时找不到单位 ID，会把 `Player.unit` 保持为 null。兼容脚本会按“核心单位 -> Player”顺序向该玩家补发仅两个实体的定向快照，并可靠重发一次 `PlayerSpawnCallPacket`，随后再补一次低成本快照。
+- 该修复不调用 `sendWorldData` 或 `sendWorldAndAssets`，不会让玩家重新进入完整世界/资产同步，也不会给全服增加大流量。
+- 玩家离线、换图时清理内存状态；换队/强制观战若目标队伍无核心，不会凭空生成核心机。
+
+实机回归必须覆盖：首次进服、附身存活单位后取消附身、正常死亡、换队、强制观战/解除观战、换图。服务端加载成功只能证明 API 兼容，客户端是否立即恢复核心机仍需真实客户端确认。
+
+### SA 3.4 生产服首次迁移的脚本类加载器空指针
+
+若生产服出现 `ScriptClassLoader.<init>(ScriptClassLoader.kt:24)` 的 `NullPointerException`，而具体脚本在开发服能够正常编译，这不是业务脚本内部空指针。SA 3.4 该行会直接读取每个编译依赖的 `scriptInfo.classLoader!!`；旧版本缓存残留，或启动并行实例化时某个依赖尚未建立 ClassLoader，都会在这里失败。
+
+处理顺序：
+
+1. 若服务器已经完成启动且依赖脚本均已启用，先在控制台执行 `sa reload wayzer/user/achievement`，再执行 `sa reload wayzer/ext/playerInfoTripleTap` 和 `sa fail`。依赖已实例化后重载通常可直接恢复。
+2. 若仍失败，停服后删除或改名 `config/scripts/cache/`，再完整重启，让 SA 3.4 重新编译全部脚本。不要删除 `config/scripts/data/`，数据库和业务配置不在编译缓存目录内。
+3. 从旧 SA 迁移时不要把生产服原有 `config/scripts/cache` 与新脚本一起保留或复制；该目录已加入 Git 忽略。
+
+该错误与 Java 版本、成就数据库内容无关。若清空缓存后每次冷启动仍随机复现，则属于 SA 3.4 高依赖脚本的并行实例化竞态，应保留完整启动日志并考虑回退 SA 或修补上游 Loader。
+
+### SA 3.4 的 H2/MVStore 类加载器冲突与控制台阻塞
+
+- `coreLibrary/extApi/KVStore` 使用 `h2-mvstore:2.3.232`；MDT 数据库连接器默认使用 H2 JDBC `2.0.206`。二者可以在隔离模块中并存，但不能同时暴露给同一业务脚本依赖链。
+- `coreLibrary/db` 已移除 H2 Maven 导入，`wayzer/module.kts` 也不再依赖 `coreLibrary/DBConnector`，只依赖数据库 API。连接器使用 Connection lambda，让驱动留在连接器自身 ClassLoader。
+- 原冲突表现为玩家进入时 `wayzer.ext.RegionAutoLang.hasManualLang` 报 `loader constraint violation ... org.h2.mvstore.MVMap`，随后地区语言设置失败。部署修复后必须清空 `config/scripts/cache` 全量重编译。
+- 生产日志还显示主线程卡在 `JLine Display.update/printAbove/FileOutputStream.write`，最长可持续数分钟。`coreMindustry/console.kts` 已把终端刷新转移到有界 IO 队列；游戏线程只投递字符串，不再同步等待宿主面板或慢磁盘刷新终端。
+
+## 2026-07-18：B477 网络同步与性能压力重新分层
+
+> 历史记录：其中基于发包事件隔离待加入连接快照的方案已在 B480 定稿中删除；当前实现以本文开头的 2026-07-21 章节为准。
+
+- `trafficMonitor.kts` 区分总上行、游戏同步上行、世界/资产流；并读取 TCP 待发积压、待加入连接与活动流。
+- `serverPressure.kts` 将游戏同步上行用于性能等级，将世界/资产流和 TCP 积压只用于网络保护；音乐、CP、玩家入服不会再触发单位清理。
+- 新增 `connectSyncGuard.kts`：只在网络压力时限制同时进行世界同步的人数，正常状态不限制；等待超时、压力数据失效、脚本异常或卸载均 fail-open，防止永久无法入服。
+- `syncThrottle.kts` 当时改用 v159 原生 `snapshotInterval` 并尝试事件重路；该重路后来审计为风险过高，B480 版本已彻底移除，只保留原生间隔调整。
+- 标准/实验性性能措施合并；`/vote perf off` 只关闭本局世界清理与规则调整，网络 fail-open 保护继续运行。
+- 最终换图只允许在当前 TPS 与滑动均值每次采样都低于 5、连续 2 分钟时触发。

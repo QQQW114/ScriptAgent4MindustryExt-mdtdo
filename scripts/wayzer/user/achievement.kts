@@ -141,7 +141,7 @@ private val conditionPresets = listOf(
     ConditionPreset("total_mdc", "累计MDC", "历史累计获得 MDC 达到指定值。", "输入需要的累计MDC，例如 600", "600") { _, _, stats, value ->
         stats.points.total >= intValue(value)
     },
-    ConditionPreset("trust_level", "信任等级", "信任等级至少达到指定等级。", "输入 0/1/2/3/3+/4", "1") { uid, player, _, value ->
+    ConditionPreset("trust_level", "信任等级", "信任等级至少达到指定等级。", "输入 0/1/2/3/3+/3++/4", "1") { uid, player, _, value ->
         levelAtLeast(uid, player, value)
     },
     ConditionPreset("seniority_level", "资历等级", "资历等级至少达到指定等级。", "输入 0/1/2/3/4", "1") { uid, player, _, value ->

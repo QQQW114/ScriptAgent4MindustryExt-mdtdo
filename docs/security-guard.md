@@ -43,9 +43,10 @@
 - `/security spectators`：查看当前观察者队伍玩家的来源速查；可识别安全风控、今日游客观战、风险IP，其他来源需结合 `/forceOB` 或玩家主动 `/ob` 排查。
 - `/security mode normal|guard|enhanced [分钟] [原因]`：手动设置或解除风控模式。
 - `/security banip <ip> [分钟] [原因]`：手动封禁 IP。
-- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：根据在线玩家当前 IP 封禁；离线玩家可从 `/recentplayers` 最近玩家面板按最近 IP 封禁。
+- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：根据在线玩家当前 IP 封禁；离线玩家可从 `/recentplayers` 最近玩家面板按最近 IP 封禁。3++协管只能处理低于3++的目标，默认单次最长7天。
 - `/banips`：打开当前 IP 封禁列表菜单，显示 IP、对应 UUID、玩家名、剩余时间和原因，可点开详情解除封禁；控制台执行时输出文字列表。
-- `/unbanip <ip>`：解除 IP 封禁；等价于 `/security unbanip <ip>`。
+- `/banlist`：统一显示玩家/账号封禁与 IP 封禁，按到期时间排序；详情页可快速调用对应的账号解封或 IP 解封。
+- `/unbanip <ip>`：解除 IP 封禁；3++只能解除自己施加的记录，4级/admin可解除全部。
 - `/security unbanip <ip>`：解除 IP 封禁。
 - `/security check <ip/三位ID>`：查询 IP/玩家当前风控状态。
 - `/security release`：只释放安全风控造成的临时游客观战残留；若今日游客观战、风险IP、投票强制观战仍生效，会继续保持观战。

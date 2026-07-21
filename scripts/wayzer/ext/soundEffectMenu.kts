@@ -1,5 +1,6 @@
 @file:Depends("coreMindustry/menu", "小音效菜单")
 @file:Depends("wayzer/ext/musicJukebox", "服务器点歌")
+@file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
 package wayzer.ext
 
@@ -22,6 +23,7 @@ name = "服务器小音效菜单"
 
 private val dataAssetSoundIdOffset = 100_000
 private val musicJukebox = contextScript<wayzer.ext.MusicJukebox>()
+private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 
 private val defaultVolume by config.key(1.0, "播放小音效时的默认音量")
 private val defaultPitch by config.key(1.0, "播放小音效时的默认音高")
@@ -431,34 +433,10 @@ fun playFixedSoundEffect(
     return playSoundEffect(entry, operator, ignoreInterval = ignoreInterval).message
 }
 
-private suspend fun suppressReconnectIntroAfterAssetWorld(player: Player, originalCon: mindustry.net.NetConnection) {
-    // 官方 v159 的 sendWorldAndAssets 会把 hasConnected 置回 false；
-    // 若这是管理员手动 /sfx sync 触发的资产热同步，不应让客户端再次显示进服介绍/触发 PlayerJoin 链路。
-    val deadline = System.currentTimeMillis() + 15_000L
-    while (System.currentTimeMillis() < deadline) {
-        if (player.con !== originalCon) return
-        if (originalCon.hasConnected) return
-        if (!originalCon.determiningAssets && !originalCon.receivingAssets) {
-            originalCon.hasConnected = true
-            return
-        }
-        delay(25L)
-    }
-}
-
 private suspend fun sendWorldAndAssetsCompat(player: Player): Boolean {
-    val con = player.con ?: return false
-    val sendWorldAndAssets = Vars.netServer.javaClass.methods.firstOrNull { method ->
-        method.name == "sendWorldAndAssets" && method.parameterTypes.size == 1
+    return with(worldResync) {
+        resyncWorldAndAssets(player, "管理员手动同步小音效", 120_000L)
     }
-    if (sendWorldAndAssets != null) {
-        sendWorldAndAssets.invoke(Vars.netServer, player)
-        suppressReconnectIntroAfterAssetWorld(player, con)
-        return true
-    }
-    Call.worldDataBegin(con)
-    Vars.netServer.sendWorldData(player)
-    return false
 }
 
 private fun syncSoundAssetsToPlayers(operator: String, notify: Player? = null) {
