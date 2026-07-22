@@ -566,9 +566,10 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val order3PlusPlus = trustOrder("3++")
     val order4 = trustOrder("4")
     val canVotePunishZero = !isSelf && profile.level == "0" && viewerOrder >= order1
+    val canDirectRestrictTarget = !isSelf && with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
     val canDirectForceOb = !isSelf && (
             (!PlayerData[target].authed && viewerOrder >= order3) ||
-                    with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
+                    canDirectRestrictTarget
             )
     val canModerateTarget = !isSelf && with(trustLevel) { canModerateTrustTarget(viewer, target) }
     val canAdminBan = !isSelf && viewerOrder >= order3PlusPlus && canModerateTarget
@@ -579,7 +580,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     with(voteOb) { isForceObOwnedBy(target, viewerUid) }
             )
     // 禁言/强制观战属于即时状态，不放入资料缓存，避免管理按钮显示滞后。
-    val targetMuted = canModerateTarget && with(playerMute) { isMuted(target) }
+    val targetMuted = canDirectRestrictTarget && with(playerMute) { isMuted(target) }
     val canBuildBanTarget = !isSelf && with(playerBuildBan) { canManageBuildBan(viewer, target) }
     val targetBuildBanned = canBuildBanTarget && with(playerBuildBan) { isBuildBanned(target) }
 
@@ -696,10 +697,14 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     }
                 }
             }
-            if (canModerateTarget) {
+            if (canDirectRestrictTarget) {
                 newRow()
                 if (targetMuted) {
                     option("解除ta禁言") {
+                        if (!with(playerMute) { canManagePlayerMute(viewer, target) }) {
+                            viewer.sendMessage("[yellow]操作者权限或目标等级已变化，无法解除禁言。")
+                            return@option
+                        }
                         if (!with(playerMute) { unmutePlayer(target, viewer) })
                             viewer.sendMessage("[yellow]目标当前未被禁言")
                     }
@@ -707,11 +712,12 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     option("禁言此玩家") {
                         val duration = askModerationDuration(viewer, "禁言时长", target.plainName()) ?: return@option
                         val reason = askReason(viewer, "禁言理由", target) ?: return@option
-                        if (duration.minutes == null) {
+                        val success = if (duration.minutes == null) {
                             with(playerMute) { mutePlayer(target, reason, viewer) }
                         } else {
                             with(playerMute) { mutePlayerTemporary(target, duration.minutes, reason, viewer) }
                         }
+                        if (!success) viewer.sendMessage("[yellow]操作者权限或目标等级已变化，本次禁言已取消。")
                     }
                 }
             }
@@ -719,6 +725,10 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                 newRow()
                 if (targetBuildBanned) {
                     option("解除ta禁建") {
+                        if (!with(playerBuildBan) { canManageBuildBan(viewer, target) }) {
+                            viewer.sendMessage("[yellow]操作者权限或目标等级已变化，无法解除禁建。")
+                            return@option
+                        }
                         if (!with(playerBuildBan) { enableBuild(target, viewer) })
                             viewer.sendMessage("[yellow]目标当前未被禁止建造/拆除")
                     }
@@ -726,11 +736,12 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     option("禁止ta建造") {
                         val duration = askModerationDuration(viewer, "禁止建造时长", target.plainName()) ?: return@option
                         val reason = askReason(viewer, "禁止建造理由", target) ?: return@option
-                        if (duration.minutes == null) {
+                        val success = if (duration.minutes == null) {
                             with(playerBuildBan) { disableBuild(target, reason, viewer) }
                         } else {
                             with(playerBuildBan) { disableBuildTemporary(target, duration.minutes, reason, viewer) }
                         }
+                        if (!success) viewer.sendMessage("[yellow]操作者权限或目标等级已变化，本次禁建已取消。")
                     }
                 }
             }

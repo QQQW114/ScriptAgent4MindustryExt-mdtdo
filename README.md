@@ -23,6 +23,8 @@ MDT DO 服务器使用的 ScriptAgent 脚本与维护文档开源仓库。
 
 - 当前生产基线为 Mindustry v159 / MindustryX B480 / ScriptAgent 3.4.0；脚本已完成 SA 3.4 模块元数据、数据库模块与 Command API 兼容迁移。
 
+- B480 JAR 仍保留可靠自定义实体快照 API；由于 TCP/UDP 跨通道可能造成旧状态闪回，生产脚本已禁止调用该 API。
+
 - 部分mapScript来自：<https://github.com/lemon3357/ScriptAgent4MindustryExt>
 
 本仓库保留上游脚本中的原作者信息。上游脚本、第三方脚本及本仓库新增脚本分别遵循其文件内声明和 `LICENSE.md` 中的说明。

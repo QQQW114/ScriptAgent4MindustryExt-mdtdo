@@ -120,7 +120,7 @@ fun canModerateTrustTarget(operator: Player, target: Player): Boolean =
     canModerateTrustTarget(operator, PlayerData[target].id, target)
 
 /**
- * 直接强制观战/禁建的更严格目标边界：
+ * 直接强制观战/禁言/禁建的统一目标边界：
  * 3+ 只能处理 0/1/2 级，3++ 可处理低于 3++，4 级保留全局管理。
  */
 fun canDirectRestrictTrustTarget(operator: Player, targetUid: String, target: Player? = null): Boolean {

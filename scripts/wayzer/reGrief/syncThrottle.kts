@@ -9,7 +9,7 @@ import java.lang.reflect.Field
 name = "v159全局快照频率保护"
 
 private val pressure = contextScript<ServerPressure>()
-private val enabled by config.key(true, "启v159全局快照频率保护")
+private val enabled by config.key(true, "启用v159全局快照频率保护")
 private val maxIntervalMillis by config.key(320L, "v159快照保护最大间隔(ms)")
 
 private data class NativeSnapshotInterval(

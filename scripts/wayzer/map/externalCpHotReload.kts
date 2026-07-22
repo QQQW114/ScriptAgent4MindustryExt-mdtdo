@@ -379,6 +379,20 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
             if (assets.size > maxExternalCpAssets.coerceAtLeast(1)) throw IllegalArgumentException("CP资产数超过上限 $maxExternalCpAssets")
         }
     }
+    assets.asSequence()
+        .filterNot { it is PatchAsset }
+        .groupBy { "${it.getType().name.lowercase(Locale.ROOT)}:${it.name.lowercase(Locale.ROOT)}" }
+        .values
+        .filter { it.size > 1 }
+        .forEach { sameNameAssets ->
+            val first = sameNameAssets.first()
+            require(sameNameAssets.size == 2 && isV159GeneratedImagePair(sameNameAssets[0], sameNameAssets[1])) {
+                "ZIP内存在数据资产名称冲突：${first.name}（${sameNameAssets.joinToString(" 与 ") { it.getFullPath() }}）"
+            }
+            val generated = sameNameAssets.first(::isGeneratedImageAsset)
+            val source = sameNameAssets.first { !isGeneratedImageAsset(it) }
+            warnings += "同名贴图 ${first.name} 同时存在 ${source.path} 与 ${generated.path}；按Mindustry v159规则优先使用generated贴图，普通同名贴图不进入补丁图集"
+        }
     require(assets.isNotEmpty()) { "ZIP内没有找到v159数据资产；需要 patches/content/bundles/sprites/sounds/music 目录" }
     val slow = cp.bytes > slowExternalCpBytes.coerceAtLeast(1L) || expandedBytes > slowExternalCpBytes.coerceAtLeast(1L)
     val summary = zipAssetFolders.mapNotNull { folder -> counts[folder]?.let { "$folder=$it" } }.joinToString(", ")
@@ -734,6 +748,14 @@ private fun dataAssetPathKey(asset: DataAsset): String =
 private fun dataAssetNameKey(asset: DataAsset): String? =
     if (asset is PatchAsset) null else "${asset.getType().name.lowercase(Locale.ROOT)}:${asset.name.lowercase(Locale.ROOT)}"
 
+private fun isGeneratedImageAsset(asset: DataAsset): Boolean =
+    asset is ImageAsset && asset.path.startsWith("generated/")
+
+private fun isV159GeneratedImagePair(first: DataAsset, second: DataAsset): Boolean =
+    first is ImageAsset && second is ImageAsset &&
+        first.name == second.name &&
+        isGeneratedImageAsset(first) != isGeneratedImageAsset(second)
+
 private fun externalAssetRecords(): List<LoadedExternalCp> = loadedExternalCps.values.toList()
 
 private fun baseAssetsExcluding(records: Collection<LoadedExternalCp>): List<DataAsset> {
@@ -772,21 +794,40 @@ private fun mergedDataAssets(base: List<DataAsset>, records: Collection<LoadedEx
     val out = mutableListOf<DataAsset>()
     val pathOwners = linkedMapOf<String, String>()
     val nameOwners = linkedMapOf<String, String>()
+    val nameOwnerRecords = linkedMapOf<String, LoadedExternalCp?>()
+    val nameAssets = linkedMapOf<String, DataAsset>()
+    val acceptedGeneratedImagePairs = hashSetOf<String>()
 
-    fun add(asset: DataAsset, owner: String, external: Boolean) {
+    fun add(asset: DataAsset, owner: String, ownerRecord: LoadedExternalCp?) {
+        val external = ownerRecord != null
         val pathKey = dataAssetPathKey(asset)
         val pathConflict = pathOwners[pathKey]
         if (external && pathConflict != null) throw IllegalArgumentException("数据资产路径冲突：${asset.getFullPath()}（$pathConflict 与 $owner）")
         val nameKey = dataAssetNameKey(asset)
         val nameConflict = nameKey?.let(nameOwners::get)
-        if (external && nameConflict != null) throw IllegalArgumentException("数据资产名称冲突：${asset.name}（$nameConflict 与 $owner）")
+        if (external && nameConflict != null && nameKey != null) {
+            // Mindustry v159 intentionally keeps generated sprites beside their source sprites.
+            // DataImagePacker prioritizes generated/** and omits the ordinary same-name image.
+            // Permit exactly that pair inside one ZIP, never across packages/base assets or for a third alias.
+            val generatedImagePair = nameOwnerRecords[nameKey] === ownerRecord &&
+                nameKey !in acceptedGeneratedImagePairs &&
+                nameAssets[nameKey]?.let { isV159GeneratedImagePair(it, asset) } == true
+            if (!generatedImagePair) {
+                throw IllegalArgumentException("数据资产名称冲突：${asset.name}（$nameConflict 与 $owner）")
+            }
+            acceptedGeneratedImagePairs += nameKey
+        }
         pathOwners[pathKey] = owner
-        if (nameKey != null) nameOwners[nameKey] = owner
+        if (nameKey != null && nameConflict == null) {
+            nameOwners[nameKey] = owner
+            nameOwnerRecords[nameKey] = ownerRecord
+            nameAssets[nameKey] = asset
+        }
         out += asset
     }
 
-    base.forEach { add(it, "当前地图/服务端", false) }
-    records.forEach { record -> record.assets.forEach { add(it, record.fileName, true) } }
+    base.forEach { add(it, "当前地图/服务端", null) }
+    records.forEach { record -> record.assets.forEach { add(it, record.fileName, record) } }
     return out
 }
 
@@ -892,6 +933,8 @@ private fun applyExternalCp(cp: ExternalCpFile, operator: String): ExternalCpRes
             val runtimeWarnings = applyDataAssetsAndSanitize(merged, externalAssetRecords().flatMap { it.assets }, "外部CP加载:${cp.name}")
             val warnings = (readResult.warnings + runtimeWarnings).distinct()
             loadedExternalCps[key] = provisional.copy(warnings = warnings)
+            warnings.take(12).forEach { warning -> logger.warning("外部CP ${cp.name} 加载警告: $warning") }
+            if (warnings.size > 12) logger.warning("外部CP ${cp.name} 另有 ${warnings.size - 12} 条加载警告，请在管理菜单查看")
             syncWorldAfterExternalCpChange("加载:${cp.name}", readResult.syncDelayMillis)
             logger.info("外部CP已${if (wasReload) "热重载" else "加载"}: ${cp.name} by $operator parse=${readResult.parseMode} assets=${readResult.assetSummary} slow=${readResult.slowSync} warnings=${warnings.size}")
             val warnText = if (warnings.isEmpty()) "" else "\n[yellow]该CP加载后有 ${warnings.size} 条警告，可在管理菜单查看。"

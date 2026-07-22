@@ -1,5 +1,6 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
 @file:Depends("coreMindustry/utilNextChat", "聊天包拦截")
+@file:Depends("wayzer/user/trustLevel", "统一即时限制目标边界")
 
 package wayzer.ext
 
@@ -7,6 +8,9 @@ import coreMindustry.UtilNextChat.OnChat
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.PlayerMuteChangedEvent
+import wayzer.user.TrustLevel
+
+private val trustLevel = contextScript<TrustLevel>()
 
 private val NO_MUTE = "\u0000"
 private val muteReasonCache = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -65,7 +69,11 @@ fun muteReason(player: Player): String? {
 
 fun isMuted(target: Player): Boolean = muteReason(target) != null
 
+fun canManagePlayerMute(operator: Player, target: Player): Boolean =
+    with(trustLevel) { canDirectRestrictTrustTarget(operator, target) }
+
 fun mutePlayer(target: Player, reason: String, operator: Player? = null): Boolean {
+    if (operator != null && !canManagePlayerMute(operator, target)) return false
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
     val operatorUid = operator?.let { PlayerData[it].id }
     val targetData = PlayerData[target]
@@ -77,7 +85,7 @@ fun mutePlayer(target: Player, reason: String, operator: Player? = null): Boolea
         """
             |[red]你已被禁言
             |[yellow]原因：[white]$finalReason
-            |[yellow]可联系3+级玩家/管理进行解除
+            |[yellow]可联系有权限的协管/管理进行解除
         """.trimMargin()
     )
     operator?.sendMessage("[green]已禁言 [white]${target.name}[green]，原因：[yellow]$finalReason")
@@ -88,6 +96,7 @@ fun mutePlayer(target: Player, reason: String, operator: Player? = null): Boolea
 }
 
 fun mutePlayerTemporary(target: Player, minutes: Int, reason: String, operator: Player? = null): Boolean {
+    if (operator != null && !canManagePlayerMute(operator, target)) return false
     val fixedMinutes = minutes.coerceAtLeast(1)
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
     val until = System.currentTimeMillis() + fixedMinutes * 60_000L
@@ -102,7 +111,7 @@ fun mutePlayerTemporary(target: Player, minutes: Int, reason: String, operator: 
         """
             |[red]你已被临时禁言 [yellow]${fixedMinutes}分钟
             |[yellow]原因：[white]$finalReason
-            |[yellow]可联系3+级玩家/管理进行解除
+            |[yellow]可联系有权限的协管/管理进行解除
         """.trimMargin()
     )
     operator?.sendMessage("[green]已临时禁言 [white]${target.name}[green] [yellow]${fixedMinutes}分钟[green]，原因：[yellow]$finalReason")
@@ -112,6 +121,7 @@ fun mutePlayerTemporary(target: Player, minutes: Int, reason: String, operator: 
 }
 
 fun unmutePlayer(target: Player, operator: Player? = null): Boolean {
+    if (operator != null && !canManagePlayerMute(operator, target)) return false
     val data = PlayerData[target]
     var removed = false
     affectedKeys(data).forEach {
@@ -147,7 +157,7 @@ listenTo<OnChat> {
     muteReason(player) ?: return@listenTo
     received = true
     launch(Dispatchers.game) {
-        player.sendMessage("[yellow]你已被禁言，可联系3+级玩家/管理进行解除")
+        player.sendMessage("[yellow]你已被禁言，可联系有权限的协管/管理进行解除")
     }
 }
 
@@ -171,8 +181,11 @@ command("playermute", "管理指令：禁言玩家") {
     body {
         if (arg.isEmpty()) replyUsage()
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
+        if (player != null && !canManagePlayerMute(player!!, target)) {
+            returnReply("[red]权限不足：3+只能处理0/1/2级玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
+        }
         val reason = arg.drop(1).joinToString(" ").ifBlank { "未填写理由" }
-        mutePlayer(target, reason, player)
+        if (!mutePlayer(target, reason, player)) returnReply("[yellow]操作者权限或目标等级已变化，禁言已取消。".with())
         reply("[green]已禁言 [white]{target.name}".with("target" to target))
     }
 }
@@ -184,6 +197,9 @@ command("playerunmute", "管理指令：解除玩家禁言") {
     body {
         if (arg.isEmpty()) replyUsage()
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
+        if (player != null && !canManagePlayerMute(player!!, target)) {
+            returnReply("[red]权限不足：3+只能处理0/1/2级玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
+        }
         if (unmutePlayer(target, player)) {
             reply("[green]已解除 [white]{target.name}[green] 的禁言".with("target" to target))
         } else {

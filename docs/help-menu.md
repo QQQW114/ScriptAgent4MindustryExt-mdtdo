@@ -60,7 +60,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/vote gameOver`、`/vote rollback`、`/vote skipWave`、`/vote clear`、`/vote text`：常用基础投票入口。
 - `/vote map <地图ID>`：需51%同意；发起立即换图投票，5赞/5反不再通过，需6赞/5反这类超过半数的赞成票。
 - `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
-- `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON CP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
+- `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON/JSON5 CP 或 v159 Data Assets ZIP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
 - `/vote reactor <on|off|status>`：投票开启/关闭反应堆爆炸或查看当前状态。
 - `/votekick <玩家>`：兼容旧原版入口，已归入投票指令分区；内部仍重定向到强制观战投票。
 - `/perf`、`/xperf`：3+级/管理员管理性能优化。

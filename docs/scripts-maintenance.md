@@ -14,7 +14,7 @@
 
 - 参考项目更新到 Mindustry `v159.7`、MindustryX `prerelease-2026.07.20.B480`。上游的大世界发送修复仅影响 Steam `SNet`，headless 专服仍需本项目补丁。
 - B480 自定义补丁补齐批量 `Net.send` 的 `SendPacketEvent`，事件携带 `connections`、`targetCount`、`reliable`；`trafficMonitor.kts` 按实际目标数统计批量上行。游戏同步改用白名单分类，握手、欢迎、插件、音乐、CP、杂交世界流不再触发性能清理。
-- `coreUnitRespawnCompat.kts` 在首次加入、内部重同步、核心单位变化和主动取消附身后可靠补发 `PlayerSpawn`，按 0/1/3/8 秒重试 `Unit -> Player`；第一轮实体快照可靠，后续 UDP，不执行全量 `/sync`。
+- `coreUnitRespawnCompat.kts` 仅在主动取消附身或世界确认后修复核心机引用；已有核心单位时仅补快照，单位为空时才 `checkSpawn()`，最多补两份 `Unit -> Player` UDP 小快照。删除无条件 0/1/3/8 秒重放、额外 `PlayerSpawn` 与可靠实体快照，避免 TCP 拥塞后的旧核心机/旧位置闪回。
 - `worldResyncCoordinator.kts` 统一接管点歌、SFX、技能/地图杂交、外部 CP 与管理 CP。优先级为 CP 300、杂交 200、普通 150、点歌 100、SFX 50；队列上限 32、排队 180 秒、任务后恢复 2.5 秒。L1 与首次加入共享 2 槽，L2+ 全服 1 槽且首次加入优先；确认超时会继续持槽最多 120 秒。
 - `syncThrottle.kts` 删除快照拦截与重路，只把原生间隔保守调整为 240/280/320ms；可靠建筑血量包不再降级为 UDP。
 - `serverPressureActions.kts` 每轮只使用当前级预算，L4 默认最多 400，并处理数量前三的压力单位。`performanceGuardExperimental.kts` 已收缩为兼容入口，第二套清单位、暂停与直接换图执行器彻底移除。
@@ -84,7 +84,7 @@
 - `wayzer/module.kts` 依赖 `coreLibrary/DBConnector`；`MdtStorage`、`mdtDatabase`、`banStore` 改用 `coreLib.db.DBApi`。启动日志已确认 Provider 注册成功，`No Provider` 消失。
 - Kotlin 2.3 下匿名 context parameter 不再让技能 lambda 直接解析 `CommandContext.arg`；`SkillScope` 显式暴露参数列表，恢复管理员技能、杂交、三级技能与集合/传送脚本编译。
 - `CommandApi` 的注册/移除/重建操作增加同步保护，避免 SA 3.4 集中卸载脚本时并发修改 `registeredCommands` 触发 `ConcurrentModificationException`。
-- 新增159核心机重生兼容：主动取消附身后调用 `checkSpawn()`，并按“新核心单位 -> Player”顺序给目标客户端补发两个实体的定向快照及可靠 `PlayerSpawnCallPacket`。不进行全量世界/资产同步。
+- 新增159核心机重生兼容：主动取消附身后调用 `checkSpawn()`，并按“新核心单位 -> Player”顺序给目标客户端补发小型 UDP 定向快照。2026-07-22 复查后移除额外可靠 `PlayerSpawnCallPacket`/可靠实体快照，防止旧状态在拥塞 TCP 队列中延迟到达。不进行全量世界/资产同步。
 - 重点地图 `14668`、`15450`、`@hybrid`、`@flood` 已在 SA 3.4 下恢复加载；`15450` 的柠檬 `PlayerData` 使用别名避免 Kotlin 2.3 同名冲突。
 
 验证状态：
@@ -1215,7 +1215,7 @@
 - 性能等级只取 TPS 与游戏同步上行；网络等级取总上行、活动世界流、TCP积压和待加入时间。
 - 世界/资产流不得进入单位清理等级，只能推动快照保护和入服门控。
 - 非零压力降级需要连续稳定采样，退出压力也需要连续达到恢复线，避免 TPS/上行在阈值附近反复横跳。
-- 同步限制另有独立滞回：默认启用后至少保持约 45 秒，降级需连续 3 次稳定采样，退出需连续 6 次低于恢复线，避免上行限速在波次流量波动中频繁启停。
+- 同步限制另有独立滞回：默认启用后至少保持 5 秒，降级/退出均要经过独立稳定采样，避免在上行阈值附近频繁启停。
 
 备注：
 
@@ -1253,6 +1253,7 @@
 - 统一模式介入 PVP，但优先清理火焰、子弹、波次队伍和非玩家队伍。
 - 不使用单纯 `unitBuildSpeedMultiplier = 0` 作为单位限制核心，改为设置 `rules.unitCap` 与压力分级清理单位。
 - 单位清理使用显式 Serpulo/Erekir 阶级表，避免按血量/权重排序导致 Erekir 低阶单位压过 Serpulo 高阶单位；并使用 `kill()` 走原版死亡同步链路，不再直接 `remove()`。
+- 候选单位必须同时满足 `unit.player == null`、`!spawnedByCore`、非 `TimedKillc`、非 `BuildingTetherc` 且可击杀；因此玩家当前附身单位和核心机不会被压力清理直接击杀。
 - 压力规则同步使用 `Call.setRule` 逐字段发送实际变更，不再在每轮压力执行时 `Call.setRules(state.rules)`；避免反复覆盖客户端本地显示类 Rules（如 fog/staticFog）并降低上行浪费。
 
 ---
@@ -1319,19 +1320,19 @@
 ### `mdtserver/config/scripts/wayzer/reGrief/syncThrottle.kts`
 
 类型：v159 原生快照频率保护
-职责：使用 v159 原生快照间隔和批量发送，不再逐玩家手工序列化全部实体。
+职责：只调整 v159 原生全局快照间隔，不再逐玩家手工序列化或重路全部实体。
 
 当前功能：
 
 - 反射读取 `Administration.Config.snapshotInterval`，保存原始值。
-- 压力时按 `serverPressure` 建议增大间隔，默认280/420/560ms，上限800ms；绝不低于原生间隔。
+- 压力时按 `serverPressure` 建议增大间隔，默认 240/280/320ms，上限 320ms；绝不低于原生间隔。
 - 恢复或卸载后还原原始 `snapshotInterval`。
-- MindustryX `SendPacketEvent` 可用且存在待加入连接时，将状态/实体/建筑快照批量发送给 `hasConnected=true` 的玩家。
-- 重路必须先发送成功再取消原广播；任一失败会禁用重路并 fail-open 回退原版广播，避免在线玩家丢快照或每帧异常。
+- 不拦截、取消、重发或改变任何状态/实体/建筑快照的可靠性。
+- 全局实体快照包含单位移动和 `Player.unit` 控制关系；降频会让丢包时的插值变粗，但不会主动删除或隐藏单位。
 
 备注：
 
-- 官方端没有 `SendPacketEvent` 时仍可调整原生间隔，但不执行待加入连接重路。
+- `SendPacketEvent` 只用于上行统计和既有逻辑包监测，`syncThrottle.kts` 本身不依赖该事件调整间隔。
 - 不要恢复 X35 的 `syncTime/snapshotsSent` 逐玩家实现；它会绕过 v159 共享序列化优化。
 - 若玩家反馈世界卡住，应对照 `/pressure status`、`/traffic status` 与 watchdog，确认是主线程停顿还是网络上行满载。
 
@@ -2366,7 +2367,7 @@
 
 - 记录被禁言玩家。
 - 被禁言玩家发送普通聊天或投票/聊天类入口时会被拦截。
-- 被拦截时提示：`你已被禁言，可联系3+级玩家/管理进行解除`。
+- 被拦截时提示：`你已被禁言，可联系有权限的协管/管理进行解除`。
 - 提供接口供玩家信息/交互面板调用：
   - `isMuted(target)`
   - `mutePlayer(target, reason, operator)`
@@ -3726,6 +3727,28 @@
 
 # 2026-07-22：收紧3+直接限制目标
 
-- 3+通过玩家面板或相关脚本直接强制观战、禁建时，只能处理信任等级低于3的玩家，即0/1/2级；不能再直接处理3级玩家。
-- 目标边界使用独立的 `canDirectRestrictTrustTarget` 判断，避免把禁言、账号封禁等其他分层权限一并误收紧。3++仍可处理低于3++的目标，4级保留全局管理。
+- 3+通过玩家面板或相关脚本直接强制观战、禁言、禁建时，只能处理信任等级低于3的玩家，即0/1/2级；不能再直接处理3级玩家。
+- 三类即时限制统一使用 `canDirectRestrictTrustTarget` 判断，并在菜单打开、理由输入完成和最终执行时复核目标等级，避免利用旧菜单状态越权。账号/IP封禁仍按独立协管规则判断；3++仍可处理低于3++的目标，4级保留全局管理。
 - 冷启动验证通过：`共找到156脚本,加载成功152,启用成功148,出错0`；未发现本轮相关编译或启用错误。
+- 禁言与禁建的底层执行函数也加入同一目标边界复核，避免其他脚本绕过玩家面板直接调用；本次统一后再次冷启动验证为156/152/148/0。
+
+# 2026-07-22：惊鸿 ZIP generated 贴图兼容
+
+- `惊鸿.zip` 同时包含普通 `惊鸿-preview.png` 与 `sprites/generated/<content-hash>/惊鸿-preview.png`，旧冲突保护只按文件名比较，因而误报“惊鸿.zip 与 惊鸿.zip”并在应用前回滚。
+- 对照 Mindustry v159.7 `DataImagePacker` 后确认：原版会明确优先 `generated/**` 贴图，并让普通同名图不进入补丁图集。这是合法导出结构，不属于不确定覆盖。
+- `externalCpHotReload.kts` 现在只放行同一个 ZIP 内“恰好一张 generated + 一张普通图”的同名组合，并记录具体路径警告；第三张同名图、多张 generated、跨外部包以及与地图/服务端资产的冲突继续硬拒绝。
+- 加载警告会限量写入服务端日志，控制台和管理菜单都能看到本次选择依据，避免只显示一个无上下文的警告计数。
+- 实测 `惊鸿.zip`（content=1、sprites=10、sounds=4、解压129.5KB）加载、热重载、卸载成功；运行态确认新增 `dp-惊鸿`、命中 generated 预览图且音效进入资产表，卸载后新增内容与外部 CP 记录均清空。跨包同路径和三张同名图防护测试也均按预期拒绝。
+- 冷启动验证：`共找到156脚本,加载成功152,启用成功148,出错0`。
+
+# 2026-07-22：核心机/附身单位高上行闪回修复
+
+- 根因不是核心机“服务端生成失败”，而是 B480 轮次扩展后的重放链路：首次进服、`PlayerConnectionConfirmed`、核心单位变化和 `checkSpawn()` 可叠加多轮 0/1/3/8 秒修复。
+- 第一份 `EntitySnapshotCallPacket` 被改为可靠 TCP；服务端上行/TCP 队列拥塞时，它可能晚于更新的 UDP 实体快照到达。TCP 与 UDP 没有跨通道顺序，因此客户端会重放旧 `Player.unit`/旧位置。
+- 每轮可靠 `PlayerSpawnCallPacket` 也会在客户端先执行 `player.set(core)`；延迟到达时即使不新建单位，也会直接造成镜头/玩家位置回核心。
+- `coreUnitRespawnCompat.kts` 现只在主动取消附身或世界确认后工作。世界确认后已有有效核心单位时仅补快照，单位为空时才 `checkSpawn()`。最多发两份 `Unit -> Player` 原版 UDP 小快照，不再额外发 `PlayerSpawn`，不再调用 B480 可靠快照 API。
+- 每次发送前复核连接已完成世界/资产同步、generation 未变、当前单位仍是同一个有效核心单位。一旦玩家附身非核心单位，立即作废旧修复。
+- 脚本启用/热重载时会从 `Groups.player` 预填当前控制单位，因此在线执行 `sa reload wayzer/reGrief/coreUnitRespawnCompat` 后，已在线玩家的下一次取消附身仍能识别 previous。
+- `syncThrottle.kts` 确实会把包含单位移动和 `Player.unit` 的原版全局实体快照从约 200ms 降到 240/280/320ms；这会放大丢包时的插值粗糙，但不拦截、重放或删除单位，不是旧控制关系闪回的主因。
+- `serverPressureActions.kts` 的所有压力清理共用候选条件：玩家当前附身单位、`spawnedByCore`、`TimedKillc`、`BuildingTetherc`、死亡/不可击杀单位均不会被该系统击杀。
+- 隔离空缓存首次编译中，`coreUnitRespawnCompat` 编译、加载、启用均成功；最终代码又在隔离实例中明确触发该脚本重新编译。将隔离实例改为 RPC 客户避开当前运行服务端的 10099 端口后，完整汇总为 `共找到156脚本,加载成功152,启用成功148,出错0`。

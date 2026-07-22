@@ -62,6 +62,7 @@ fun canManageBuildBan(operator: Player, target: Player): Boolean {
 }
 
 fun disableBuild(target: Player, reason: String, operator: Player? = null): Boolean {
+    if (operator != null && !canManageBuildBan(operator, target)) return false
     val data = PlayerData[target]
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
     val keys = affectedKeys(data)
@@ -74,7 +75,7 @@ fun disableBuild(target: Player, reason: String, operator: Player? = null): Bool
         """
             |[red]你已被禁止建造/拆除
             |[yellow]原因：[white]$finalReason
-            |[yellow]可联系3+级玩家/管理进行解除
+            |[yellow]可联系有权限的协管/管理进行解除
         """.trimMargin()
     )
     operator?.sendMessage("[green]已禁止 [white]${target.name}[green] 建造/拆除，原因：[yellow]$finalReason")
@@ -83,6 +84,7 @@ fun disableBuild(target: Player, reason: String, operator: Player? = null): Bool
 }
 
 fun disableBuildTemporary(target: Player, minutes: Int, reason: String, operator: Player? = null): Boolean {
+    if (operator != null && !canManageBuildBan(operator, target)) return false
     val fixedMinutes = minutes.coerceAtLeast(1)
     val data = PlayerData[target]
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
@@ -95,7 +97,7 @@ fun disableBuildTemporary(target: Player, minutes: Int, reason: String, operator
         """
             |[red]你已被临时禁止建造/拆除 [yellow]${fixedMinutes}分钟
             |[yellow]原因：[white]$finalReason
-            |[yellow]可联系3+级玩家/管理进行解除
+            |[yellow]可联系有权限的协管/管理进行解除
         """.trimMargin()
     )
     operator?.sendMessage("[green]已临时禁止 [white]${target.name}[green] 建造/拆除 [yellow]${fixedMinutes}分钟[green]，原因：[yellow]$finalReason")
@@ -104,6 +106,7 @@ fun disableBuildTemporary(target: Player, minutes: Int, reason: String, operator
 }
 
 fun enableBuild(target: Player, operator: Player? = null): Boolean {
+    if (operator != null && !canManageBuildBan(operator, target)) return false
     val data = PlayerData[target]
     val keys = affectedKeys(data)
     val removed = synchronized(buildBanLock) {
@@ -155,7 +158,7 @@ private fun warnBuildBanned(player: Player, reason: String) {
     val last = lastWarnAt[player.uuid()] ?: 0L
     if (now - last < WARN_INTERVAL_MILLIS) return
     lastWarnAt[player.uuid()] = now
-    player.sendMessage("[yellow]你已被禁止建造/拆除：[white]$reason[yellow]。可联系3+级玩家/管理解除。")
+    player.sendMessage("[yellow]你已被禁止建造/拆除：[white]$reason[yellow]。可联系有权限的协管/管理解除。")
 }
 
 registerActionFilter {
@@ -193,9 +196,9 @@ command("buildban", "管理指令：禁止玩家建造") {
             }.with())
         }
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
-        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理低于3+的玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
+        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理0/1/2级玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
         val reason = arg.drop(1).joinToString(" ").ifBlank { "未填写理由" }
-        disableBuild(target, reason, player)
+        if (!disableBuild(target, reason, player)) returnReply("[yellow]操作者权限或目标等级已变化，禁建已取消。".with())
         reply("[green]已禁止 [white]{target.name}[green] 建造/拆除".with("target" to target))
     }
 }
@@ -207,7 +210,7 @@ command("buildunban", "管理指令：解除玩家禁建") {
         if (arg.isEmpty()) replyUsage()
         if (!canUseBuildBanCommand(player)) returnReply("[red]权限不足：需要3+级或4级。".with())
         val target = resolveOnlineTarget(arg[0]) ?: returnReply("[red]未找到在线玩家".with())
-        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理低于3+的玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
+        if (!canCommandManage(player, target)) returnReply("[red]权限不足：3+只能处理0/1/2级玩家，3++可处理低于3++的玩家，4级保留全局管理。".with())
         if (enableBuild(target, player)) {
             reply("[green]已解除 [white]{target.name}[green] 的建造/拆除限制".with("target" to target))
         } else {

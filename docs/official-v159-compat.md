@@ -13,7 +13,7 @@
 
 - 参考源码已更新到官方 Mindustry `v159.7` 与 MindustryX `prerelease-2026.07.20.B480`。上游的 “Fixed large world sending” 与连接修复位于 Steam `desktop/.../SNet.java`，不覆盖 headless 专服的 `ArcNetProvider`、`NetServer.sendWorldAndAssets`、`connectConfirm`、批量 `Net.send` 或核心机恢复链路。
 - `SendPacketEvent` 增加 `connections`、`targetCount`、`reliable`，并在批量 `Net.send(Object, Iterable<NetConnection>, boolean)` 发出事件，解决过去流量统计只覆盖单连接/广播入口而漏算批量快照的问题。
-- `NetServer.writeCustomEntitySnapshot(Player, Iterable<Syncc>, boolean)` 支持关键 `Unit -> Player` 实体快照可靠发送；脚本仅把核心机恢复的第一轮定向快照设为可靠，后续仍走 UDP 快速重试，避免把全部实体同步改成可靠流。
+- B480 JAR 仍包含 `NetServer.writeCustomEntitySnapshot(Player, Iterable<Syncc>, boolean)`，但生产脚本已禁止使用其可靠模式。TCP 与 UDP 没有跨通道顺序；上行拥塞时，可靠旧快照可能晚于新 UDP 状态到达，把玩家拉回旧核心机或旧附身位置。
 - 补丁文件为 `patches/client/0075-H.API-emit-SendPacketEvent-for-bulk-sends.patch` 与 `0076-H.API-allow-reliable-custom-entity-snapshots.patch`。
 - 构建命令：`gradle --no-daemon server:dist -x tools:doPack`。普通 `server:dist` 会被无关的 `tools:doPack` ClassNotFound 阻断。
 - 部署候选：`mdtserver/server-2026.07.20.B480-mdtdo.jar`；SHA-256：`8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。
@@ -343,8 +343,10 @@
 新增：`mdtserver/config/scripts/wayzer/reGrief/coreUnitRespawnCompat.kts`
 
 - 只处理“玩家原附身单位仍然存活，但玩家单位变为 null”的主动取消附身场景；原单位正常死亡仍走原版死亡延迟。
-- 100ms 后若服务端仍无玩家单位，调用 `player.checkSpawn()` 请求核心机。
-- 159 的实体快照可能先写 Player、后写新核心单位；客户端读取 Player 时找不到单位 ID，会把 `Player.unit` 保持为 null。兼容脚本会按“核心单位 -> Player”顺序向该玩家补发仅两个实体的定向快照，并可靠重发一次 `PlayerSpawnCallPacket`，随后再补一次低成本快照。
+- 默认 120ms 后若服务端仍无玩家单位，调用 `player.checkSpawn()` 请求核心机。
+- 159 的实体快照可能先写 Player、后写新核心单位；客户端读取 Player 时找不到单位 ID，会把 `Player.unit` 保持为 null。兼容脚本在 `PlayerConnectionConfirmed` 后，若服务端已有有效核心单位就直接按“核心单位 -> Player”补快照；服务端单位为空时才尝试 `checkSpawn()`。
+- 不再额外重发 `PlayerSpawnCallPacket`，也不再发送可靠实体快照。前者在客户端会先执行 `player.set(core)`，后者会在 TCP 拥塞后成为延迟旧状态，两者都可直接造成可见回弹。
+- 每次补发前复核连接已完成资产/世界同步、generation 未变、玩家当前仍控制同一核心单位；一旦附身其他单位立即取消旧修复。
 - 该修复不调用 `sendWorldData` 或 `sendWorldAndAssets`，不会让玩家重新进入完整世界/资产同步，也不会给全服增加大流量。
 - 玩家离线、换图时清理内存状态；换队/强制观战若目标队伍无核心，不会凭空生成核心机。
 
