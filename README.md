@@ -17,6 +17,8 @@ MDT DO 服务器使用的 ScriptAgent 脚本与维护文档开源仓库。
 - `docs/official-v159-compat.md`
 - `docs/map-scripts.md`
 
+- 文档与代码均由ai生成，并未进行全部审计，仍建议使用ai工具参与开发
+
 ## 上游与版权
 
 上游项目：<https://github.com/way-zer/ScriptAgent4MindustryExt>
