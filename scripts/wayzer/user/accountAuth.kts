@@ -4,7 +4,9 @@
 @file:Depends("wayzer/user/accountPassword", "账号密码哈希")
 @file:Depends("wayzer/user/accountIpGuard", "账号IP防熊")
 @file:Depends("wayzer/user/trustLevel", "信任等级")
+@file:Depends("wayzer/user/seniorityLevel", "资历等级")
 @file:Depends("wayzer/user/trustPromotion", "信任晋升检测")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.user
 
@@ -12,7 +14,7 @@ import coreMindustry.MenuBuilder
 import coreLibrary.lib.event.RequestPermissionEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
-import wayzer.lib.ServerTestMode
+import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.TrustPointChangedEvent
 import kotlin.random.Random
 
@@ -20,6 +22,7 @@ private val passwordTool = contextScript<AccountPassword>()
 private val textInput = contextScript<coreMindustry.UtilTextInput>()
 private val ipGuard = contextScript<AccountIpGuard>()
 private val trustLevel = contextScript<TrustLevel>()
+private val seniorityLevel = contextScript<SeniorityLevel>()
 private val trustPromotion = contextScript<TrustPromotion>()
 
 private val QQ_MIN_LENGTH = 5
@@ -60,7 +63,11 @@ private val sessionJoinAtMillis = mutableMapOf<String, Long>()
 private val sessionLastSeenAtMillis = mutableMapOf<String, Long>()
 private val ipv4Regex = Regex("""\d{1,3}(?:\.\d{1,3}){3}""")
 
-private fun serverTestModeEnabled(): Boolean = ServerTestMode.getOrNull()?.isEnabled() == true
+private fun registrationOnlineRequirementEnabled(): Boolean =
+    ServerFeatureSettings.getOrNull()?.registrationOnlineRequirementEnabled() ?: true
+
+private fun defaultBoundTrustLevelCode(): String =
+    ServerFeatureSettings.getOrNull()?.defaultBoundTrustLevelCode()?.takeIf { it in setOf("1", "2", "3") } ?: "1"
 
 private suspend fun canManageAccount(operator: Player?): Boolean =
     operator == null || operator.hasPermission("wayzer.admin.account")
@@ -70,9 +77,6 @@ private fun denyAccountAdmin(operator: Player?): Boolean {
     operator?.sendMessage(message) ?: logger.warning(message)
     return false
 }
-
-private fun testModeAccountMessage(): String =
-    "[yellow][危险]服务器测试模式已启用：请先登录/注册账号；登录后使用临时测试MDC，非4级默认信任1/资历3。测试期间改密/注销等破坏性账号操作暂时关闭。"
 
 private val registerWarning = """
     请务必加入QQ群并牢记账号密码。
@@ -161,6 +165,10 @@ private fun formatSessionOnlineDuration(millis: Long, roundUp: Boolean = false):
 }
 
 private fun registerCaptchaOnlineStatus(player: Player, prefix: String = "[yellow]注册验证码获取条件："): String {
+    if (!registrationOnlineRequirementEnabled()) {
+        return "$prefix [green]管理员已关闭一小时在线要求，可立即输入 [gold]/captcha[green] 获取验证码。\n" +
+                "[gray]登录不需要验证码；注册仍需4位验证码以防止误操作。"
+    }
     val online = currentSessionOnlineMillis(player).coerceAtLeast(0L)
     val required = REGISTER_CAPTCHA_MIN_ONLINE_MILLIS
     val left = (required - online).coerceAtLeast(0L)
@@ -229,6 +237,7 @@ private fun issueCaptcha(player: Player): String {
 }
 
 private fun registerCaptchaOnlineError(player: Player): String? {
+    if (!registrationOnlineRequirementEnabled()) return null
     val online = currentSessionOnlineMillis(player)
     val required = REGISTER_CAPTCHA_MIN_ONLINE_MILLIS
     if (online >= required) return null
@@ -283,10 +292,7 @@ private suspend fun verifyCaptchaFlow(player: Player, title: String): Boolean {
 }
 
 private fun currentAccount(player: Player): MdtStorage.AccountRecord? {
-    val uid = ServerTestMode.getOrNull()
-        ?.takeIf { it.isEnabled() }
-        ?.formalUid(player)
-        ?: PlayerData[player].id
+    val uid = PlayerData[player].id
     if (uid.startsWith("account:")) {
         uid.substringAfter("account:").toIntOrNull()?.let { id ->
             MdtStorage.findAccountById(id)?.let { return it }
@@ -401,18 +407,25 @@ private fun finishLogin(
 
     val data = PlayerData[player]
     val oldLevel = with(trustLevel) { getTrustLevelCode(data.id, player) }
+    val oldSeniorityLevel = with(seniorityLevel) { getSeniorityLevelCode(data.id, player) }
+    val defaultLevel = defaultBoundTrustLevelCode()
     val subjectUid = MdtStorage.recordAccountLogin(
         player.uuid(),
         account.id,
         player.con.address,
         player.usid(),
         player.plainName(),
+        minimumTrustLevelCode = defaultLevel,
+        minimumSeniorityLevelCode = defaultLevel,
     )
+    // recordAccountLogin 可能刚把旧账号的信任/资历抬到新默认等级；
+    // 清掉该主体的旧缓存，避免同一进程内显示迁移前等级。
+    with(trustLevel) { invalidateTrustLevelCache(subjectUid) }
+    with(seniorityLevel) { invalidateSeniorityLevelCache(subjectUid) }
     data.addId(subjectUid, asPrimary = true)
     with(ipGuard) { onAccountAuthed(player) }
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }?.applySession(player, "login")
     val migratedMdc = migrateGuestMdcFromUid
-        ?.takeIf { !serverTestModeEnabled() && it != subjectUid }
+        ?.takeIf { it != subjectUid }
         ?.let { guestUid ->
             runCatching { MdtStorage.migrateTrustPoints(guestUid, subjectUid) }
                 .onFailure { e -> logger.warning("注册后迁移游客MDC失败: guest=$guestUid account=$subjectUid error=${e.message}") }
@@ -420,19 +433,15 @@ private fun finishLogin(
         }
     val effectiveUid = PlayerData[player].id
     val newLevel = with(trustLevel) { getTrustLevelCode(effectiveUid, player) }
+    val newSeniorityLevel = with(seniorityLevel) { getSeniorityLevelCode(effectiveUid, player) }
     if (oldLevel != newLevel) {
         with(trustLevel) { emitTrustLevelChanged(effectiveUid, oldLevel, newLevel) }
     }
-    if (!serverTestModeEnabled()) {
-        with(trustPromotion) { checkTrustLevel(subjectUid) }
+    if (oldSeniorityLevel != newSeniorityLevel) {
+        with(seniorityLevel) { emitSeniorityLevelChanged(effectiveUid, oldSeniorityLevel, newSeniorityLevel) }
     }
-    player.sendMessage(
-        if (serverTestModeEnabled()) {
-            "[green]${action}成功，已登录 QQ 账号：[white]${account.qq}[]；[yellow]测试模式下已切入临时测试身份。"
-        } else {
-            "[green]${action}成功，请退出重进改变登录态，已登录 QQ 账号：[white]${account.qq}[]"
-        }
-    )
+    with(trustPromotion) { checkTrustLevel(subjectUid) }
+    player.sendMessage("[green]${action}成功，请退出重进改变登录态，已登录 QQ 账号：[white]${account.qq}[]")
     if (migratedMdc?.changed == true) {
         val changedUids = mutableSetOf(subjectUid)
         migrateGuestMdcFromUid?.let { changedUids += it }
@@ -485,15 +494,17 @@ suspend fun openAccountMenu(player: Player) {
     val authed = PlayerData[player].authed
     val account = if (authed) currentAccount(player) else null
     val captchaStatus = if (!authed) "\n${registerCaptchaOnlineStatus(player, "[gray]注册验证码状态：")}" else ""
-    val testModeText = if (serverTestModeEnabled()) {
-        "\n[red][危险]服务器测试模式已启用：[yellow]登录后使用临时测试MDC；非4级默认信任1/资历3；改密/注销暂时关闭。"
-    } else ""
+    val registerRequirementText = if (registrationOnlineRequirementEnabled()) {
+        "注册前需本次启动累计在线满1小时，并输入 [gold]/captcha[] 获取4位注册验证码。"
+    } else {
+        "管理员已关闭注册一小时要求；可立即输入 [gold]/captcha[] 获取4位注册验证码。"
+    }
     MenuBuilder<Unit>("MDT账号系统") {
         msg = """
             |[cyan]当前状态：[white]${if (authed) "已登录" else "未登录"}
             |[cyan]当前账号：[white]${account?.qq ?: "无"}
             |[gray]同一客户端通常会自动登录；默认未登录玩家仍可游玩。
-            |[gray]登录账号不需要验证码；注册前需本次启动累计在线满1小时，并输入 [gold]/captcha[] 获取4位注册验证码。$captchaStatus$testModeText
+            |[gray]登录账号不需要验证码；$registerRequirementText$captchaStatus
             |
             |[yellow]注册提示：
             |$registerWarning
@@ -556,10 +567,6 @@ suspend fun loginFlow(player: Player) {
 }
 
 suspend fun changePasswordFlow(player: Player) {
-    if (serverTestModeEnabled()) {
-        player.sendMessage(testModeAccountMessage())
-        return
-    }
     val account = currentAccount(player)
     if (!PlayerData[player].authed || account == null) {
         player.sendMessage("[red]请先登录账号")
@@ -670,10 +677,6 @@ private suspend fun adminDeleteAccount(operator: Player?, target: String, confir
 }
 
 suspend fun deleteOwnAccountFlow(player: Player) {
-    if (serverTestModeEnabled()) {
-        player.sendMessage(testModeAccountMessage())
-        return
-    }
     val account = currentAccount(player)
     if (!PlayerData[player].authed || account == null) {
         player.sendMessage("[red]请先登录账号")
@@ -701,6 +704,14 @@ listenTo<ConnectAsyncEvent> {
     if (data.authed) return@listenTo
     val record = MdtStorage.autoLoginByDevice(packet.uuid, packet.usid) ?: return@listenTo
     if (record.account.status == "normal") {
+        // 正常批量修改已覆盖既有账号；这里再做一次按账号兜底，兼容数据库恢复、
+        // 并发注册/登录或旧版本留下的低等级资料，不扫描全库。
+        MdtStorage.ensureMinimumBoundPlayerLevels(record.subjectUid, defaultBoundTrustLevelCode())
+        // ConnectAsyncEvent 不在游戏线程；等级缓存仍由游戏线程维护，避免并发修改 mutableMap。
+        Core.app.post {
+            with(trustLevel) { invalidateTrustLevelCache(record.subjectUid) }
+            with(seniorityLevel) { invalidateSeniorityLevelCache(record.subjectUid) }
+        }
         data.addId(record.subjectUid, asPrimary = true)
     }
 }
@@ -713,8 +724,12 @@ listen<EventType.PlayerJoin> {
     sessionLastSeenAtMillis[key] = now
     pruneSessionOnlineCache(now)
     if (!PlayerData[player].authed) {
-        val prefix = if (serverTestModeEnabled()) "[red][危险]服务器测试模式已启用：登录后才可获得测试MDC、信任1/资历3。 " else ""
-        player.sendMessage("[yellow]${prefix}你尚未登录账号。已有账号可直接输入 [gold]/login[] 登录；注册需本次启动累计在线满1小时后用 [gold]/captcha[] 获取验证码。")
+        val registerText = if (registrationOnlineRequirementEnabled()) {
+            "注册需本次启动累计在线满1小时后用 [gold]/captcha[] 获取验证码。"
+        } else {
+            "管理员已关闭注册一小时要求，可立即用 [gold]/captcha[] 获取验证码后注册。"
+        }
+        player.sendMessage("[yellow]你尚未登录账号。已有账号可直接输入 [gold]/login[] 登录；$registerText")
     }
 }
 
@@ -763,11 +778,16 @@ command("captcha", "获取注册验证码") {
         registerCaptchaOnlineError(p)?.let { returnReply(it.with()) }
         val code = issueCaptcha(p)
         val onlineText = formatSessionOnlineDuration(currentSessionOnlineMillis(p))
+        val conditionText = if (registrationOnlineRequirementEnabled()) {
+            "[gray]已满足注册在线条件：本次启动累计在线 [white]$onlineText[gray] / 1小时。"
+        } else {
+            "[green]管理员已关闭注册一小时在线要求。"
+        }
         reply(
             """
             |[cyan]你的注册验证码是：[gold]$code
             |[gray]有效期：${captchaExpireMillis.coerceAtLeast(60_000L) / 1000L}秒。
-            |[gray]已满足注册在线条件：本次启动累计在线 [white]$onlineText[gray] / 1小时。
+            |$conditionText
             |[yellow]请继续输入 /register，并在弹窗中填写该验证码。
         """.trimMargin().with()
         )

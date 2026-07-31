@@ -103,7 +103,9 @@ private suspend fun disableMapScriptOnly(info: ScriptInfo): List<String> {
         it != info && it.enabled && (!it.id.startsWith("mapScript/") || !it.dependsOn(info))
     }.toList()
 
-    ScriptManager.disableScript(info, "手动关闭地图模式")
+    // ScriptAgent 3.4 的 disableScript 便捷入口需要已存在的事务上下文；
+    // 游戏内的 /unloadmapscript 是独立命令，必须在这里显式建立事务。
+    ScriptManager.transactionV2 { disable(info) }.printResult()
 
     val accidentallyDisabled = protectedEnabled.filter { !it.enabled && it.scriptState != ScriptState.Removed }
     if (accidentallyDisabled.isNotEmpty()) {
@@ -116,32 +118,58 @@ suspend fun setMapScriptEnabled(raw: String, enabled: Boolean): ManualMapScriptR
     val scriptId = normalizeMapScriptId(raw)
         ?: return ManualMapScriptResult(raw, false, "脚本ID不合法，只允许 mapScript 下的相对路径")
 
-    // 允许运维刚复制脚本后直接在游戏内加载。
-    ScriptRegistry.scanRoot()
+    // 只有加载时才扫描磁盘，允许运维刚复制脚本后直接启用。
+    // 关闭已在注册表中的脚本不应额外触发磁盘扫描，避免云服IO卡顿。
+    if (enabled) {
+        runCatching { ScriptRegistry.scanRoot() }.onFailure { error ->
+            return ManualMapScriptResult(scriptId, false, "扫描脚本目录失败：${error.message ?: error.javaClass.simpleName}")
+        }
+    }
     val info = ScriptRegistry.getScriptInfo(scriptId)
         ?: return ManualMapScriptResult(scriptId, false, "不存在脚本 scripts/$scriptId.kts")
 
-    if (enabled) {
-        MindustryDispatcher.safeBlocking {
-            ScriptManager.transactionV2 { enable(info) }.printResult()
-        }
-    } else {
-        // 关闭地图模式时只停用目标脚本本身；若 ScriptAgent 递归禁用误伤了依赖/常驻脚本，
-        // 立即恢复原本已启用且不依赖该地图脚本的脚本，避免连带关闭 ContentsTweaker 等公共能力。
-        val restored = MindustryDispatcher.safeBlocking {
-            disableMapScriptOnly(info)
-        }
-        val message = if (restored.isEmpty()) "已停用"
-        else "已停用，并恢复被连带关闭的脚本: ${restored.joinToString()}"
-        return ManualMapScriptResult(scriptId, true, message, restored)
+    if (enabled && info.enabled) {
+        return ManualMapScriptResult(scriptId, true, "脚本已经启用，无需重复加载")
+    }
+    if (!enabled && !info.enabled) {
+        return ManualMapScriptResult(scriptId, true, "脚本已经停用")
     }
 
-    val fail = info.failReason
-    return if (enabled && fail != null) {
-        ManualMapScriptResult(scriptId, false, "加载失败：$fail")
-    } else {
-        ManualMapScriptResult(scriptId, true, if (enabled) "已尝试加载并启用" else "已尝试停用")
+    if (enabled) {
+        val error = runCatching {
+            MindustryDispatcher.safeBlocking {
+                ScriptManager.transactionV2 { enable(info) }.printResult()
+            }
+        }.exceptionOrNull()
+        if (error != null) {
+            return ManualMapScriptResult(scriptId, false, "加载执行异常：${error.message ?: error.javaClass.simpleName}")
+        }
+        val fail = info.failReason
+        return when {
+            fail != null -> ManualMapScriptResult(scriptId, false, "加载失败：$fail")
+            !info.enabled -> ManualMapScriptResult(scriptId, false, "ScriptAgent事务结束后脚本仍未启用，请查看脚本加载日志")
+            else -> ManualMapScriptResult(scriptId, true, "已加载并启用")
+        }
     }
+
+    // 关闭地图模式时只停用目标脚本本身；若 ScriptAgent 递归禁用误伤了依赖/常驻脚本，
+    // 立即恢复原本已启用且不依赖该地图脚本的脚本，避免连带关闭 ContentsTweaker 等公共能力。
+    val restored = runCatching {
+        MindustryDispatcher.safeBlocking { disableMapScriptOnly(info) }
+    }.getOrElse { error ->
+        return ManualMapScriptResult(scriptId, false, "停用执行异常：${error.message ?: error.javaClass.simpleName}")
+    }
+    if (info.enabled) {
+        return ManualMapScriptResult(
+            scriptId,
+            false,
+            "ScriptAgent事务结束后脚本仍处于启用状态，请查看脚本加载日志",
+            restored,
+        )
+    }
+    val message = if (restored.isEmpty()) "已停用"
+    else "已停用，并恢复被连带关闭的脚本: ${restored.joinToString()}"
+    return ManualMapScriptResult(scriptId, true, message, restored)
 }
 
 private fun affectedPlayerTeams(): List<Team> {
@@ -658,6 +686,80 @@ fun removePureModeLevel3BlockTag(): Boolean {
     return had
 }
 
+private val pureModeActiveTag = "@pureModeActive"
+private val pureModeOwnsNoSkillsTag = "@pureModeOwnsNoSkills"
+private val pureModeOwnsLevel3BlockTag = "@pureModeOwnsLevel3Block"
+private val pureModePreviousNoSkillsValueTag = "@pureModePreviousNoSkillsValue"
+private val pureModePreviousLevel3BlockValueTag = "@pureModePreviousLevel3BlockValue"
+
+fun isPureModeEnabled(): Boolean = Vars.state.rules.tags.getBool(pureModeActiveTag)
+
+fun pureModeStatusText(): String = buildString {
+    append("[cyan]本局纯净模式：[white]")
+    append(if (isPureModeEnabled()) "[green]已开启" else "[gray]未开启")
+    append("\n[cyan]普通技能限制 @noSkills：[white]")
+    append(if (Vars.state.rules.tags.getBool("@noSkills")) "[green]存在" else "[gray]不存在")
+    append(" [gray](关闭时恢复启用前状态)")
+    append("\n[cyan]3级技能限制：[white]")
+    append(if (Vars.state.rules.tags.getBool("@pureNoLevel3Skills")) "[green]存在" else "[gray]不存在")
+    append(" [gray](关闭时恢复启用前状态)")
+}
+
+private fun rememberPureModeTag(targetTag: String, ownsTag: String, previousValueTag: String) {
+    val tags = Vars.state.rules.tags
+    val existed = tags.keys().contains(targetTag)
+    if (existed) {
+        tags.put(previousValueTag, tags.get(targetTag).orEmpty())
+        tags.remove(ownsTag)
+    } else {
+        tags.remove(previousValueTag)
+        tags.put(ownsTag, "true")
+    }
+}
+
+private fun restorePureModeTag(targetTag: String, ownsTag: String, previousValueTag: String) {
+    val tags = Vars.state.rules.tags
+    when {
+        tags.getBool(ownsTag) -> tags.remove(targetTag)
+        tags.keys().contains(previousValueTag) -> tags.put(targetTag, tags.get(previousValueTag).orEmpty())
+        // 兼容旧版纯净模式运行态：没有快照且不拥有标签时，保留当前值。
+    }
+    tags.remove(ownsTag)
+    tags.remove(previousValueTag)
+}
+
+/** 开启本局纯净模式；所有权标签确保关闭时不会误删地图原本自带的技能限制。 */
+fun enablePureMode(operator: String = "系统"): Boolean {
+    if (isPureModeEnabled()) return false
+    val tags = Vars.state.rules.tags
+    rememberPureModeTag("@noSkills", pureModeOwnsNoSkillsTag, pureModePreviousNoSkillsValueTag)
+    rememberPureModeTag("@pureNoLevel3Skills", pureModeOwnsLevel3BlockTag, pureModePreviousLevel3BlockValueTag)
+    addNoSkillsTag()
+    addPureModeLevel3BlockTag()
+    tags.put(pureModeActiveTag, "true")
+    broadcast(
+        "[cyan][纯净模式] [white]{operator}[cyan] 已为当前这局开启纯净模式：普通技能与3级技能均已禁用。".with(
+            "operator" to operator
+        )
+    )
+    return true
+}
+
+/** 关闭本局纯净模式，只移除本模式自己添加的标签。 */
+fun disablePureMode(operator: String = "系统"): Boolean {
+    if (!isPureModeEnabled()) return false
+    val tags = Vars.state.rules.tags
+    restorePureModeTag("@noSkills", pureModeOwnsNoSkillsTag, pureModePreviousNoSkillsValueTag)
+    restorePureModeTag("@pureNoLevel3Skills", pureModeOwnsLevel3BlockTag, pureModePreviousLevel3BlockValueTag)
+    tags.remove(pureModeActiveTag)
+    broadcast(
+        "[green][纯净模式] [white]{operator}[green] 已关闭当前这局纯净模式；地图原本自带的技能限制会保留。".with(
+            "operator" to operator
+        )
+    )
+    return true
+}
+
 fun reactorExplosionsEnabled(): Boolean = Vars.state.rules.reactorExplosions
 
 fun setReactorExplosions(enabled: Boolean, operator: String = "系统"): Boolean {
@@ -673,21 +775,62 @@ fun setReactorExplosions(enabled: Boolean, operator: String = "系统"): Boolean
     return changed
 }
 
-suspend fun setFloodMode(enabled: Boolean): Boolean {
-    if (enabled) Vars.state.rules.tags.put("@flood", "true")
-    else {
-        Vars.state.rules.tags.remove("@flood")
-        Vars.state.rules.tags.remove("@floodV2")
-    }
-    Call.setRules(Vars.state.rules)
-    return setMapScriptEnabled("tags/flood", enabled).success
+private data class FloodModeTagSnapshot(
+    val floodPresent: Boolean,
+    val floodValue: String?,
+    val floodV2Present: Boolean,
+    val floodV2Value: String?,
+)
+
+private fun snapshotFloodModeTags(): FloodModeTagSnapshot {
+    val tags = Vars.state.rules.tags
+    return FloodModeTagSnapshot(
+        floodPresent = tags.containsKey("@flood"),
+        floodValue = tags.get("@flood"),
+        floodV2Present = tags.containsKey("@floodV2"),
+        floodV2Value = tags.get("@floodV2"),
+    )
 }
 
-suspend fun setLordOfWarMode(enabled: Boolean): Boolean {
+private fun restoreFloodModeTags(snapshot: FloodModeTagSnapshot) {
+    val tags = Vars.state.rules.tags
+    if (snapshot.floodPresent) tags.put("@flood", snapshot.floodValue.orEmpty()) else tags.remove("@flood")
+    if (snapshot.floodV2Present) tags.put("@floodV2", snapshot.floodV2Value.orEmpty()) else tags.remove("@floodV2")
+    Call.setRules(Vars.state.rules)
+}
+
+suspend fun setFloodModeDetailed(enabled: Boolean): ManualMapScriptResult {
+    val oldTags = snapshotFloodModeTags()
+    if (enabled) {
+        Vars.state.rules.tags.put("@flood", "true")
+        Call.setRules(Vars.state.rules)
+        val result = setMapScriptEnabled("tags/flood", true)
+        if (!result.success) {
+            restoreFloodModeTags(oldTags)
+            return result.copy(message = "${result.message}；已回滚洪水标签")
+        }
+        return result
+    }
+
+    // 先确认脚本真正停用，再移除标签。若停用失败，保留原标签，
+    // 避免出现“洪水逻辑仍在运行但地图标签已丢失”的半更新状态。
+    val result = setMapScriptEnabled("tags/flood", false)
+    if (!result.success) return result
+    Vars.state.rules.tags.remove("@flood")
+    Vars.state.rules.tags.remove("@floodV2")
+    Call.setRules(Vars.state.rules)
+    return result
+}
+
+suspend fun setFloodMode(enabled: Boolean): Boolean = setFloodModeDetailed(enabled).success
+
+suspend fun setLordOfWarModeDetailed(enabled: Boolean): ManualMapScriptResult {
     // Lord of War 当前是 mapScript/14668 的整图专用脚本，不是通用 tag。
     // 是否在运行中手动启停由管理员自行判断；此处不额外阻止。
-    return setMapScriptEnabled("14668", enabled).success
+    return setMapScriptEnabled("14668", enabled)
 }
+
+suspend fun setLordOfWarMode(enabled: Boolean): Boolean = setLordOfWarModeDetailed(enabled).success
 
 listen(EventType.Trigger.update) {
     if (infiniteFireSnapshot == null) return@listen

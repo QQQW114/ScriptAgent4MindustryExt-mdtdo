@@ -1,11 +1,13 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 
 package wayzer.user
 
+import wayzer.lib.DatabaseFeature
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
-import wayzer.lib.ServerTestMode
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.time.Duration
 import java.time.Instant
 
@@ -21,29 +23,18 @@ private fun creditName(): String = "$CREDIT_SHORT_NAME（$CREDIT_FULL_NAME）"
 
 private val currentPointCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
-private fun testModeFor(uid: String): ServerTestMode? =
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }
+private fun mdcTransferEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.MdcTransferAndRedPacket)
 
-private fun isServerTestModeEnabled(): Boolean = ServerTestMode.getOrNull()?.isEnabled() == true
-private fun activeTestMode(): ServerTestMode? = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }
-private fun blockNormalMdcInTestMode(uid: String): Boolean =
-    activeTestMode()?.let { !it.ownsUid(uid) } == true
+private fun mdcTransferDisabledMessage(): String =
+    "[yellow]MDC转账与红包功能已被管理员关闭，请联系管理员。"
 
-fun getTrustPoints(uid: String): Int = when {
-    testModeFor(uid) != null -> testModeFor(uid)!!.getTrustPoints(uid)
-    blockNormalMdcInTestMode(uid) -> 0
-    else -> MdtStorage.getTrustPoints(uid)
-}
+fun getTrustPoints(uid: String): Int = MdtStorage.getTrustPoints(uid)
 
-fun getTotalTrustPoints(uid: String): Int = when {
-    testModeFor(uid) != null -> testModeFor(uid)!!.getTotalTrustPoints(uid)
-    blockNormalMdcInTestMode(uid) -> 0
-    else -> MdtStorage.getTotalTrustPoints(uid)
-}
+fun getTotalTrustPoints(uid: String): Int = MdtStorage.getTotalTrustPoints(uid)
 
 fun getCachedTrustPoints(uid: String): Int =
-    testModeFor(uid)?.getTrustPoints(uid)
-        ?: if (blockNormalMdcInTestMode(uid)) 0 else currentPointCache.getOrPut(uid) { MdtStorage.getTrustPoints(uid) }
+    currentPointCache.getOrPut(uid) { MdtStorage.getTrustPoints(uid) }
 
 private fun emitTrustPointChanged(uid: String) {
     launch { TrustPointChangedEvent(setOf(uid)).emitAsync() }
@@ -88,15 +79,13 @@ private fun notifyMdcChanged(uid: String, amount: Int, desc: String, newPoints: 
 }
 
 private fun setCachedTrustPoints(uid: String, value: Int) {
-    if (testModeFor(uid) != null) return
     currentPointCache[uid] = value
 }
 
 fun addTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
     if (amount == 0) return getTrustPoints(uid)
-    if (blockNormalMdcInTestMode(uid)) return 0
     val oldPoints = getCachedTrustPoints(uid)
-    val newPoints = testModeFor(uid)?.addTrustPoints(uid, amount) ?: MdtStorage.addTrustPoints(uid, amount)
+    val newPoints = MdtStorage.addTrustPoints(uid, amount)
     setCachedTrustPoints(uid, newPoints)
     notifyMdcChanged(uid, newPoints - oldPoints, desc, newPoints)
     emitTrustPointChanged(uid)
@@ -106,16 +95,7 @@ fun addTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
 fun addTrustPointsBatch(rewards: Map<String, Int>, desc: String = ""): Map<String, Int> {
     val fixed = rewards.filterValues { it > 0 }
     if (fixed.isEmpty()) return emptyMap()
-    val testMode = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }
-    val testRewards = if (testMode != null) fixed.filterKeys { testMode.ownsUid(it) } else emptyMap()
-    val normalRewards = if (testMode != null) emptyMap() else fixed
-    val newPoints = linkedMapOf<String, Int>()
-    if (normalRewards.isNotEmpty()) newPoints += MdtStorage.addTrustPointsBatch(normalRewards)
-    if (testMode != null && testRewards.isNotEmpty()) {
-        testRewards.forEach { (uid, amount) ->
-            newPoints[uid] = testMode.addTrustPoints(uid, amount)
-        }
-    }
+    val newPoints = MdtStorage.addTrustPointsBatch(fixed)
     newPoints.forEach { (uid, newValue) ->
         setCachedTrustPoints(uid, newValue)
         notifyMdcChanged(uid, fixed[uid] ?: 0, desc, newValue)
@@ -126,9 +106,8 @@ fun addTrustPointsBatch(rewards: Map<String, Int>, desc: String = ""): Map<Strin
 
 fun addCurrentTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
     if (amount == 0) return getTrustPoints(uid)
-    if (blockNormalMdcInTestMode(uid)) return 0
     val oldPoints = getCachedTrustPoints(uid)
-    val newPoints = testModeFor(uid)?.addCurrentTrustPoints(uid, amount) ?: MdtStorage.addCurrentTrustPoints(uid, amount)
+    val newPoints = MdtStorage.addCurrentTrustPoints(uid, amount)
     setCachedTrustPoints(uid, newPoints)
     notifyMdcChanged(uid, newPoints - oldPoints, desc, newPoints)
     emitTrustPointChanged(uid)
@@ -137,9 +116,8 @@ fun addCurrentTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
 
 fun spendTrustPoints(uid: String, amount: Int, desc: String = ""): Boolean {
     if (amount <= 0) return true
-    if (blockNormalMdcInTestMode(uid)) return false
     val oldPoints = getCachedTrustPoints(uid)
-    val success = testModeFor(uid)?.spendTrustPoints(uid, amount) ?: MdtStorage.spendTrustPoints(uid, amount)
+    val success = MdtStorage.spendTrustPoints(uid, amount)
     if (success) {
         val newPoints = (oldPoints - amount).coerceAtLeast(0)
         setCachedTrustPoints(uid, newPoints)
@@ -150,17 +128,11 @@ fun spendTrustPoints(uid: String, amount: Int, desc: String = ""): Boolean {
 }
 
 fun transferTrustPoints(fromUid: String, toUid: String, amount: Int, desc: String = ""): Boolean {
+    if (!mdcTransferEnabled()) return false
     if (amount <= 0 || fromUid == toUid) return false
-    if (blockNormalMdcInTestMode(fromUid) || blockNormalMdcInTestMode(toUid)) return false
     val oldFrom = getCachedTrustPoints(fromUid)
     val oldTo = getCachedTrustPoints(toUid)
-    val fromTest = testModeFor(fromUid)
-    val toTest = testModeFor(toUid)
-    val success = when {
-        fromTest != null && toTest != null && fromTest === toTest -> fromTest.transferTrustPoints(fromUid, toUid, amount)
-        fromTest != null || toTest != null -> false
-        else -> MdtStorage.transferTrustPoints(fromUid, toUid, amount)
-    }
+    val success = MdtStorage.transferTrustPoints(fromUid, toUid, amount)
     if (success) {
         val newFrom = (oldFrom - amount).coerceAtLeast(0)
         val newTo = oldTo + amount
@@ -175,9 +147,8 @@ fun transferTrustPoints(fromUid: String, toUid: String, amount: Int, desc: Strin
 }
 
 fun setTrustPoints(uid: String, value: Int): Int {
-    if (blockNormalMdcInTestMode(uid)) return 0
     val oldPoints = getCachedTrustPoints(uid)
-    val newValue = testModeFor(uid)?.setTrustPoints(uid, value) ?: MdtStorage.setTrustPoints(uid, value)
+    val newValue = MdtStorage.setTrustPoints(uid, value)
     setCachedTrustPoints(uid, newValue)
     notifyMdcChanged(uid, newValue - oldPoints, "admin", newValue)
     emitTrustPointChanged(uid)
@@ -185,8 +156,7 @@ fun setTrustPoints(uid: String, value: Int): Int {
 }
 
 fun setTotalTrustPoints(uid: String, value: Int): Int {
-    if (blockNormalMdcInTestMode(uid)) return 0
-    val newValue = testModeFor(uid)?.setTotalTrustPoints(uid, value) ?: MdtStorage.setTotalTrustPoints(uid, value)
+    val newValue = MdtStorage.setTotalTrustPoints(uid, value)
     emitTrustPointChanged(uid)
     return newValue
 }
@@ -205,7 +175,6 @@ private fun displayName(data: PlayerData): String = data.player?.name ?: data.na
 private fun positiveIntOrNull(text: String): Int? = text.toIntOrNull()?.takeIf { it > 0 }
 
 private fun expireRedPacketsAndNotify() {
-    if (isServerTestModeEnabled()) return
     val expired = MdtStorage.expireRedPackets()
     expired.forEach { packet ->
         if (packet.remainingAmount > 0) {
@@ -258,18 +227,17 @@ command("points", "查看自己的MDC余额") {
     attr(ClientOnly)
     body {
         val uid = PlayerData[player!!].id
-        val redPacketText = if (isServerTestModeEnabled()) {
-            "[gray]服务器测试模式下红包功能暂时关闭，避免写入正式红包数据库。"
+        val transactionText = if (mdcTransferEnabled()) {
+            "[gray]转账：/pay <玩家3位ID> <数量> [留言]\n[gray]红包：/redpacket <总MDC> <份数> [留言]；/grab <红包ID>"
         } else {
-            "[gray]红包：/redpacket <总MDC> <份数> [留言]；/grab <红包ID>"
+            "[yellow]当前MDC转账与红包功能已关闭。"
         }
         reply(
             """
                 |[cyan]货币：[white]${creditName()}
                 |[cyan]当前MDC：[white]${getTrustPoints(uid)}
                 |[cyan]累计MDC：[white]${getTotalTrustPoints(uid)}
-                |[gray]转账：/pay <玩家3位ID> <数量> [留言]
-                |$redPacketText
+                |$transactionText
             """.trimMargin().with()
         )
     }
@@ -280,6 +248,7 @@ command("pay", "向其他玩家转账MDC") {
     aliases = listOf("transfer", "转账", "付款", "mdcpay")
     attr(ClientOnly)
     body {
+        if (!mdcTransferEnabled()) returnReply(mdcTransferDisabledMessage().with())
         if (arg.size < 2) replyUsage()
         val sender = player!!
         val senderData = PlayerData[sender]
@@ -307,9 +276,7 @@ command("redpacket", "发MDC红包") {
     aliases = listOf("hongbao", "hb", "红包", "发红包")
     attr(ClientOnly)
     body {
-        if (isServerTestModeEnabled()) {
-            returnReply("[yellow]服务器测试模式下红包功能暂时关闭，避免临时MDC写入正式红包数据库。".with())
-        }
+        if (!mdcTransferEnabled()) returnReply(mdcTransferDisabledMessage().with())
         if (arg.size < 2) replyUsage()
         val sender = player!!
         val senderUid = PlayerData[sender].id
@@ -345,9 +312,7 @@ command("grab", "抢MDC红包") {
     aliases = listOf("抢红包", "开红包", "抢", "grabredpacket")
     attr(ClientOnly)
     body {
-        if (isServerTestModeEnabled()) {
-            returnReply("[yellow]服务器测试模式下红包功能暂时关闭。".with())
-        }
+        if (!mdcTransferEnabled()) returnReply(mdcTransferDisabledMessage().with())
         expireRedPacketsAndNotify()
         if (arg.isEmpty()) {
             val packets = MdtStorage.listRedPackets(8, includeClosed = false)
@@ -392,9 +357,7 @@ command("grab", "抢MDC红包") {
 command("redpackets", "查看MDC红包列表") {
     aliases = listOf("红包列表", "hblist")
     body {
-        if (isServerTestModeEnabled()) {
-            returnReply("[yellow]服务器测试模式下红包功能暂时关闭。".with())
-        }
+        if (!mdcTransferEnabled()) returnReply(mdcTransferDisabledMessage().with())
         expireRedPacketsAndNotify()
         val includeClosed = arg.firstOrNull()?.lowercase() in setOf("all", "全部")
         val packets = MdtStorage.listRedPackets(12, includeClosed = includeClosed)

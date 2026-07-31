@@ -1,4 +1,5 @@
 @file:Depends("coreMindustry/menu", "外部CP菜单")
+@file:Depends("coreMindustry/contentsTweaker", "v159动态内容卸载前运行态清理")
 @file:Depends("wayzer/vote", "投票系统")
 @file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 
@@ -38,6 +39,7 @@ import wayzer.VoteService
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.time.Instant
+import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -46,11 +48,13 @@ import kotlin.math.ceil
 name = "外部CP热重载"
 
 private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
+private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
 private val externalCpDirName by config.key("external-cp", "外部CP目录名，位于 config/scripts/ 下")
 private val slowExternalCpBytes by config.key(2_000_000L, "外部CP慢同步阈值，超过后不拒绝但使用更长同步间隔")
 private val hardExternalCpBytes by config.key(64_000_000L, "外部CP硬读取上限，0为不限制")
 private val worldSyncDelayMillis by config.key(350L, "外部CP变更后分批同步玩家间隔(ms)")
 private val largeWorldSyncDelayMillis by config.key(1500L, "大文件外部CP变更后分批同步玩家间隔(ms)")
+private val contentModuleGuardMillis by config.key(30_000L, "外部DP变更后持续修复旧建筑物品/液体模块容量的时长(ms)")
 private val maxZipEntries by config.key(2048, "v159 ZIP CP允许的最大文件数")
 private val maxZipEntryBytes by config.key(32_000_000L, "v159 ZIP CP单文件解压上限")
 private val maxZipExpandedBytes by config.key(128_000_000L, "v159 ZIP CP累计解压上限")
@@ -99,6 +103,9 @@ private data class ExternalCpReadResult(
 
 private val loadedExternalCps = linkedMapOf<String, LoadedExternalCp>()
 private var cpMutationInProgress = false
+private var contentModuleGuardUntilMillis = 0L
+private var contentModuleGuardReason = ""
+private var contentModuleGuardLastLogMillis = 0L
 
 private fun externalCpDir(): File = File(Vars.dataDirectory.file(), "scripts/$externalCpDirName")
 
@@ -476,7 +483,10 @@ private data class CpWorldRepairStats(
     var powerModules: Int = 0,
     var detachedPowerModules: Int = 0,
     var itemModules: Int = 0,
+    var resizedItemModules: Int = 0,
     var liquidModules: Int = 0,
+    var resizedLiquidModules: Int = 0,
+    var resetLiquidCurrents: Int = 0,
     var buildingHealthStats: Int = 0,
     var unitStats: Int = 0,
     var fixedPowerFlags: Int = 0,
@@ -486,8 +496,201 @@ private data class CpWorldRepairStats(
     var stalePowerGraphsCleared: Int = 0,
     var powerGraphsRebuilt: Int = 0,
 ) {
-    fun total(): Int = powerModules + detachedPowerModules + itemModules + liquidModules + buildingHealthStats + unitStats +
-        fixedPowerFlags + invalidPowerLinks + invalidPowerConsumers + beamNodesReset + stalePowerGraphsCleared + powerGraphsRebuilt
+    fun total(): Int = powerModules + detachedPowerModules + itemModules + resizedItemModules + liquidModules +
+        resizedLiquidModules + resetLiquidCurrents + buildingHealthStats + unitStats + fixedPowerFlags +
+        invalidPowerLinks + invalidPowerConsumers + beamNodesReset + stalePowerGraphsCleared + powerGraphsRebuilt
+}
+
+private data class ContentModuleRepairStats(
+    var itemModules: Int = 0,
+    var resizedItemModules: Int = 0,
+    var liquidModules: Int = 0,
+    var resizedLiquidModules: Int = 0,
+    var resetLiquidCurrents: Int = 0,
+) {
+    fun total(): Int = itemModules + resizedItemModules + liquidModules + resizedLiquidModules + resetLiquidCurrents
+
+    fun add(other: ContentModuleRepairStats) {
+        itemModules += other.itemModules
+        resizedItemModules += other.resizedItemModules
+        liquidModules += other.liquidModules
+        resizedLiquidModules += other.resizedLiquidModules
+        resetLiquidCurrents += other.resetLiquidCurrents
+    }
+
+    fun summary(): String =
+        "items=$itemModules, itemArrays=$resizedItemModules, liquids=$liquidModules, " +
+            "liquidArrays=$resizedLiquidModules, liquidCurrent=$resetLiquidCurrents"
+}
+
+private var contentModuleGuardPendingStats = ContentModuleRepairStats()
+
+// v159 运行时新增 Item 后，旧建筑和 ItemModule.empty 可能仍保留旧数组长度。
+// CoreBuild.onProximityUpdate 会遍历新 content.items() 并直接按 ID 读取，因此必须就地调整数组。
+// 这里除数组外一并修正 total/takeRotation；既保留核心/仓库共享模块的引用，也保证缩容后的内部状态有效。
+private val itemModuleItemsField by lazy {
+    ItemModule::class.java.getDeclaredField("items").apply { trySetAccessible() }
+}
+private val itemModuleTotalField by lazy {
+    ItemModule::class.java.getDeclaredField("total").apply { trySetAccessible() }
+}
+private val itemModuleTakeRotationField by lazy {
+    ItemModule::class.java.getDeclaredField("takeRotation").apply { trySetAccessible() }
+}
+private val liquidModuleLiquidsField by lazy {
+    LiquidModule::class.java.getDeclaredField("liquids").apply { trySetAccessible() }
+}
+
+private fun resizeItemModuleForCurrentContent(module: ItemModule): Boolean {
+    val targetSize = Vars.content.items().size
+    if (module.length() == targetSize) return false
+
+    val oldItems = itemModuleItemsField.get(module) as? IntArray
+        ?: error("ItemModule.items 不是 int[]")
+    val resized = oldItems.copyOf(targetSize)
+    itemModuleItemsField.set(module, resized)
+    val total = resized.fold(0L) { sum, amount -> sum + amount.toLong() }
+        .coerceIn(0L, Int.MAX_VALUE.toLong())
+        .toInt()
+    itemModuleTotalField.setInt(module, total)
+    val oldRotation = itemModuleTakeRotationField.getInt(module)
+    itemModuleTakeRotationField.setInt(module, if (targetSize <= 0) 0 else oldRotation.coerceAtLeast(0) % targetSize)
+    module.stopFlow()
+    return true
+}
+
+private fun repairLiquidModuleForCurrentContent(module: LiquidModule): Pair<Boolean, Boolean> {
+    val targetSize = Vars.content.liquids().size
+    val oldSize = (liquidModuleLiquidsField.get(module) as? FloatArray)?.size
+        ?: error("LiquidModule.liquids 不是 float[]")
+    module.checkArrayCapacity(targetSize)
+    if (oldSize != targetSize) module.stopFlow()
+
+    val current = module.current()
+    val currentId = current.id.toInt()
+    val currentValid = currentId in 0 until targetSize && Vars.content.liquid(currentId) === current
+    if (!currentValid && targetSize > 0) {
+        // add(0) 只更新 current，不会清空其他原版液体存量。
+        module.add(Vars.content.liquid(0), 0f)
+        module.stopFlow()
+    }
+    return (oldSize != targetSize) to !currentValid
+}
+
+private fun validateContentModuleCapacities(builds: List<Building>) {
+    val itemCount = Vars.content.items().size
+    val liquidCount = Vars.content.liquids().size
+    val failures = mutableListOf<String>()
+    if (ItemModule.empty.length() != itemCount) {
+        failures += "ItemModule.empty=${ItemModule.empty.length()}/$itemCount"
+    }
+    builds.forEach { build ->
+        build.items?.let { module ->
+            if (module.length() != itemCount) failures += "items:${build.block.name}@${build.tileX()},${build.tileY()}=${module.length()}/$itemCount"
+        }
+        build.liquids?.let { module ->
+            val length = (liquidModuleLiquidsField.get(module) as? FloatArray)?.size ?: -1
+            if (length != liquidCount) failures += "liquids:${build.block.name}@${build.tileX()},${build.tileY()}=$length/$liquidCount"
+            val current = module.current()
+            val currentId = current.id.toInt()
+            if (currentId !in 0 until liquidCount || Vars.content.liquid(currentId) !== current) {
+                failures += "liquidCurrent:${build.block.name}@${build.tileX()},${build.tileY()}=${current.name}"
+            }
+        }
+    }
+    if (failures.isNotEmpty()) {
+        throw IllegalStateException(
+            "动态Content模块容量修复未完成：${failures.take(5).joinToString("；")}" +
+                if (failures.size > 5) " 等${failures.size}处" else ""
+        )
+    }
+}
+
+private fun currentReachableBuildings(): List<Building> {
+    val seen = IdentityHashMap<Building, Boolean>()
+    val builds = mutableListOf<Building>()
+
+    fun add(build: Building?) {
+        if (build != null && seen.put(build, true) == null) builds += build
+    }
+
+    // Groups.build 只包含当前活跃实体；部分大型地图会暂时移出建筑，稍后再把同一个旧 Building 加回。
+    Groups.build.toList().forEach(::add)
+    Vars.world.tiles?.forEach { tile -> add(tile.build) }
+    return builds
+}
+
+/**
+ * 只修复物品/液体模块容量，不触碰电网、血量等较重状态。
+ *
+ * DataManager.load 返回后，部分地图逻辑仍可能把按旧 Content 数量反序列化的 Building 加回 Groups.build；
+ * 因此这个函数既用于 DP 变更前后的一次性修复，也用于变更后的短期逐 tick 守护。
+ */
+private fun repairCurrentContentModuleCapacities(
+    builds: List<Building> = currentReachableBuildings(),
+    validate: Boolean = true,
+): ContentModuleRepairStats {
+    val stats = ContentModuleRepairStats()
+    val repairedItemModules = IdentityHashMap<ItemModule, Boolean>()
+    val repairedLiquidModules = IdentityHashMap<LiquidModule, Boolean>()
+
+    fun repairItemModule(module: ItemModule) {
+        if (repairedItemModules.put(module, true) == null && resizeItemModuleForCurrentContent(module)) {
+            stats.resizedItemModules++
+        }
+    }
+
+    fun repairLiquidModule(module: LiquidModule) {
+        if (repairedLiquidModules.put(module, true) != null) return
+        val (resized, resetCurrent) = repairLiquidModuleForCurrentContent(module)
+        if (resized) stats.resizedLiquidModules++
+        if (resetCurrent) stats.resetLiquidCurrents++
+    }
+
+    // 无核心队伍会返回这个全局空模块，它同样是在服务端启动时按当时的物品数创建的。
+    repairItemModule(ItemModule.empty)
+    builds.forEach { build ->
+        if (build.block.hasItems && build.items == null) {
+            build.items = ItemModule()
+            stats.itemModules++
+        }
+        build.items?.let(::repairItemModule)
+
+        if (build.block.hasLiquids && build.liquids == null) {
+            build.liquids = LiquidModule()
+            stats.liquidModules++
+        }
+        build.liquids?.let(::repairLiquidModule)
+    }
+
+    if (validate) validateContentModuleCapacities(builds)
+    return stats
+}
+
+private fun logContentModuleRepair(prefix: String, reason: String, stats: ContentModuleRepairStats) {
+    if (stats.total() <= 0) return
+    logger.info("$prefix${if (reason.isBlank()) "" else " ($reason)"}: ${stats.summary()}")
+}
+
+private fun repairContentModulesBeforeDataReload(reason: String) {
+    val stats = repairCurrentContentModuleCapacities()
+    logContentModuleRepair("外部DP注销前模块容量预修复", reason, stats)
+}
+
+private fun armContentModuleCapacityGuard(reason: String) {
+    val duration = contentModuleGuardMillis.coerceAtLeast(0L)
+    if (duration <= 0L) return
+    val now = System.currentTimeMillis()
+    val deadline = if (duration >= Long.MAX_VALUE - now) Long.MAX_VALUE else now + duration
+    contentModuleGuardUntilMillis = maxOf(contentModuleGuardUntilMillis, deadline)
+    contentModuleGuardReason = reason
+}
+
+private fun flushContentModuleGuardRepairs(now: Long = System.currentTimeMillis()) {
+    if (contentModuleGuardPendingStats.total() <= 0) return
+    logContentModuleRepair("外部DP短期模块容量守护修复", contentModuleGuardReason, contentModuleGuardPendingStats)
+    contentModuleGuardPendingStats = ContentModuleRepairStats()
+    contentModuleGuardLastLogMillis = now
 }
 
 private data class ExistingBuildStatSnapshot(
@@ -578,6 +781,14 @@ private fun repairExistingBuildingModulesAfterCp(
     Groups.powerGraph.toList().forEach { updater -> updater.graph()?.let { oldGraphs += it } }
     val fixedPowerFlagBlocks = mutableSetOf<String>()
 
+    // 模块容量同时覆盖 tile.build 中暂时未加入 Groups.build 的建筑；电网等重修仍只处理活跃实体。
+    val moduleStats = repairCurrentContentModuleCapacities()
+    stats.itemModules += moduleStats.itemModules
+    stats.resizedItemModules += moduleStats.resizedItemModules
+    stats.liquidModules += moduleStats.liquidModules
+    stats.resizedLiquidModules += moduleStats.resizedLiquidModules
+    stats.resetLiquidCurrents += moduleStats.resetLiquidCurrents
+
     // CP加载/卸载/回滚可能改动 Block.consPower，却没有同步 consumesPower 标记；原版 PowerGraph.distributePower
     // 会直接读取 consPower.buffered。先修正该不一致，否则旧图或重建图下一tick都可能 NPE 崩服。
     Vars.content.blocks().forEach { block ->
@@ -601,15 +812,6 @@ private fun repairExistingBuildingModulesAfterCp(
             build.power = PowerModule()
             stats.powerModules++
         }
-        if (build.block.hasItems && build.items == null) {
-            build.items = ItemModule()
-            stats.itemModules++
-        }
-        if (build.block.hasLiquids && build.liquids == null) {
-            build.liquids = LiquidModule()
-            stats.liquidModules++
-        }
-
         // 已存在建筑的maxHealth同样是在创建时从block.health拷贝的；CP改炮台/建筑血量后，不拆重建不会同步。
         // 为避免破坏地图脚本/技能刻意改过的建筑血量，只同步“看起来仍是原版/上一个CP默认血量”的建筑，
         // 即：热重载前 build.maxHealth ~= 热重载前 block.health。血量按百分比缩放，保留受损程度。
@@ -733,7 +935,9 @@ private fun repairExistingBuildingModulesAfterCp(
     if (stats.total() > 0) {
         logger.info(
             "外部CP建筑模块兼容修复${if (reason.isBlank()) "" else " ($reason)"}: " +
-                "power=${stats.powerModules}, detachedPower=${stats.detachedPowerModules}, items=${stats.itemModules}, liquids=${stats.liquidModules}, " +
+                "power=${stats.powerModules}, detachedPower=${stats.detachedPowerModules}, items=${stats.itemModules}, " +
+                "itemArrays=${stats.resizedItemModules}, liquids=${stats.liquidModules}, liquidArrays=${stats.resizedLiquidModules}, " +
+                "liquidCurrent=${stats.resetLiquidCurrents}, " +
                 "buildHealth=${stats.buildingHealthStats}, unitStats=${stats.unitStats}, flags=${stats.fixedPowerFlags}, " +
                 "links=${stats.invalidPowerLinks}, consumers=${stats.invalidPowerConsumers}, beams=${stats.beamNodesReset}, " +
                 "oldGraphs=${stats.stalePowerGraphsCleared}, graphs=${stats.powerGraphsRebuilt}"
@@ -837,7 +1041,10 @@ private fun applyDataAssetsAndSanitize(assets: List<DataAsset>, externalAssets: 
     val seq = Seq<DataAsset>()
     assets.forEach { seq.add(it) }
     seq.sort()
+    repairContentModulesBeforeDataReload(reason)
+    with(contentsTweaker) { prepareForDataAssetReload(reason) }
     Vars.state.data.load(seq)
+    armContentModuleCapacityGuard(reason)
 
     val failures = mutableListOf<String>()
     val warnings = mutableListOf<String>()
@@ -866,7 +1073,10 @@ private fun restoreDataAssetsAfterFailure(previousAssets: List<DataAsset>, reaso
     val seq = Seq<DataAsset>()
     previousAssets.forEach { seq.add(it) }
     seq.sort()
+    repairContentModulesBeforeDataReload(reason)
+    with(contentsTweaker) { prepareForDataAssetReload(reason) }
     Vars.state.data.load(seq)
+    armContentModuleCapacityGuard(reason)
     repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
     sanitizeInvalidTurretAmmo(reason)
 }
@@ -1029,6 +1239,19 @@ private fun loadedExternalCpText(): String {
             appendLine("[gray]${index + 1}. [gold]${record.displayName} [gray]($warn[gray]) by [white]${record.operator}")
         }
     }.trimEnd()
+}
+
+/** 供 /cp 快捷入口复用，避免绕过外部CP系统的校验、互斥、回滚与串行重同步。 */
+fun serverCpFileListText(): String = externalCpListText()
+
+fun loadServerCp(target: String, operator: String): String {
+    val cp = resolveExternalCpFile(target)
+        ?: return "[red]未找到服务器CP：[white]$target\n${externalCpListText()}"
+    return applyExternalCp(cp, operator).message
+}
+
+suspend fun openServerCpManagementMenu(player: Player) {
+    openExternalCpMenu(player)
 }
 
 private suspend fun openExternalCpDetailMenu(player: Player, cp: ExternalCpFile) {
@@ -1212,7 +1435,7 @@ private suspend fun startExternalCpUnloadAllVote(starter: Player) {
 }
 
 fun VoteService.registerExternalCpVote() {
-    addSubVote("加载/卸载外部CP/数据包", "[load|unload] [文件名|编号|all|list]", "cp", "externalcp", "ecp", "外部cp", "加载cp", "热重载cp") {
+    addSubVote("加载或卸载外部CP/数据包", "[load|unload] [文件名|编号|all|list]", "cp", "externalcp", "ecp", "外部cp", "加载cp", "热重载cp") {
         val first = arg.firstOrNull()
         if (first == null || first.equals("menu", true) || first == "菜单" || first.equals("list", true) || first == "列表") {
             openVoteExternalCpMenu(player!!)
@@ -1280,8 +1503,44 @@ command("externalcp", "管理指令：外部CP/v159数据资产包热重载") {
     }
 }
 
+listen(EventType.Trigger.update) {
+    if (contentModuleGuardUntilMillis > 0L) {
+        val now = System.currentTimeMillis()
+        if (now > contentModuleGuardUntilMillis) {
+            flushContentModuleGuardRepairs(now)
+            contentModuleGuardUntilMillis = 0L
+            contentModuleGuardReason = ""
+        } else {
+            // 高频守护只扫描活跃 Building；暂时离组但仍挂在 tile.build 的对象已在 DP 变更时一次性覆盖。
+            runCatching { repairCurrentContentModuleCapacities(Groups.build.toList(), validate = false) }
+                .onSuccess { stats ->
+                    if (stats.total() > 0) {
+                        contentModuleGuardPendingStats.add(stats)
+                        if (now - contentModuleGuardLastLogMillis >= 1_000L) {
+                            flushContentModuleGuardRepairs(now)
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (now - contentModuleGuardLastLogMillis >= 5_000L) {
+                        logger.warning(
+                            "外部DP短期模块容量守护失败" +
+                                (if (contentModuleGuardReason.isBlank()) "" else " ($contentModuleGuardReason)") +
+                                ": ${error.message ?: error.javaClass.simpleName}"
+                        )
+                        contentModuleGuardLastLogMillis = now
+                    }
+                }
+        }
+    }
+}
+
 listen<EventType.ResetEvent> {
     // 新世界/存档会由 v159 DataManager 重新装载资产；外部CP仅当前局有效。
+    flushContentModuleGuardRepairs()
+    contentModuleGuardUntilMillis = 0L
+    contentModuleGuardReason = ""
+    contentModuleGuardPendingStats = ContentModuleRepairStats()
     loadedExternalCps.clear()
     cpMutationInProgress = false
 }
@@ -1292,6 +1551,10 @@ onEnable {
 }
 
 onDisable {
+    flushContentModuleGuardRepairs()
+    contentModuleGuardUntilMillis = 0L
+    contentModuleGuardReason = ""
+    contentModuleGuardPendingStats = ContentModuleRepairStats()
     val records = externalAssetRecords()
     if (records.isNotEmpty()) {
         runCatching {

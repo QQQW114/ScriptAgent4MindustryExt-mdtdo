@@ -1,3 +1,5 @@
+@file:Depends("coreMindustry/utilTextInput", "帮助菜单搜索输入")
+
 package coreMindustry
 
 import coreLibrary.lib.CommandContext
@@ -36,6 +38,12 @@ suspend fun <T : Any> sendMenuBuilder(
 private val HELP_PAGE_SIZE = 7
 private val HELP_COMMAND_PAGE_CACHE_TTL_MILLIS = 10_000L
 private val HELP_OPEN_THROTTLE_MILLIS = 500L
+private val helpTextInput = contextScript<coreMindustry.UtilTextInput>()
+// 只移除 Mindustry 颜色/样式标记，不能把 `[status]`、`[波数]` 这类指令参数也删掉。
+private val helpMarkupRegex = Regex(
+    "\\[(?:|#[0-9a-fA-F]{6,8}|black|white|lightgray|light_gray|gray|grey|darkgray|dark_gray|blue|navy|royal|slate|sky|cyan|teal|green|acid|lime|forest|olive|yellow|gold|goldenrod|orange|brown|tan|brick|red|scarlet|crimson|coral|salmon|pink|magenta|purple|violet|maroon|accent|stat|heal|ammo|boost|shield|health|logic|power|placing|removing|invalid|unlaunched|highlight)]",
+    RegexOption.IGNORE_CASE,
+)
 
 private data class HelpEntryDef(
     val commandName: String?,
@@ -172,12 +180,20 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "投票标准无限火力", "投票开启120秒标准无限火力", "/vote infinitefire"),
     HelpEntryDef("vote", "投票无限火力promax", "投票开启120秒无限火力promax", "/vote infinitefirepromax"),
     HelpEntryDef("vote", "反应堆爆炸", "投票开启/关闭反应堆爆炸", "/vote reactor"),
+    HelpEntryDef("vote", "本局纯净模式", "投票立即开启当前这局纯净模式，禁用普通技能与3级技能", "/vote pure"),
+    HelpEntryDef("vote", "关闭本局纯净模式", "投票关闭当前局纯净模式，不影响地图原有技能限制", "/vote pureoff"),
     HelpEntryDef("veto", "一票否决", "3+级/4级一键否决当前投票", "/veto"),
 )
 
 private val adminHelpEntries = listOf(
     HelpEntryDef("security", "[cyan]安全风控菜单", "管理聊天/菜单/连接风控与IP封禁"),
-    HelpEntryDef("servertestmode", "[red][危险]服务器测试模式", "特殊测试服临时账号/MDC/资历覆盖，启用需二次确认"),
+    HelpEntryDef("serverfeatures", "[cyan]服务器功能总览", "查看功能状态与打开管理菜单"),
+    HelpEntryDef("databasefeatures", "[cyan]数据库业务功能", "统一暂停玩家可操作或高频数据库业务"),
+    HelpEntryDef("mdcmultiplier", "[yellow]结算MDC倍率", "查看/修改玩家结算MDC倍率"),
+    HelpEntryDef("forumtoggle", "[pink]帖子系统开关", "开启或关闭/post帖子功能"),
+    HelpEntryDef("registerrequirement", "[yellow]注册时长要求", "开关注册前一小时在线要求"),
+    HelpEntryDef("socialactions", "[yellow]赞踩认可开关", "开启或关闭点赞、点踩与认可"),
+    HelpEntryDef("defaultboundlevel", "[yellow]已绑定默认等级", "同时调整已绑定玩家的默认信任/资历下限"),
     HelpEntryDef("achat", "[cyan]管理员频道", "发送仅4级/admin可见的消息"),
     HelpEntryDef("descadmin", "[pink]服务器介绍轮播", "管理服务器列表介绍滚动"),
     HelpEntryDef("sfx", "[pink]服务器小音效", "播放 assets/sounds 中的预置小音效"),
@@ -207,7 +223,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("banips", "[cyan]IP封禁列表", "查看当前被封禁IP、UUID与玩家名"),
     HelpEntryDef("banlist", "[cyan]统一封禁管理", "分页查看玩家/账号与IP封禁、原因、剩余时长并快速解封"),
     HelpEntryDef("recentplayers", "[cyan]最近玩家", "查看最近80名玩家并打开离线管理面板"),
-    HelpEntryDef("cp", "[green]CP列表", "列出当前已经加载的数据包/属性修改"),
+    HelpEntryDef("cp", "[green]CP/DP管理", "查看v159完整Data Assets、属性Patch，并可 /cp load 快速加载服务器CP"),
     HelpEntryDef("externalcp", "[purple]外部CP", "管理 scripts/external-cp 下的外部JSON/HJSON CP热重载"),
     HelpEntryDef("worldprocessor", "[green]世界处理器", "查看/开启/关闭世界处理器与编辑权限"),
     HelpEntryDef("worldprocessorquiet", "[green]静默世界处理器", "静默开启/关闭世界处理器与编辑权限，不全局播报", "/wpq"),
@@ -226,6 +242,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("gamepause", "[green]暂停/继续游戏", "管理当前游戏暂停状态"),
     HelpEntryDef("traffic", "[green]上行预算", "查看/设置估算上行预算"),
     HelpEntryDef("pressure", "[green]服务器压力", "查看TPS/上行压力/设置TPS阈值"),
+    HelpEntryDef("diskwarmup", "[green]云服磁盘预热", "控制H2保活，减少磁盘休眠后首次数据库读写卡顿"),
     HelpEntryDef("adaptiveplayerlimit", "[green]人数上限", "查看/设置自适应人数上限"),
     HelpEntryDef("tipadmin", "[pink]Tips管理", "添加/删除/发送服务器小提示"),
     HelpEntryDef("setlevel", "[yellow]设置信任等级", "设置玩家0/1/2/3/3+/3++/4级"),
@@ -285,6 +302,11 @@ private fun compactText(text: String, limit: Int = 64): String {
     return if (oneLine.length <= limit) oneLine else oneLine.take(limit) + "..."
 }
 
+private fun stripHelpMarkup(text: String): String = helpMarkupRegex.replace(text, "")
+
+private fun containsHelpKeyword(keyword: String, vararg values: String): Boolean =
+    values.any { stripHelpMarkup(it).contains(keyword, ignoreCase = true) }
+
 private fun commandInput(prefix: String, name: String): String {
     val raw = prefix.ifBlank { "/" }.trimStart()
     val p = if (raw.startsWith("/")) raw else "/$raw"
@@ -301,11 +323,12 @@ private fun isVoteHelpPrefix(prefix: String): Boolean {
 
 private fun voteHelpCommandColor(commandName: String): String = when (commandName.lowercase()) {
     "gameover", "kick", "killunits" -> "[red]"
-    "map", "nextmap", "rollback", "save" -> "[green]"
-    "skipwave", "pausewave", "setwave", "resumewave", "unpausewave", "pureoff" -> "[yellow]"
+    "map", "nextmap", "rollback", "save", "banmap", "pvp", "pvpon", "pvpoff" -> "[green]"
+    "skipwave", "pausewave", "setwave", "resumewave", "unpausewave", "pureoff", "resume", "guestoboff" -> "[yellow]"
     "infinitefire", "infinitefirepromax", "reactor" -> "[orange]"
     "cp" -> "[purple]"
-    "pure", "ob", "quitob", "clear" -> "[cyan]"
+    "pure", "ob", "quitob", "clear", "perf", "xperf", "pause", "guestob" -> "[cyan]"
+    "sc" -> "[pink]"
     "text" -> "[lightgray]"
     else -> "[white]"
 }
@@ -478,7 +501,7 @@ private fun rawCommandEntry(player: Player, prefix: String, info: CommandInfo, s
     }
     val voteHelp = isVoteHelpPrefix(prefix)
     val commandColor = if (voteHelp) voteHelpCommandColor(info.name) else "[gold]"
-    val usage = if (voteHelp) info.usage.removePrefix("[yellow]").removeSuffix("[]") else info.usage
+    val usage = if (voteHelp) stripHelpMarkup(info.usage) else info.usage
     val usageLine = when {
         usage.isBlank() && voteHelp -> "$commandColor$input[]"
         usage.isBlank() -> input
@@ -490,8 +513,27 @@ private fun rawCommandEntry(player: Player, prefix: String, info: CommandInfo, s
         info.script?.let { append(" | ${it.id}") }
         if (info.permission.isNotBlank()) append(" | ${info.permission}")
     }
+    if (voteHelp) {
+        val rawSummary = compactText(info.description.toString(), 58)
+        val summary = when {
+            rawSummary.isBlank() -> "$commandColor${info.name}[]"
+            rawSummary.startsWith("[") -> rawSummary
+            else -> "$commandColor$rawSummary[]"
+        }
+        val desc = buildString {
+            append("[accent]指令：[]")
+            append(usageLine)
+            if (showAll && alias.isNotBlank()) append("\n[gray]别名：$alias")
+            if (detail.isNotBlank()) {
+                append("\n[gray]")
+                append(detail.trim().removePrefix("|").trim())
+            }
+        }
+        return HelpMenuEntry(summary, desc, input)
+    }
+
     val desc = buildString {
-        append(if (voteHelp) "" else "[lightgray]")
+        append("[lightgray]")
         append(usageLine)
         if (detail.isNotBlank()) {
             append("\n[gray]")
@@ -499,6 +541,56 @@ private fun rawCommandEntry(player: Player, prefix: String, info: CommandInfo, s
         }
     }
     return HelpMenuEntry("$commandColor$input[gray]$alias", desc, input)
+}
+
+private suspend fun CommandContext.searchHelpEntries(
+    player: Player,
+    keyword: String,
+    sortedCommands: List<CommandInfo>,
+    commandByName: Map<String, CommandInfo>,
+    canSeeAdminHelp: Boolean,
+): List<HelpMenuEntry> {
+    val configured = buildList {
+        addAll(buildConfiguredEntries(playerHelpEntries, commandByName, player))
+        addAll(buildConfiguredEntries(voteHelpEntries, commandByName, player))
+        if (canSeeAdminHelp) addAll(buildConfiguredEntries(adminHelpEntries, commandByName, player))
+    }
+    val result = linkedMapOf<String, HelpMenuEntry>()
+
+    fun addEntry(entry: HelpMenuEntry) {
+        val key = entry.runCommand?.trim()?.lowercase()
+            ?: "${stripHelpMarkup(entry.title)}\u0000${stripHelpMarkup(entry.description)}".lowercase()
+        result.putIfAbsent(key, entry)
+    }
+
+    configured.forEach { entry ->
+        if (containsHelpKeyword(keyword, entry.title, entry.description, entry.runCommand.orEmpty())) {
+            addEntry(entry)
+        }
+    }
+
+    val permissionCache = mutableMapOf<String, Boolean>()
+    val configuredPlayerNames = (playerHelpEntries + voteHelpEntries)
+        .mapNotNull { it.commandName?.lowercase() }
+        .toSet()
+    val adminOnlyNames = adminHelpEntries
+        .mapNotNull { it.commandName?.lowercase() }
+        .toSet() - configuredPlayerNames - setOf("skill")
+
+    sortedCommands.forEach { info ->
+        if (!visibleCommandInfo(info, permissionCache)) return@forEach
+        if (!canSeeAdminHelp && info.name.lowercase() in adminOnlyNames) return@forEach
+        val matches = containsHelpKeyword(
+            keyword,
+            info.name,
+            info.aliases.joinToString(" "),
+            info.usage,
+            info.description.toString(),
+            info.script?.id.orEmpty(),
+        )
+        if (matches) addEntry(rawCommandEntry(player, "/", info, false))
+    }
+    return result.values.toList()
 }
 
 private suspend fun openHelpEntryList(
@@ -720,6 +812,41 @@ private suspend fun openHelpRoot(
             if ("wiki" in commandByName) runHelpCommand(player, "/wiki")
             else player.sendMessage("[yellow]Wiki列表暂未开放，后续会接入 /wiki")
         }
+        rootOption("搜索指令\n[gray]名称/别名/说明") {
+            val keyword = with(helpTextInput) {
+                textInput(
+                    player,
+                    "搜索指令",
+                    "请输入指令名、中文说明或别名关键字。\n只会列出你当前有权查看和使用的指令。",
+                    lengthLimit = 32,
+                    timeoutMillis = 60_000,
+                )
+            }?.trim().orEmpty()
+            if (keyword.isBlank()) {
+                player.sendMessage("[yellow]已取消指令搜索")
+                reopenRoot()
+            } else {
+                val entries = commandContext.searchHelpEntries(
+                    player,
+                    keyword,
+                    sortedCommands,
+                    commandByName,
+                    canSeeAdminHelp,
+                )
+                if (entries.isEmpty()) {
+                    player.sendMessage("[yellow]没有找到你当前可用且匹配“$keyword”的指令")
+                    reopenRoot()
+                } else {
+                    openHelpEntryList(
+                        player,
+                        "搜索：${compactText(keyword, 24)}",
+                        "[cyan]找到 ${entries.size} 项；点击可快捷输入或执行对应指令。",
+                        entries,
+                        { reopenRoot() },
+                    )
+                }
+            }
+        }
         rootOption("完整指令列表\n[gray]分页显示全部指令") {
             openRawHelpMenu(player, sortedCommands, commandSignature, "/", showAll, 1, { reopenRoot() }, commandContext)
         }
@@ -742,7 +869,7 @@ onEnable {
         } else {
             val canSeeAdminHelp =
                       hasPermission("wayzer.admin.security") ||
-                    hasPermission("wayzer.admin.serverTestMode") ||
+                    hasPermission("wayzer.admin.serverFeatures") ||
                     hasPermission("wayzer.maps.host") ||
                     hasPermission("wayzer.admin.trustPoint") ||
                       hasPermission("wayzer.admin.account") ||

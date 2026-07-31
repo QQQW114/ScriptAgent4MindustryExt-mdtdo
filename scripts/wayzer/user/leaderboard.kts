@@ -1,15 +1,21 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("coreMindustry/menu", "排行榜菜单")
 
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.ForumPostCreatedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.RecognitionChangedEvent
 import wayzer.lib.ReputationChangedEvent
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 name = "MDT DO排行榜"
 
@@ -28,7 +34,17 @@ private data class RankCacheEntry(
     val loadedAt: Long,
 )
 
-private val rankCache = mutableMapOf<String, RankCacheEntry>()
+private val rankCache = ConcurrentHashMap<String, RankCacheEntry>()
+private val rankGeneration = AtomicLong(0L)
+
+private fun leaderboardEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.Leaderboard)
+
+private fun ensureLeaderboardEnabled(player: Player): Boolean {
+    if (leaderboardEnabled()) return true
+    player.sendMessage("[yellow]排行榜系统已被管理员关闭，请联系管理员。")
+    return false
+}
 
 private suspend fun <T> db(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
@@ -50,13 +66,17 @@ private fun clearRankCache(vararg codes: String) {
 }
 
 private fun loadRankEntriesCached(category: RankCategory, force: Boolean = false): List<MdtStorage.LeaderboardEntry> {
+    if (!leaderboardEnabled()) return emptyList()
+    val generation = rankGeneration.get()
     val now = System.currentTimeMillis()
     val cached = rankCache[category.code]
     if (!force && cached != null && now - cached.loadedAt <= RANK_CACHE_TTL_MILLIS) {
         return cached.entries
     }
     val entries = category.load().filter { it.value > 0 }
-    rankCache[category.code] = RankCacheEntry(entries, now)
+    if (leaderboardEnabled() && rankGeneration.get() == generation) {
+        rankCache[category.code] = RankCacheEntry(entries, now)
+    }
     return entries
 }
 
@@ -94,7 +114,9 @@ private fun formatEntries(entries: List<MdtStorage.LeaderboardEntry>): String {
 }
 
 private suspend fun openRankCategory(player: Player, category: RankCategory, forceRefresh: Boolean = false) {
+    if (!ensureLeaderboardEnabled(player)) return
     val entries = db { loadRankEntriesCached(category, forceRefresh) }
+    if (!ensureLeaderboardEnabled(player)) return
     MenuBuilder<Unit>("排行榜：${category.title}") {
         msg = """
             |[cyan]${category.description}
@@ -109,6 +131,7 @@ private suspend fun openRankCategory(player: Player, category: RankCategory, for
 }
 
 private suspend fun openLeaderboard(player: Player) {
+    if (!ensureLeaderboardEnabled(player)) return
     MenuBuilder<Unit>("MDT排行榜") {
         msg = "[cyan]请选择要查看的排行榜。\n[gray]排行榜来自已落盘的MDC、帖子、赞踩、认可统计。"
         rankCategories.forEachIndexed { index, category ->
@@ -137,10 +160,18 @@ listenTo<ForumPostCreatedEvent> {
     clearRankCache("forum_posts")
 }
 
+listenTo<DatabaseFeatureChangedEvent> {
+    if (feature == DatabaseFeature.Leaderboard) {
+        rankGeneration.incrementAndGet()
+        clearRankCache()
+    }
+}
+
 command("rank", "打开MDT排行榜") {
     aliases = listOf("leaderboard", "排行榜", "排行")
     attr(ClientOnly)
     body {
+        if (!leaderboardEnabled()) returnReply("[yellow]排行榜系统已被管理员关闭，请联系管理员。".with())
         openLeaderboard(player!!)
     }
 }

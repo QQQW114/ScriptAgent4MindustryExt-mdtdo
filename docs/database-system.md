@@ -26,12 +26,56 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 - 若旧配置仍写着 `jdbc:h2:H2DB_PATH`，脚本会在运行时自动为 H2 URL 补上缺失的 `DB_CLOSE_DELAY=-1` 与 `DB_CLOSE_ON_EXIT=FALSE`；PostgreSQL 等其它 JDBC URL 不受影响。
 - `DB_CLOSE_DELAY=-1` 让 H2 文件库在最后一个连接关闭后仍保持打开，避免每个事务结束都触发数据库关闭、同步、压缩。
 - `DB_CLOSE_ON_EXIT=FALSE` 避免 JVM 退出钩子再次执行 H2 关闭压缩；正常运行期间数据仍按事务提交落盘。
-- 新增 H2 启动预热与周期保活，默认每 5 分钟在 `Dispatchers.IO` 执行一次轻量 `SELECT 1`，用于降低部分 VPS 磁盘空闲后首次访问的冷启动/唤醒卡顿。可通过 `h2KeepAliveMinutes <= 0` 关闭。
+- H2 启动预热与周期保活默认开启，每 5 分钟在 `Dispatchers.IO` 执行一次轻量 `SELECT 1`，用于降低部分云服/VPS 磁盘或块存储休眠后首次访问的唤醒卡顿。
+- 管理指令 `/diskwarmup [status|on|off|now|interval <1~1440>]` 可在运行中查看、启停、立即预热或调整间隔；权限 `coreLibrary.admin.diskWarmup`，默认 `@admin`。开关与间隔分别持久化为 `h2DiskWarmupEnabled` / `h2KeepAliveMinutes`。
+- 预热只是针对云服磁盘休眠的运维补丁，不是 TPS 优化器；它不会关闭数据库连接，也不能修复本身已很慢的磁盘。自动与手动预热有原子互斥，不会并发叠加查询。
 
-注意：该连接参数和保活逻辑需要**完整重启服务端**后生效；只热加载普通业务脚本不足以改变已创建的数据库连接。若重启后仍持续出现多秒级慢事务：
+注意：H2 URL/驱动等连接参数需要**完整重启服务端**后生效；`/diskwarmup` 只动态控制已创建 H2 连接上的预热循环。若重启后仍持续出现多秒级慢事务：
 
 1. 如果日志集中在 `thread=HeadlessApplication`，继续把对应调用迁移到 `Dispatchers.IO`、缓存或批量写入。
 2. 如果所有线程上的数据库操作都稳定 5-10 秒以上，优先检查 VPS 磁盘 IO、杀毒/网盘同步、虚拟化块存储空闲唤醒；长期方案是迁移到 PostgreSQL。
+
+## 数据库业务功能总开关
+
+2026-08-01 将旧“服务器测试模式”进一步拆分为可独立停用的数据库业务功能。这里的“总开关”**不会物理关闭数据库连接**，而是统一暂停玩家可直接触发或会持续产生较多数据库访问的可选业务；账号登录、信任权限、封禁、禁言、IP 风控和性能保护始终保留，避免关闭数据库业务时同时失去安全与运维能力。
+
+当前可管理的九项业务：
+
+- 在线时长自动记录；
+- 成就系统与自动检测；
+- 数据库 Wiki；
+- 玩家 MDC 转账与红包；
+- 最近玩家加入/离开记录及离线管理面板；
+- 信任等级自动晋升/降级检测；
+- 资历等级自动晋升/调整检测；
+- 排行榜；
+- 玩家信息面板中的称号、在线时长、赞踩、认可、MDC 等数据库资料显示。
+
+持久化与兼容：
+
+- 总开关 `databaseBusinessFeaturesEnabled` 默认开启，使用 ScriptAgent `config.key` 落盘；它作为覆盖层，不改写九个子开关的原值，重新开启后恢复原先配置。
+- 子开关使用现有 `MdtSettings`，键名为 `serverFeatures.database.<feature>.enabled`，缺失时全部按 `true` 补齐。
+- 不新增表、列或 DDL；旧生产数据库可直接加载。已有成就、Wiki、排行榜来源数据、红包和最近玩家记录不会因关闭开关而删除。
+- 红包过期退款维护即使在“转账/红包”关闭时仍继续，避免已发红包的资金永久冻结。
+- 在线时长关闭时会先精确结算到切换时刻；停用期间不记录，也不会在重新开启后补记。管理员手动设置/增加在线时长不受影响。
+- 信任/资历开关只停止自动脏标记、批处理与周期复查；管理员手动检查、设置和锁定仍可使用。
+- 玩家资料显示关闭后，玩家交互、处罚、观战、禁建等按钮继续存在；底层仍读取必要信任等级，防止通过关闭资料显示绕过权限边界。
+- Wiki、成就、排行榜、最近玩家和资料缓存均在关闭时清理；异步读取使用状态/代次复核，不能在关闭后以“晚到任务”重新回填缓存或继续写库。
+
+4级管理根指令（控制台也可使用）：
+
+- `/databasefeatures [status|menu|on|off]`
+- `/playtimerecording [on|off]`
+- `/achievementtoggle [on|off]`
+- `/wikitoggle [on|off]`
+- `/mdctransfertoggle [on|off]`
+- `/recentplayerrecording [on|off]`
+- `/trustpromotiontoggle [on|off]`
+- `/senioritypromotiontoggle [on|off]`
+- `/leaderboardtoggle [on|off]`
+- `/playerprofilestats [on|off]`
+
+`/serverfeatures` 菜单已增加数据库业务子菜单；上述根指令会被 `/help` 的权限过滤搜索自动索引。总开关与九个子开关默认均为开启。
 
 ## 本轮新增/修改文件
 
@@ -45,7 +89,15 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 - `mdtserver/config/scripts/wayzer/module.kts`
   - 依赖 `coreLibrary/DBConnector`，确保数据库模块与连接器进入 WayZer 业务依赖链。
 - `mdtserver/config/scripts/wayzer/user/accountAuth.kts`
-  - 使用账号表完成注册/登录/改密/自动登录。
+  - 使用账号表完成注册/登录/改密/自动登录，并按服务器设置执行注册在线要求与已绑定默认信任/资历等级下限。
+- `mdtserver/config/scripts/wayzer/user/serverFeatureSettings.kts`
+  - 缓存并管理服务器功能设置；所有状态写入现有 `MdtSettings`，不新增表或列。
+- `mdtserver/config/scripts/wayzer/lib/DatabaseFeatureSettings.kt`
+  - 定义九项数据库业务枚举、稳定服务接口和运行时状态变更事件。
+- `mdtserver/config/scripts/wayzer/user/databaseFeatureSettings.kts`
+  - 加载总开关与九个子开关、提供状态服务并广播有效状态变化；不负责具体业务规则。
+- `mdtserver/config/scripts/wayzer/lib/ServerFeatureSettings.kt`
+  - 向帖子、账号、口碑、认可、信任和结算脚本提供稳定的跨脚本设置接口。
 - `mdtserver/config/scripts/wayzer/user/accountGuestControl.kts`
   - 使用 `MdtSettings` 保存“今日未登录玩家强制观战”的日期。
 - `mdtserver/config/scripts/wayzer/user/accountIpGuard.kts`
@@ -83,9 +135,21 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
   - 旧版 `1IP=1账号` 绑定表；当前不再作为硬限制，只用于兼容清理与排查。
   - 记录最近名字、UUID、USID、首次绑定时间、最近出现时间。
 - `MdtSettings`
-- 保存小型全局设置，例如 `account.guestForceObDate`、风险IP `account.ipRisk.index` / `account.ipRisk.<ip>`、同IP小号提示最近身份 `account.ipLast.<ip>`、同IP踢出计数 `account.ipKick.<ip>`、最近玩家面板 `playerInfo.recentPlayers.v1`、`tips.items`、`tips.seeded.v1`、`trafficMonitor.budgetMbps`、测试模式开关 `serverTestMode.enabled`。
+  - 保存小型全局设置，例如 `account.guestForceObDate`、风险IP `account.ipRisk.index` / `account.ipRisk.<ip>`、同IP小号提示最近身份 `account.ipLast.<ip>`、同IP踢出计数 `account.ipKick.<ip>`、最近玩家面板 `playerInfo.recentPlayers.v1`、`tips.items`、`tips.seeded.v1`、`trafficMonitor.budgetMbps`。
+  - 服务器功能键：`serverFeatures.mdcSettlementMultiplier`、`serverFeatures.forumEnabled`、`serverFeatures.registrationOnlineRequirementEnabled`、`serverFeatures.socialActionsEnabled`、`serverFeatures.defaultBoundTrustLevel`。缺失键会按 `1/true/true/true/1` 安全默认值补齐。旧键 `defaultBoundTrustLevel` 保留不改，新语义为信任/资历共同下限；`serverFeatures.defaultBoundLevelSeniorityMigrated` 记录旧数据库是否已完成一次性资历补齐。
+  - 数据库业务子开关：`serverFeatures.database.playTimeRecording.enabled`、`achievement.enabled`、`wiki.enabled`、`mdcTransferAndRedPacket.enabled`、`recentPlayerRecording.enabled`、`trustPromotion.enabled`、`seniorityPromotion.enabled`、`leaderboard.enabled`、`playerProfileStats.enabled`；完整前缀均为 `serverFeatures.database.`，缺失时默认开启。
+  - `serverTestMode.enabled` 仅作为遗留兼容键保留；新脚本加载时强制写为 `false`，不再驱动任何账号或MDC逻辑。
 
 账号登录后，业务系统的主体 ID 会从未登录时的游戏 UUID 切换为 `account:<id>`；因此赞踩、MDC、资历/在线时长、称号、成就等数据都会挂在账号主体上。注册新账号成功时，会额外把该游客 UUID 在 `MdtTrustProfiles` 中已落库的当前/累计 MDC 合并到新账号主体，并清理来源 MDC，避免注册前游玩获得的 MDC 丢失。
+
+默认绑定等级批量调整复用 `MdtAccounts`、`MdtTrustProfiles` 与 `MdtSeniorityProfiles`：
+
+- 不执行 DDL，不要求旧数据库预先迁移表结构；
+- 以 `account:<id>` 为账号主体，按每批 400 个 UID 查询/更新，避免数据库参数数量上限；
+- 整次设置写入、信任/资历缺失资料插入和低等级提升位于同一个事务，失败整体回滚；
+- 只提升缺失或低于新默认值的账号资料，不降级现有玩家，也不会授予信任 `3+`、`3++`、`4` 或资历 `4`；已锁定的资历若低于全局默认下限，仍会被抬高，但锁定状态不变；未锁定资历的自动检测也会以该默认值作为已绑定账号下限；
+- 存储层分别返回信任/资历的扫描、插入、提升计数，不把大规模 UID 列表搬回游戏线程；业务层清空两套等级缓存并只刷新当前在线玩家。
+- 旧数据库首次运行新脚本时会执行一次兼容扫描；完成后写入标记，下次启动不重复全库扫描。若中途失败，不写标记，下次启动安全重试。
 
 自动登录只检查游戏 UUID + USID，不检查 IP。`last_ip` 仍保留为最近登录记录字段，但不作为登录条件。
 
@@ -217,6 +281,6 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 ## 维护边界
 
 - 业务规则仍放在各功能脚本里，不要把晋升、成就、赞踩限制等规则塞进 `MdtStorage.kt`。
-- 新系统需要持久化时，优先在 `MdtStorage.kt` 增加表和小型读写函数，再由对应业务脚本调用。
+- 新系统需要持久化时，优先在 `MdtStorage.kt` 增加表和小型读写函数，再由对应业务脚本调用；仅少量全局开关优先复用 `MdtSettings`，避免无必要 DDL。
 - 如果需要排行榜/统计，优先使用结构化表，不建议把新核心数据塞进字符串 KV。
 - 旧 `@Savable` 数据本轮不迁移；账号系统也不迁移旧外部统一登录数据。如果未来需要迁移，另写一次性迁移脚本，不和业务脚本混在一起。

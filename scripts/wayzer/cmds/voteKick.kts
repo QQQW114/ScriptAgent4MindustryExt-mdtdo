@@ -65,7 +65,7 @@ suspend fun startKickVote(starter: Player, target: Player, reason: String): Bool
     return true
 }
 
-command("kick", "[cyan]投票踢出某人[gray]（需50%同意）".with(), commands = VoteEvent.VoteCommands) {
+command("kick", "[red]踢出玩家[gray]（需50%同意）".with(), commands = VoteEvent.VoteCommands) {
     aliases = listOf("踢出")
     usage = "<玩家名/id> <理由>"
     requirePermission("wayzer.vote.kick")

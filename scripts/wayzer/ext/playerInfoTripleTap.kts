@@ -1,5 +1,6 @@
 @file:Depends("coreMindustry/menu", "调用标准菜单弹窗")
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("wayzer/ext/playerReputation", "玩家口碑/赞踩数据与额度控制")
 @file:Depends("wayzer/ext/playerRecognition", "玩家认可")
 @file:Depends("wayzer/ext/playerRandomForm", "随机形态")
@@ -16,6 +17,7 @@
 @file:Depends("wayzer/cmds/voteOb", "投票/强制观战接口")
 @file:Depends("wayzer/security/securityGuard", "IP封禁接口")
 @file:Depends("coreMindustry/utilTextInput", "理由输入")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.ext
 
@@ -23,6 +25,8 @@ import coreMindustry.MenuBuilder
 import coreMindustry.PagedMenuBuilder
 import coreMindustry.lib.RootCommands
 import coreLibrary.lib.PermissionApi
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.PlayerTitleChangedEvent
@@ -30,12 +34,15 @@ import wayzer.lib.RecognitionChangedEvent
 import wayzer.lib.ReputationChangedEvent
 import wayzer.lib.SeniorityLevelChangedEvent
 import wayzer.lib.SeniorityLevelLockChangedEvent
+import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.TrustLevelChangedEvent
 import wayzer.lib.TrustLevelLockChangedEvent
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.time.LocalDate
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
 private data class TapState(
@@ -103,6 +110,15 @@ private val TAP_CHAIN_TIMEOUT_MILLIS = 1_200L
 private val PROFILE_CACHE_TTL_MILLIS by config.key(60_000L, "玩家信息面板资料缓存兜底刷新时间(ms)")
 private val PROFILE_PANEL_OPEN_COOLDOWN_MILLIS by config.key(500L, "玩家信息面板重复打开限频(ms)")
 
+private fun socialActionsEnabled(): Boolean =
+    ServerFeatureSettings.getOrNull()?.socialActionsEnabled() ?: true
+
+private fun profileStatsEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.PlayerProfileStats)
+
+private fun recentPlayerRecordingEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.RecentPlayerRecording)
+
 private data class PlayerSnapshot(
     val uid: String,
     val uuid: String,
@@ -117,6 +133,7 @@ private data class PlayerSnapshot(
 private val recentPlayersLock = Any()
 private var recentPlayersCache: MutableList<RecentPlayerRecord>? = null
 private var recentSaveJob: kotlinx.coroutines.Job? = null
+private val recentPlayersGeneration = AtomicLong(0L)
 
 private fun nearestPlayerIn3x3(x: Int, y: Int): Player? {
     return Groups.player
@@ -249,17 +266,19 @@ private fun loadPlayerProfileView(snapshot: PlayerSnapshot): PlayerProfileView =
 private suspend fun refreshProfileCache(snapshot: PlayerSnapshot): PlayerProfileView {
     val now = System.currentTimeMillis()
     val loaded = withContext(Dispatchers.IO) { loadPlayerProfileView(snapshot) }
-    profileCache[snapshot.uid] = CachedProfileView(loaded, now, now)
+    if (profileStatsEnabled()) profileCache[snapshot.uid] = CachedProfileView(loaded, now, now)
     return loaded
 }
 
 private fun refreshProfileCacheAsync(snapshot: PlayerSnapshot) {
+    if (!profileStatsEnabled()) return
     launch(Dispatchers.IO) {
+        if (!profileStatsEnabled()) return@launch
         val loaded = loadPlayerProfileView(snapshot)
         val now = System.currentTimeMillis()
         withContext(Dispatchers.game) {
             val online = onlinePlayerByUid(snapshot.uid)
-            if (online != null && playerUid(online) == snapshot.uid) {
+            if (profileStatsEnabled() && online != null && playerUid(online) == snapshot.uid) {
                 profileCache[snapshot.uid] = CachedProfileView(loaded, now, now)
             }
         }
@@ -321,8 +340,11 @@ private fun recentPlayersSnapshot(): List<RecentPlayerRecord>? =
     synchronized(recentPlayersLock) { recentPlayersCache?.toList() }
 
 private suspend fun loadRecentPlayersCached(): List<RecentPlayerRecord> {
+    if (!recentPlayerRecordingEnabled()) return emptyList()
+    val generation = recentPlayersGeneration.get()
     recentPlayersSnapshot()?.let { return it }
     val loaded = withContext(Dispatchers.IO) { loadRecentPlayers() }
+    if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return emptyList()
     synchronized(recentPlayersLock) {
         if (recentPlayersCache == null) recentPlayersCache = loaded.toMutableList()
         return recentPlayersCache!!.toList()
@@ -330,6 +352,7 @@ private suspend fun loadRecentPlayersCached(): List<RecentPlayerRecord> {
 }
 
 private fun saveRecentPlayers(records: List<RecentPlayerRecord>) {
+    if (!recentPlayerRecordingEnabled()) return
     val text = records
         .sortedByDescending { it.lastSeen }
         .take(80)
@@ -347,10 +370,13 @@ private fun saveRecentPlayers(records: List<RecentPlayerRecord>) {
 }
 
 private fun scheduleRecentPlayersSave() {
+    if (!recentPlayerRecordingEnabled()) return
+    val generation = recentPlayersGeneration.get()
     synchronized(recentPlayersLock) {
         recentSaveJob?.cancel()
         recentSaveJob = launch(Dispatchers.IO) {
             delay(2_000L)
+            if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return@launch
             val snapshot = synchronized(recentPlayersLock) { recentPlayersCache?.toList().orEmpty() }
             saveRecentPlayers(snapshot)
         }
@@ -358,6 +384,8 @@ private fun scheduleRecentPlayersSave() {
 }
 
 private fun recordRecentPlayerAsync(snapshot: PlayerSnapshot) {
+    if (!recentPlayerRecordingEnabled()) return
+    val generation = recentPlayersGeneration.get()
     val record = RecentPlayerRecord(
         uid = snapshot.uid,
         uuid = snapshot.uuid,
@@ -367,15 +395,18 @@ private fun recordRecentPlayerAsync(snapshot: PlayerSnapshot) {
         lastSeen = System.currentTimeMillis(),
     )
     launch(Dispatchers.IO) {
+        if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return@launch
         val records = synchronized(recentPlayersLock) {
             recentPlayersCache?.toMutableList()
         } ?: run {
             val loaded = loadRecentPlayers()
+            if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return@launch
             synchronized(recentPlayersLock) {
                 if (recentPlayersCache == null) recentPlayersCache = loaded.toMutableList()
                 recentPlayersCache!!.toMutableList()
             }
         }
+        if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return@launch
         val updated = records
             .filterNot { it.uid == record.uid || it.uuid == record.uuid }
             .toMutableList()
@@ -384,7 +415,7 @@ private fun recordRecentPlayerAsync(snapshot: PlayerSnapshot) {
         synchronized(recentPlayersLock) {
             recentPlayersCache = trimmed
         }
-        scheduleRecentPlayersSave()
+        if (recentPlayerRecordingEnabled() && recentPlayersGeneration.get() == generation) scheduleRecentPlayersSave()
     }
 }
 
@@ -557,7 +588,11 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val targetUid = playerUid(target)
     val viewerUid = playerUid(viewer)
     val isSelf = viewer === target || viewerUid == targetUid
-    val profile = playerProfileView(target)
+    val showProfileStats = profileStatsEnabled()
+    val loadedProfile = if (showProfileStats) playerProfileView(target) else null
+    val profile = loadedProfile?.takeIf { profileStatsEnabled() }
+    val targetLevelCode = with(trustLevel) { getTrustLevelCode(targetUid, target) }
+    val targetDisplayName = profile?.name ?: target.name
     val viewerLevelCode = with(trustLevel) { getTrustLevelCode(viewerUid, viewer) }
     val viewerOrder = trustOrder(viewerLevelCode)
     val order1 = trustOrder("1")
@@ -565,7 +600,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val order3 = trustOrder("3")
     val order3PlusPlus = trustOrder("3++")
     val order4 = trustOrder("4")
-    val canVotePunishZero = !isSelf && profile.level == "0" && viewerOrder >= order1
+    val canVotePunishZero = !isSelf && targetLevelCode == "0" && viewerOrder >= order1
     val canDirectRestrictTarget = !isSelf && with(trustLevel) { canDirectRestrictTrustTarget(viewer, target) }
     val canDirectForceOb = !isSelf && (
             (!PlayerData[target].authed && viewerOrder >= order3) ||
@@ -585,21 +620,26 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val targetBuildBanned = canBuildBanTarget && with(playerBuildBan) { isBuildBanned(target) }
 
     MenuBuilder<Unit>("玩家信息") {
-        msg = """
-            |[cyan]名字：[white]${profile.name}
-            |[cyan]称号：[white]${profile.title}
-            |[cyan]信任等级：[white]${profile.level}
-            |[cyan]资历等级：[white]${profile.seniorityLevel}
-            |[cyan]累计在线：[white]${profile.playHours}
-            |[cyan]被赞数：[white]${profile.liked}
-            |[cyan]被踩数：[white]${profile.disliked}
-            |[cyan]给别人的赞：[white]${profile.givenLikes}
-            |[cyan]踩别人的数：[white]${profile.givenDislikes}
-            |[cyan]有效被踩：[white]${profile.effectiveDisliked}
-            |[cyan]被认可：[white]${profile.receivedRecognitions}
-            |[cyan]认可他人：[white]${profile.givenRecognitions}
-            |[cyan]当前MDC：[white]${profile.points}
-            |[cyan]累计MDC：[white]${profile.totalPoints}
+        msg = profile?.let {
+            """
+                |[cyan]名字：[white]${it.name}
+                |[cyan]称号：[white]${it.title}
+                |[cyan]信任等级：[white]${it.level}
+                |[cyan]资历等级：[white]${it.seniorityLevel}
+                |[cyan]累计在线：[white]${it.playHours}
+                |[cyan]被赞数：[white]${it.liked}
+                |[cyan]被踩数：[white]${it.disliked}
+                |[cyan]给别人的赞：[white]${it.givenLikes}
+                |[cyan]踩别人的数：[white]${it.givenDislikes}
+                |[cyan]有效被踩：[white]${it.effectiveDisliked}
+                |[cyan]被认可：[white]${it.receivedRecognitions}
+                |[cyan]认可他人：[white]${it.givenRecognitions}
+                |[cyan]当前MDC：[white]${it.points}
+                |[cyan]累计MDC：[white]${it.totalPoints}
+            """.trimMargin()
+        } ?: """
+            |[cyan]名字：[white]$targetDisplayName
+            |[gray]玩家资料统计显示已被管理员关闭；交互与管理按钮仍可正常使用。
         """.trimMargin()
 
         if (isSelf) {
@@ -607,17 +647,21 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
             option("打开技能面板") { quickCommand(viewer, "/skills") }
             newRow()
             option("打开商店列表") { quickCommand(viewer, "/shop") }
-            option("打开成就系统") { quickCommand(viewer, "/achievements") }
+            if (isDatabaseFeatureEnabled(DatabaseFeature.Achievement)) {
+                option("打开成就系统") { quickCommand(viewer, "/achievements") }
+            } else option("") { }
             newRow()
             option("随机变换形态") { with(playerRandomForm) { toggleRandomForm(viewer) } }
             option("打开投票页面") { quickCommand(viewer, "/vote") }
             newRow()
             option("打开/help页面") { quickCommand(viewer, "/help") }
         } else {
-            option("赞ta") { with(playerReputation) { likePlayer(viewer, targetUid, profile.name) } }
-            option("踩ta") { with(playerReputation) { dislikePlayer(viewer, targetUid, profile.name) } }
-            if (viewerOrder >= order2) {
-                option("认可ta") { with(playerRecognition) { recognizePlayer(viewer, targetUid, profile.name) } }
+            if (socialActionsEnabled()) {
+                option("赞ta") { with(playerReputation) { likePlayer(viewer, targetUid, targetDisplayName) } }
+                option("踩ta") { with(playerReputation) { dislikePlayer(viewer, targetUid, targetDisplayName) } }
+                if (viewerOrder >= order2) {
+                    option("认可ta") { with(playerRecognition) { recognizePlayer(viewer, targetUid, targetDisplayName) } }
+                }
             }
             if (canVotePunishZero) {
                 newRow()
@@ -766,31 +810,40 @@ private fun canUseRecentPlayerPanel(viewer: Player): Boolean {
 }
 
 private suspend fun showRecentPlayerPanel(viewer: Player, record: RecentPlayerRecord) {
+    if (!recentPlayerRecordingEnabled()) {
+        viewer.sendMessage("[yellow]最近玩家记录功能已被管理员关闭。")
+        return
+    }
     record.onlinePlayer()?.let {
         showPlayerInfo(viewer, it)
         return
     }
 
-    val profile = withContext(Dispatchers.IO) {
+    val profile = if (profileStatsEnabled()) withContext(Dispatchers.IO) {
         loadPlayerProfileViewFromStorage(record.uid, record.name, authed = null, admin = false)
-    }
+    } else null
     MenuBuilder<Unit>("最近玩家信息") {
-        msg = """
-            |[cyan]名字：[white]${profile.name}
+        val identityText = """
+            |[cyan]名字：[white]${record.name}
             |[cyan]短ID：[white]${record.shortId}
             |[cyan]UID：[white]${record.uid}
             |[cyan]UUID：[white]${record.uuid}
             |[cyan]IP：[white]${record.ip}
             |[cyan]最后在线：[white]${formatAgo(record.lastSeen)}
-            |[cyan]称号：[white]${profile.title}
-            |[cyan]信任等级：[white]${profile.level}
-            |[cyan]资历等级：[white]${profile.seniorityLevel}
-            |[cyan]累计在线：[white]${profile.playHours}
-            |[cyan]被赞/踩：[white]${profile.liked}/${profile.disliked}
-            |[cyan]有效被踩：[white]${profile.effectiveDisliked}
-            |[cyan]被认可：[white]${profile.receivedRecognitions}
-            |[cyan]当前/累计MDC：[white]${profile.points}/${profile.totalPoints}
         """.trimMargin()
+        val profileText = profile?.let {
+            """
+                |[cyan]称号：[white]${it.title}
+                |[cyan]信任等级：[white]${it.level}
+                |[cyan]资历等级：[white]${it.seniorityLevel}
+                |[cyan]累计在线：[white]${it.playHours}
+                |[cyan]被赞/踩：[white]${it.liked}/${it.disliked}
+                |[cyan]有效被踩：[white]${it.effectiveDisliked}
+                |[cyan]被认可：[white]${it.receivedRecognitions}
+                |[cyan]当前/累计MDC：[white]${it.points}/${it.totalPoints}
+            """.trimMargin()
+        } ?: "[gray]玩家资料统计显示已关闭。"
+        msg = "$identityText\n$profileText"
         val targetData = record.toPlayerData()
         if (canStaffBanTarget(viewer, targetData)) {
             option("ban掉ta") {
@@ -807,11 +860,19 @@ private suspend fun showRecentPlayerPanel(viewer: Player, record: RecentPlayerRe
 }
 
 private suspend fun openRecentPlayersMenu(viewer: Player) {
+    if (!recentPlayerRecordingEnabled()) {
+        viewer.sendMessage("[yellow]最近玩家记录功能已被管理员关闭；已有记录仍保留在数据库中。")
+        return
+    }
     if (!canUseRecentPlayerPanel(viewer)) {
         viewer.sendMessage("[red]权限不足：只有3++协管、4级/admin可以查看最近玩家管理面板。")
         return
     }
     val records = loadRecentPlayersCached()
+    if (!recentPlayerRecordingEnabled()) {
+        viewer.sendMessage("[yellow]最近玩家记录功能状态已变化，请重新打开菜单。")
+        return
+    }
     if (records.isEmpty()) {
         viewer.sendMessage("[yellow]暂无最近玩家记录。")
         return
@@ -829,17 +890,19 @@ private suspend fun openRecentPlayersMenu(viewer: Player) {
 }
 
 listen<EventType.PlayerLeave> {
-    val snapshot = snapshotPlayer(it.player)
-    recordRecentPlayerAsync(snapshot)
+    val uid = PlayerData[it.player].id
+    if (recentPlayerRecordingEnabled()) recordRecentPlayerAsync(snapshotPlayer(it.player))
     tapStates.remove(it.player)
-    profileCache.remove(snapshot.uid)
-    lastInfoOpenAt.remove(snapshot.uuid)
+    profileCache.remove(uid)
+    lastInfoOpenAt.remove(it.player.uuid())
 }
 
 listen<EventType.PlayerJoin> {
-    val snapshot = snapshotPlayer(it.player)
-    recordRecentPlayerAsync(snapshot)
-    refreshProfileCacheAsync(snapshot)
+    if (recentPlayerRecordingEnabled() || profileStatsEnabled()) {
+        val snapshot = snapshotPlayer(it.player)
+        if (recentPlayerRecordingEnabled()) recordRecentPlayerAsync(snapshot)
+        if (profileStatsEnabled()) refreshProfileCacheAsync(snapshot)
+    }
 }
 
 listen<EventType.ResetEvent> {
@@ -851,8 +914,11 @@ onDisable {
     tapStates.clear()
     profileCache.clear()
     lastInfoOpenAt.clear()
-    recentSaveJob?.cancel()
-    recentSaveJob = null
+    synchronized(recentPlayersLock) {
+        recentSaveJob?.cancel()
+        recentSaveJob = null
+        recentPlayersCache = null
+    }
 }
 
 listenTo<ReputationChangedEvent> { invalidateProfileCache(uids) }
@@ -864,19 +930,36 @@ listenTo<SeniorityLevelChangedEvent> { invalidateProfileCache(uid) }
 listenTo<SeniorityLevelLockChangedEvent> { invalidateProfileCache(uids) }
 listenTo<PlayerTitleChangedEvent> { invalidateProfileCache(uids) }
 
+listenTo<DatabaseFeatureChangedEvent> {
+    when (feature) {
+        DatabaseFeature.PlayerProfileStats -> profileCache.clear()
+        DatabaseFeature.RecentPlayerRecording -> synchronized(recentPlayersLock) {
+            recentPlayersGeneration.incrementAndGet()
+            recentSaveJob?.cancel()
+            recentSaveJob = null
+            recentPlayersCache = null
+        }
+        else -> Unit
+    }
+}
+
 onEnable {
-    launch(Dispatchers.IO) {
-        val loaded = loadRecentPlayers()
-        synchronized(recentPlayersLock) {
-            val current = recentPlayersCache.orEmpty()
-            recentPlayersCache = (current + loaded)
-                .distinctBy { it.uid.ifBlank { it.uuid } }
-                .sortedByDescending { it.lastSeen }
-                .take(80)
-                .toMutableList()
+    if (recentPlayerRecordingEnabled()) {
+        val generation = recentPlayersGeneration.get()
+        launch(Dispatchers.IO) {
+            val loaded = loadRecentPlayers()
+            if (!recentPlayerRecordingEnabled() || recentPlayersGeneration.get() != generation) return@launch
+            synchronized(recentPlayersLock) {
+                val current = recentPlayersCache.orEmpty()
+                recentPlayersCache = (current + loaded)
+                    .distinctBy { it.uid.ifBlank { it.uuid } }
+                    .sortedByDescending { it.lastSeen }
+                    .take(80)
+                    .toMutableList()
+            }
         }
     }
-    Groups.player.forEach { refreshProfileCacheAsync(snapshotPlayer(it)) }
+    if (profileStatsEnabled()) Groups.player.forEach { refreshProfileCacheAsync(snapshotPlayer(it)) }
 }
 
 listen<EventType.TapEvent> { event ->

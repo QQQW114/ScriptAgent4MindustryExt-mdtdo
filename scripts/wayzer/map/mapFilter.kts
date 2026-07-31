@@ -171,7 +171,7 @@ listenTo<MapChangeEvent>(Event.Priority.Intercept) {
 
 onEnable {
     val script = this
-    VoteEvent.VoteCommands += CommandInfo(script, "banmap", "[green]封禁地图[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "banmap", "[green]封禁问题地图[gray]（需50%同意）") {
         aliases = listOf("封禁地图", "地图封禁")
         usage = "<地图ID>"
         permission = "wayzer.vote.banmap"
@@ -197,7 +197,7 @@ onEnable {
             startPvpOpenVote(player!!)
         }
     }
-    VoteEvent.VoteCommands += CommandInfo(script, "pvp", "[green]开启/关闭今日PVP[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "pvp", "[green]切换今日PVP[gray]（需50%同意）") {
         usage = "<on|off|status>"
         aliases = listOf("今日pvp")
         permission = "wayzer.vote.pvpday"

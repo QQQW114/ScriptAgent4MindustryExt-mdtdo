@@ -76,21 +76,21 @@ fun voteNextAutoMap(player: Player, map: MapInfo) {
 }
 
 fun VoteService.register() {
-    addSubVote("换图投票", "<地图ID>", "map", "换图") {
+    addSubVote("立即投票换图", "<地图ID>", "map", "换图") {
         if (arg.isEmpty())
             returnReply("[red]请输入地图序号".with())
         val map = arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
             ?: returnReply("[red]地图序号错误,可以通过/maps查询".with())
         voteMap(player!!, map)
     }
-    addSubVote("下次自动轮换地图投票", "<地图ID>", "nextmap", "endmap", "aftermap", "下局换图", "结束后换图") {
+    addSubVote("指定下次轮换地图", "<地图ID>", "nextmap", "endmap", "aftermap", "下局换图", "结束后换图") {
         if (arg.isEmpty())
             returnReply("[red]请输入地图序号".with())
         val map = arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
             ?: returnReply("[red]地图序号错误,可以通过/maps查询".with())
         voteNextAutoMap(player!!, map)
     }
-    addSubVote("回滚到某个存档(使用/slots查看)", "<存档ID>", "rollback", "load", "回档") {
+    addSubVote("回滚存档（/slots查看）", "<存档ID>", "rollback", "load", "回档") {
         val save = arg.firstOrNull()?.toIntOrNull()
             ?: returnReply("[red]请输入正确的存档编号".with())
         val map = MapManager.getSlot(save)

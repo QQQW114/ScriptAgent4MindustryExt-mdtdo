@@ -150,7 +150,7 @@ onEnable {
     val script = this
     VoteEvent.registerDenyVotePredicate("wayzer.cmds.voteOb.forceOb") { isForceOb(it) }
     onDisable { VoteEvent.unregisterDenyVotePredicate("wayzer.cmds.voteOb.forceOb") }
-    VoteEvent.VoteCommands += CommandInfo(script, "ob", "[cyan]强制观战[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "ob", "[cyan]强制玩家观战[gray]（需50%同意）") {
         aliases = listOf("观战")
         usage = "<玩家名/id> <理由>"
         permission = "wayzer.vote.ob"
@@ -161,7 +161,7 @@ onEnable {
             startObVote(player, target, reason)
         }
     }
-    VoteEvent.VoteCommands += CommandInfo(script, "quitOb", "[yellow]解除强行观战限制(限本人)[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "quitOb", "[yellow]解除自己的观战限制[gray]（需50%同意）") {
         aliases = listOf("解除观战")
         body {
             val player = player!!

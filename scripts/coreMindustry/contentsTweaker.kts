@@ -8,9 +8,23 @@ import arc.struct.ObjectMap
 import arc.struct.Seq
 import arc.util.serialization.Jval
 import mindustry.Vars
+import mindustry.ctype.Content
+import mindustry.ctype.UnlockableContent
+import mindustry.game.MapObjectives
+import mindustry.gen.Groups
+import mindustry.gen.Payloadc
+import mindustry.type.Item
 import mindustry.type.ItemStack
+import mindustry.type.Liquid
 import mindustry.type.LiquidStack
+import mindustry.type.StatusEffect
+import mindustry.type.UnitType
+import mindustry.type.Weather
 import mindustry.game.EventType
+import mindustry.world.Block
+import mindustry.world.blocks.environment.Floor
+import mindustry.content.Blocks
+import mindustry.world.modules.LiquidModule
 import java.lang.reflect.Array
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
@@ -40,6 +54,21 @@ data class LoadedPatchInfo(
     val warnings: List<String>,
 )
 
+data class LoadedDataAssetInfo(
+    val index: Int,
+    val type: String,
+    val path: String,
+    val name: String,
+    val fullPath: String,
+    val contentType: String?,
+    val loadedContent: String?,
+    val error: Boolean,
+    val warnings: List<String>,
+    val cached: Boolean?,
+    val hash: String?,
+    val preview: String?,
+)
+
 data class ContentObjectSnapshot(
     val target: Any,
     val fields: Map<Field, Any?>,
@@ -51,6 +80,54 @@ data class ContentStateSnapshot(
     val createdAt: Long,
     val entries: List<ContentObjectSnapshot>,
 )
+
+/**
+ * v159 DataPatcher 在 reload/load 前会注销并重新创建全部 ContentAsset 内容对象。
+ * 场上单位、建筑或玩家附身仍引用旧对象时，紧随其后的完整世界同步会写出客户端已无法解析的内容 ID。
+ * 因此每次运行期 Data Asset 重载前，都必须先清理旧动态内容的世界引用。
+ */
+data class DynamicContentCleanupReport(
+    val contentCount: Int,
+    var detachedPlayers: Int = 0,
+    var removedUnits: Int = 0,
+    var removedBuildings: Int = 0,
+    var removedEnvironmentBlocks: Int = 0,
+    var replacedFloors: Int = 0,
+    var clearedOverlays: Int = 0,
+    var removedBullets: Int = 0,
+    var removedPuddles: Int = 0,
+    var removedWeather: Int = 0,
+    var clearedUnitItems: Int = 0,
+    var clearedUnitStatuses: Int = 0,
+    var clearedUnitPayloads: Int = 0,
+    var clearedBuildItems: Int = 0,
+    var clearedBuildLiquids: Int = 0,
+    var clearedBuildPayloads: Int = 0,
+    var clearedBuildConfigs: Int = 0,
+    var clearedBuildPlans: Int = 0,
+    var clearedRuleRefs: Int = 0,
+    val failures: MutableList<String> = mutableListOf(),
+    var suppressedFailures: Int = 0,
+) {
+    fun addFailure(message: String) {
+        // 清理失败可能同时命中大量地图格/实体；限制详细项，避免防护逻辑自身放大内存压力。
+        if (failures.size < 64) failures += message else suppressedFailures++
+    }
+
+    fun failureCount(): Int = failures.size + suppressedFailures
+
+    fun changed(): Int = detachedPlayers + removedUnits + removedBuildings + removedEnvironmentBlocks + replacedFloors +
+        clearedOverlays + removedBullets + removedPuddles + removedWeather + clearedUnitItems + clearedUnitStatuses +
+        clearedUnitPayloads + clearedBuildItems + clearedBuildLiquids + clearedBuildPayloads + clearedBuildConfigs +
+        clearedBuildPlans + clearedRuleRefs
+
+    fun summary(): String =
+        "contents=$contentCount, players=$detachedPlayers, units=$removedUnits, builds=$removedBuildings, env=$removedEnvironmentBlocks, " +
+            "floors=$replacedFloors, overlays=$clearedOverlays, bullets=$removedBullets, puddles=$removedPuddles, weather=$removedWeather, " +
+            "unitItems=$clearedUnitItems, statuses=$clearedUnitStatuses, unitPayloads=$clearedUnitPayloads, " +
+            "buildItems=$clearedBuildItems, buildLiquids=$clearedBuildLiquids, buildPayloads=$clearedBuildPayloads, " +
+            "configs=$clearedBuildConfigs, plans=$clearedBuildPlans, rules=$clearedRuleRefs, failures=${failureCount()}"
+}
 
 private val contentSnapshotSkipNames = setOf(
     // 运行时/渲染缓存，不属于 CP 数据语义；恢复这些字段收益很低，反而更容易碰到客户端/服务端差异。
@@ -269,6 +346,317 @@ private fun nativeDataManager(): Any? {
     return if (hasPatchApi) data else null
 }
 
+private data class DynamicContentTargets(
+    val contents: Set<Content>,
+    val unlockable: Set<UnlockableContent>,
+    val blocks: Set<Block>,
+    val units: Set<UnitType>,
+    val items: Set<Item>,
+    val liquids: Set<Liquid>,
+    val statuses: Set<StatusEffect>,
+    val weather: Set<Weather>,
+)
+
+private val liquidModuleLiquidsField by lazy {
+    LiquidModule::class.java.getDeclaredField("liquids").apply { trySetAccessible() }
+}
+
+private fun liquidModuleCapacity(module: LiquidModule): Int =
+    (liquidModuleLiquidsField.get(module) as? FloatArray)?.size
+        ?: error("LiquidModule.liquids 不是 float[]")
+
+private fun currentDynamicContentTargets(): DynamicContentTargets {
+    val data = nativeDataManager()
+    val assets = callNoArg(data, "getContent") as? Iterable<*>
+    val contents = (assets ?: emptyList<Any?>())
+        .mapNotNull { asset -> memberValue(asset, "content") as? Content }
+        .filterNot { it.removed }
+        .toSet()
+    return DynamicContentTargets(
+        contents = contents,
+        unlockable = contents.filterIsInstance<UnlockableContent>().toSet(),
+        blocks = contents.filterIsInstance<Block>().toSet(),
+        units = contents.filterIsInstance<UnitType>().toSet(),
+        items = contents.filterIsInstance<Item>().toSet(),
+        liquids = contents.filterIsInstance<Liquid>().toSet(),
+        statuses = contents.filterIsInstance<StatusEffect>().toSet(),
+        weather = contents.filterIsInstance<Weather>().toSet(),
+    )
+}
+
+private fun objectiveReferencesDynamicContent(objective: MapObjectives.MapObjective, targets: DynamicContentTargets): Boolean {
+    var clazz: Class<*>? = objective.javaClass
+    while (clazz != null && clazz != Any::class.java) {
+        clazz.declaredFields.forEach { field ->
+            if (Modifier.isStatic(field.modifiers) || !Content::class.java.isAssignableFrom(field.type)) return@forEach
+            runCatching { field.isAccessible = true }
+            if (runCatching { field.get(objective) as? Content }.getOrNull() in targets.contents) return true
+        }
+        clazz = clazz.superclass
+    }
+    return false
+}
+
+private fun configReferencesDynamicContent(config: Any?, targets: DynamicContentTargets): Boolean = when (config) {
+    null -> false
+    is Content -> config in targets.contents
+    is ItemStack -> config.item in targets.items
+    is Iterable<*> -> config.any { configReferencesDynamicContent(it, targets) }
+    is kotlin.Array<*> -> config.any { configReferencesDynamicContent(it, targets) }
+    else -> false
+}
+
+private fun clearRuleDynamicContentRefs(targets: DynamicContentTargets, report: DynamicContentCleanupReport) {
+    val rules = Vars.state.rules
+
+    val spawnBefore = rules.spawns.size
+    rules.spawns.removeAll { group ->
+        group.type in targets.units ||
+            group.effect in targets.statuses ||
+            group.items?.item in targets.items ||
+            group.payloads?.any { it in targets.units } == true
+    }
+    report.clearedRuleRefs += spawnBefore - rules.spawns.size
+
+    val loadoutBefore = rules.loadout.size
+    rules.loadout.removeAll { it.item in targets.items }
+    report.clearedRuleRefs += loadoutBefore - rules.loadout.size
+
+    val weatherBefore = rules.weather.size
+    rules.weather.removeAll { it.weather in targets.weather }
+    report.clearedRuleRefs += weatherBefore - rules.weather.size
+
+    targets.blocks.forEach { block ->
+        if (rules.blockLimits.remove(block, Int.MIN_VALUE) != Int.MIN_VALUE) report.clearedRuleRefs++
+        if (rules.bannedBlocks.remove(block)) report.clearedRuleRefs++
+        if (rules.revealedBlocks.remove(block)) report.clearedRuleRefs++
+    }
+    targets.units.forEach { if (rules.bannedUnits.remove(it)) report.clearedRuleRefs++ }
+    targets.items.forEach { if (rules.hiddenBuildItems.remove(it)) report.clearedRuleRefs++ }
+    targets.unlockable.forEach { if (rules.researched.remove(it)) report.clearedRuleRefs++ }
+
+    if (rules.objectives.any() && rules.objectives.any { objective -> objectiveReferencesDynamicContent(objective, targets) }) {
+        report.clearedRuleRefs += rules.objectives.all.size
+        rules.objectives.clear()
+    }
+}
+
+private fun clearTeamDynamicContentRefs(targets: DynamicContentTargets, report: DynamicContentCleanupReport) {
+    val teams = (Vars.state.teams.active.toList() + Vars.state.teams.present.toList()).distinct()
+    teams.forEach { data ->
+        var index = data.plans.size - 1
+        while (index >= 0) {
+            if (data.plans.get(index).block in targets.blocks) {
+                data.plans.removeIndex(index)
+                report.clearedBuildPlans++
+            }
+            index--
+        }
+        targets.blocks.forEach { data.buildingTypes.remove(it) }
+    }
+    Vars.state.teams.bosses.removeAll { it.type in targets.units }
+}
+
+private fun verifyDynamicContentCleared(targets: DynamicContentTargets, report: DynamicContentCleanupReport) {
+    if (Groups.player.any { it.unit()?.type in targets.units }) report.addFailure("仍有玩家附身旧DP单位")
+    if (Groups.unit.any { it.type in targets.units }) report.addFailure("仍有旧DP单位")
+    if (Groups.build.any { it.block in targets.blocks }) report.addFailure("仍有旧DP建筑")
+    if (Groups.puddle.any { it.liquid in targets.liquids }) report.addFailure("仍有旧DP液体洼地")
+    if (Groups.weather.any { it.weather in targets.weather }) report.addFailure("仍有旧DP天气")
+    if (Groups.bullet.size() > 0) report.addFailure("仍有未清理子弹")
+
+    var invalidTileReported = false
+    Vars.world.tiles?.forEach { tile ->
+        if (!invalidTileReported &&
+            (tile.block() in targets.blocks || tile.floor() in targets.blocks || tile.overlay() in targets.blocks)
+        ) {
+            report.addFailure("地图仍引用旧DP方块@${tile.x},${tile.y}")
+            invalidTileReported = true
+        }
+    }
+}
+
+/**
+ * 在 DataManager.load/reloadPatches 之前调用。清理失败会阻止内容注销；即使已经局部清场，
+ * 旧 Content 仍保持注册状态，不会进入“场上实体引用失效内容”的崩服/全员掉线状态。
+ */
+fun prepareForDataAssetReload(reason: String): DynamicContentCleanupReport {
+    val targets = currentDynamicContentTargets()
+    val report = DynamicContentCleanupReport(targets.contents.size)
+    if (targets.contents.isEmpty()) return report
+
+    val players = Groups.player.toList()
+    players.forEach { player ->
+        val unit = player.unit()
+        if (unit != null && unit.type in targets.units) {
+            runCatching { player.clearUnit() }
+                .onSuccess { report.detachedPlayers++ }
+                .onFailure { report.addFailure("解除玩家${player.plainName()}旧DP单位失败: ${it.message}") }
+        }
+        if (player.selectedBlock() in targets.blocks) {
+            runCatching { player.selectedBlock(null) }
+                .onFailure { report.addFailure("清理玩家${player.plainName()}选中方块失败: ${it.message}") }
+        }
+    }
+
+    Groups.unit.toList().forEach { unit ->
+        if (unit.type in targets.units) {
+            runCatching { unit.remove() }
+                .onSuccess { report.removedUnits++ }
+                .onFailure { report.addFailure("移除旧DP单位${unit.type.name}#${unit.id}失败: ${it.message}") }
+            return@forEach
+        }
+
+        if (unit.stack().item in targets.items) {
+            runCatching { unit.clearItem() }
+                .onSuccess { report.clearedUnitItems++ }
+                .onFailure { report.addFailure("清理单位物品#${unit.id}失败: ${it.message}") }
+        }
+        if (targets.statuses.any { unit.hasEffect(it) }) {
+            runCatching {
+                targets.statuses.forEach { status -> if (unit.hasEffect(status)) unit.unapply(status) }
+            }.onSuccess { report.clearedUnitStatuses++ }
+                .onFailure { report.addFailure("清理单位状态#${unit.id}失败: ${it.message}") }
+        }
+        (unit as? Payloadc)?.payloads()?.let { payloads ->
+            if (!payloads.isEmpty) {
+                runCatching {
+                    for (i in payloads.size - 1 downTo 0) {
+                        payloads.get(i).remove()
+                        payloads.remove(i)
+                    }
+                }.onSuccess { report.clearedUnitPayloads++ }
+                    .onFailure { report.addFailure("清理单位载荷#${unit.id}失败: ${it.message}") }
+            }
+        }
+        if (targets.blocks.isNotEmpty() && unit.plans().any { it.block in targets.blocks }) {
+            runCatching { unit.clearBuilding() }
+                .onSuccess { report.clearedBuildPlans++ }
+                .onFailure { report.addFailure("清理单位建造计划#${unit.id}失败: ${it.message}") }
+        }
+    }
+
+    Groups.bullet.toList().forEach { bullet ->
+        runCatching { bullet.remove() }
+            .onSuccess { report.removedBullets++ }
+            .onFailure { report.addFailure("清理子弹#${bullet.id}失败: ${it.message}") }
+    }
+
+    Groups.build.toList().forEach { build ->
+        if (build.block in targets.blocks) {
+            // 成功加载后会统一完整重同步；清场阶段只改服务端世界，避免大量 setNet 包放大上行压力。
+            runCatching { build.tile.setBlock(Blocks.air) }
+                .onSuccess { report.removedBuildings++ }
+                .onFailure { report.addFailure("移除旧DP建筑${build.block.name}@${build.tileX()},${build.tileY()}失败: ${it.message}") }
+            return@forEach
+        }
+
+        build.items?.let { items ->
+            var changed = false
+            targets.items.forEach itemLoop@{ item ->
+                // 旧存档/地图逻辑可能刚把按旧物品数反序列化的模块重新加入世界。
+                // 超出数组长度的动态物品不可能实际存储在该模块中，直接按 0 处理，避免清理器自身越界。
+                if (item.id.toInt() !in 0 until items.length()) return@itemLoop
+                if (items.get(item) > 0) {
+                    items.set(item, 0)
+                    changed = true
+                }
+            }
+            if (changed) report.clearedBuildItems++
+        }
+        build.liquids?.let { liquids ->
+            val currentIsDynamic = liquids.current() in targets.liquids
+            val capacity = runCatching { liquidModuleCapacity(liquids) }.getOrElse { error ->
+                report.addFailure("读取建筑液体模块容量@${build.tileX()},${build.tileY()}失败: ${error.message}")
+                0
+            }
+            val changed = currentIsDynamic || targets.liquids.any { liquid ->
+                liquid.id.toInt() in 0 until capacity && liquids.get(liquid) > 0.0001f
+            }
+            if (changed) {
+                liquids.clear()
+                liquids.stopFlow()
+                if (currentIsDynamic && Vars.content.liquids().size > 0) {
+                    // clear() 不会重置 current；在旧动态 Liquid 注销前切回稳定的原版对象。
+                    liquids.add(Vars.content.liquid(0), 0f)
+                }
+                report.clearedBuildLiquids++
+            }
+        }
+
+        // v159 中并非所有 Building 实现都会返回 PayloadSeq；
+        // 普通建筑可能返回 null，不能把它当作卸载失败。
+        val payloads = build.getPayloads()
+        val payloadCount = payloads?.total() ?: 0
+        if (payloads != null && payloadCount > 0) {
+            runCatching { payloads.clear() }
+                .onSuccess { report.clearedBuildPayloads += payloadCount }
+                .onFailure { report.addFailure("清理建筑载荷计数@${build.tileX()},${build.tileY()}失败: ${it.message}") }
+        }
+        var payloadGuard = 0
+        while (build.getPayload() != null && payloadGuard++ < 64) {
+            val payload = runCatching { build.takePayload() }.getOrElse {
+                report.addFailure("取出建筑载荷@${build.tileX()},${build.tileY()}失败: ${it.message}")
+                null
+            } ?: break
+            runCatching { payload.remove() }
+                .onSuccess { report.clearedBuildPayloads++ }
+                .onFailure { report.addFailure("移除建筑载荷@${build.tileX()},${build.tileY()}失败: ${it.message}") }
+        }
+        if (build.getPayload() != null) report.addFailure("建筑载荷清理未完成@${build.tileX()},${build.tileY()}")
+
+        val config = runCatching { build.config() }.getOrNull()
+        if (configReferencesDynamicContent(config, targets)) {
+            runCatching { build.configureAny(null) }
+                .onSuccess { report.clearedBuildConfigs++ }
+                .onFailure { report.addFailure("清理建筑配置@${build.tileX()},${build.tileY()}失败: ${it.message}") }
+        }
+    }
+
+    Groups.puddle.toList().filter { it.liquid in targets.liquids }.forEach { puddle ->
+        runCatching { puddle.remove() }
+            .onSuccess { report.removedPuddles++ }
+            .onFailure { report.addFailure("移除旧DP液体洼地失败: ${it.message}") }
+    }
+    Groups.weather.toList().filter { it.weather in targets.weather }.forEach { weather ->
+        runCatching { weather.remove() }
+            .onSuccess { report.removedWeather++ }
+            .onFailure { report.addFailure("移除旧DP天气失败: ${it.message}") }
+    }
+
+    Vars.world.tiles?.forEach { tile ->
+        if (tile.build == null && tile.block() in targets.blocks && tile.block() !== Blocks.air) {
+            runCatching { tile.setBlock(Blocks.air) }
+                .onSuccess { report.removedEnvironmentBlocks++ }
+                .onFailure { report.addFailure("移除旧DP环境方块@${tile.x},${tile.y}失败: ${it.message}") }
+        }
+        if (tile.floor() in targets.blocks) {
+            runCatching { tile.setFloor(Blocks.stone as Floor) }
+                .onSuccess { report.replacedFloors++ }
+                .onFailure { report.addFailure("替换旧DP地板@${tile.x},${tile.y}失败: ${it.message}") }
+        }
+        if (tile.overlay() in targets.blocks) {
+            runCatching { tile.clearOverlay() }
+                .onSuccess { report.clearedOverlays++ }
+                .onFailure { report.addFailure("清理旧DP覆盖层@${tile.x},${tile.y}失败: ${it.message}") }
+        }
+    }
+
+    clearRuleDynamicContentRefs(targets, report)
+    clearTeamDynamicContentRefs(targets, report)
+    verifyDynamicContentCleared(targets, report)
+
+    logger.info("DataAsset动态内容运行态清理 ($reason): ${report.summary()}")
+    if (report.failureCount() > 0) {
+        report.failures.take(8).forEach { logger.warning("DataAsset动态内容清理失败: $it") }
+        if (report.suppressedFailures > 0) logger.warning("DataAsset动态内容清理另有 ${report.suppressedFailures} 条重复/超限失败未展开")
+        throw IllegalStateException(
+            "旧DP运行态引用清理未完成，已阻止内容注销：${report.failures.take(4).joinToString("；")}"
+        )
+    }
+    return report
+}
+
 private fun legacyPatcher(): Any? = gameStateMember("patcher")
 
 private fun patchSeqObject(): Iterable<*>? {
@@ -298,6 +686,54 @@ fun loadedPatchInfos(): List<LoadedPatchInfo> {
         )
     }
 }
+
+/**
+ * v159 DataManager 的完整 Data Assets 视图。
+ *
+ * 使用反射读取是为了把 v159 专属 API 集中在兼容层；旧端没有 allAssets 时安全返回空列表，
+ * 而 v159 会同时列出 patch/content/bundle/image/sound/music，不再只看 PatchAsset。
+ */
+fun loadedDataAssetInfos(): List<LoadedDataAssetInfo> {
+    val data = nativeDataManager() ?: return emptyList()
+    val assets = callNoArg(data, "getAllAssets") as? Iterable<*> ?: return emptyList()
+    return assets.mapIndexedNotNull { index, asset ->
+        if (asset == null) return@mapIndexedNotNull null
+        val type = callNoArg(asset, "getType")?.toString()?.lowercase()
+            ?: asset.javaClass.simpleName.removeSuffix("Asset").lowercase()
+        val path = (memberValue(asset, "path") as? String).orEmpty()
+        val name = (memberValue(asset, "name") as? String).orEmpty()
+        val fullPath = (callNoArg(asset, "getFullPath") as? String).orEmpty().ifBlank { path }
+        val warnings = (memberValue(asset, "warnings") as? Iterable<*>)
+            ?.map { it.toString() }
+            .orEmpty()
+        val error = (memberValue(asset, "error") as? Boolean)
+            ?: (memberValue(asset, "errored") as? Boolean)
+            ?: false
+        val preview = ((memberValue(asset, "patch") as? String)
+            ?: (memberValue(asset, "data") as? String))
+            ?.replace('\n', ' ')
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(2000)
+        LoadedDataAssetInfo(
+            index = index + 1,
+            type = type,
+            path = path,
+            name = name,
+            fullPath = fullPath,
+            contentType = if (type == "content") memberValue(asset, "type")?.toString() else null,
+            loadedContent = if (type == "content") memberValue(asset, "content")?.toString() else null,
+            error = error,
+            warnings = warnings,
+            cached = callNoArg(asset, "isCached") as? Boolean,
+            hash = (memberValue(asset, "stringHash") as? String)?.takeIf { it.isNotBlank() },
+            preview = preview?.takeIf { it.isNotBlank() },
+        )
+    }
+}
+
+fun loadedDataAssetCounts(): Map<String, Int> =
+    loadedDataAssetInfos().groupingBy { it.type }.eachCount().toSortedMap()
 
 fun currentPatchStrings(): List<String> = loadedPatchInfos().map { it.patch }
 
@@ -356,6 +792,7 @@ private fun applyNativeDataPatches(patches: List<String>): Boolean {
 
 fun applyPatchStrings(patches: Iterable<String>) {
     val list = patches.toList()
+    prepareForDataAssetReload("属性Patch重载 patches=${list.size}")
     restoreDefaultContentStateBaseline("patches=${list.size}")
     val applied = runCatching { applyNativeDataPatches(list) }.getOrElse {
         logger.warning("DataAsset CP应用失败，尝试旧版 patcher: ${it.message}")

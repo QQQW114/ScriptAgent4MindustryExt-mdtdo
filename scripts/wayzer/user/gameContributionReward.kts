@@ -1,6 +1,7 @@
 @file:Depends("wayzer/user/trustPoint", "MDC")
 @file:Depends("wayzer/maps", "地图/游戏结算事件")
 @file:Depends("wayzer/map/betterTeam", "观察者队伍")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.user
 
@@ -9,7 +10,8 @@ import mindustry.game.Team
 import wayzer.MapChangeEvent
 import wayzer.map.BetterTeam
 import wayzer.lib.PlayerData
-import wayzer.lib.ServerTestMode
+import wayzer.lib.ServerFeatureSettings
+import java.math.BigDecimal
 import java.time.Duration
 import kotlin.math.ceil
 
@@ -103,13 +105,10 @@ private fun resetContributionData() {
 }
 
 private fun buildRewardSummaries(winner: Team): List<ContributionRewardSummary> {
-    val tagMultiplier = if (state.rules.tags.getBool(doubleMdcRewardTag)) 2 else 1
-    val testMode = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }
-    val testMultiplier = testMode?.gameContributionRewardMultiplier() ?: 1
-    val rewardMultiplier = tagMultiplier * testMultiplier
+    val tagMultiplier = if (state.rules.tags.getBool(doubleMdcRewardTag)) 2.0 else 1.0
+    val rewardMultiplier = tagMultiplier * settlementMultiplier()
     return contributionData.values
         .groupBy { it.uid }
-        .filter { (uid, _) -> testMode?.ownsUid(uid) ?: true }
         .map { (uid, list) ->
             val bestName = list.maxBy { it.playedTime }.name
             val played = list.sumOf { it.playedTime }
@@ -121,7 +120,7 @@ private fun buildRewardSummaries(winner: Team): List<ContributionRewardSummary> 
             val score = (played - IDLE_WEIGHT * idle + winBonus).coerceAtLeast(0.0)
             val baseReward = ceil((score * MDC_PER_HOUR_SCORE / 3600.0).coerceAtMost(MAX_MDC_PER_GAME)).toInt()
                 .coerceAtLeast(0)
-            val reward = baseReward * rewardMultiplier
+            val reward = ceil(baseReward * rewardMultiplier).toLong().coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
             ContributionRewardSummary(
                 uid = uid,
                 name = bestName,
@@ -152,7 +151,7 @@ private fun settleContributionRewards(winner: Team, reason: String) {
     }
 
     val tagDoubled = state.rules.tags.getBool(doubleMdcRewardTag)
-    val testMultiplier = ServerTestMode.getOrNull()?.gameContributionRewardMultiplier() ?: 1
+    val serverMultiplier = settlementMultiplier()
     val summaries = buildRewardSummaries(winner)
     contributionData.clear()
 
@@ -170,7 +169,7 @@ private fun settleContributionRewards(winner: Team, reason: String) {
                     summaries.forEach { summary ->
                         onlinePlayerByUid(summary.uid)?.sendMessage(
                             "[green]本局贡献结算：MDC +${summary.reward} " +
-                                    "[gray](活跃 ${formatSeconds(summary.activeTime)} / 在线 ${formatSeconds(summary.playedTime)}${if (tagDoubled) "，本局翻倍" else ""}${if (testMultiplier > 1) "，测试模式×$testMultiplier" else ""})"
+                                    "[gray](活跃 ${formatSeconds(summary.activeTime)} / 在线 ${formatSeconds(summary.playedTime)}${if (serverMultiplier != 1.0) "，服务器倍率×${multiplierText(serverMultiplier)}" else ""}${if (tagDoubled) "，本局再×2" else ""})"
                         )
                     }
 
@@ -182,7 +181,7 @@ private fun settleContributionRewards(winner: Team, reason: String) {
                     broadcast(
                         """
                         |[gold]本局贡献MDC结算：[white]${summaries.size}名玩家获得奖励
-                        |[gray]规则：活跃约每10分钟 +2 MDC，PVP胜利最多约额外 +2，单局基础最多 ${MAX_MDC_PER_GAME.toInt()} MDC。${if (tagDoubled) "[gold]本局管理员已开启结算翻倍。" else ""}${if (testMultiplier > 1) "[red]测试模式结算×$testMultiplier。" else ""}
+                        |[gray]规则：活跃约每10分钟 +2 MDC，PVP胜利最多约额外 +2，单局基础最多 ${MAX_MDC_PER_GAME.toInt()} MDC。${if (serverMultiplier != 1.0) "[yellow]服务器结算倍率×${multiplierText(serverMultiplier)}。" else ""}${if (tagDoubled) "[gold]本局管理员已开启额外×2。" else ""}
                         |${topList.joinToString("\n")}
                         """.trimMargin().with()
                     )
@@ -231,3 +230,9 @@ listen<EventType.ResetEvent> {
     resetContributionData()
     state.rules.tags.remove(doubleMdcRewardTag)
 }
+
+private fun settlementMultiplier(): Double =
+    ServerFeatureSettings.getOrNull()?.mdcSettlementMultiplier()?.coerceIn(0.0, 20.0) ?: 1.0
+
+private fun multiplierText(value: Double): String =
+    BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()

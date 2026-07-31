@@ -6,7 +6,7 @@ import coreLibrary.lib.PermissionApi
 import coreLibrary.lib.event.RequestPermissionEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
-import wayzer.lib.ServerTestMode
+import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.TrustLevelChangedEvent
 import wayzer.lib.TrustLevelLockChangedEvent
 
@@ -44,6 +44,26 @@ private fun cachedManualLevelCode(uid: String): String? {
     return manualLevelCache[uid]
 }
 
+private fun defaultBoundTrustLevelCode(): String =
+    ServerFeatureSettings.getOrNull()?.defaultBoundTrustLevelCode()?.let(::normalizeLevelCode)
+        ?.takeIf { it in setOf("1", "2", "3") }
+        ?: "1"
+
+fun invalidateTrustLevelCache(uid: String) {
+    manualLevelCache.remove(uid)
+    levelLockCache.remove(uid)
+}
+
+fun invalidateTrustLevelCache(uids: Iterable<String>) {
+    uids.forEach(::invalidateTrustLevelCache)
+}
+
+/** 服务器级默认等级批量调整后使用；避免生产库很大时携带全部变更UID回到游戏线程。 */
+fun clearTrustLevelCache() {
+    manualLevelCache.clear()
+    levelLockCache.clear()
+}
+
 fun trustLevelOrder(levelCode: String): Int = when (normalizeLevelCode(levelCode) ?: "0") {
     "0" -> 0
     "1" -> 10
@@ -71,16 +91,10 @@ fun getTrustLevelCode(uid: String, player: Player? = null): String {
     // 关键安全边界：只要传入了在线玩家对象，且当前会话没有完成账号认证，
     // 就一律视为 0 级游客。不要因为数据库里这个 UUID/UID 曾经有等级，
     // 也不要因为原生 admin 标记，就让未登录会话继承脚本侧权限。
-    player?.let { p ->
-        ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.isTestSession(p) }?.let { mode ->
-            val formalUid = mode.formalUid(p)
-            return if (p.admin || formalUid?.let { cachedManualLevelCode(it) == "4" } == true) "4" else "1"
-        }
-    }
     if (player != null && !isSessionAuthed(player)) return "0"
     if (player?.admin == true) return "4"
     cachedManualLevelCode(uid)?.let { return it }
-    return if (player != null) "1" else "0"
+    return if (player != null || uid.startsWith("account:")) defaultBoundTrustLevelCode() else "0"
 }
 
 fun getTrustLevelCode(player: Player): String = getTrustLevelCode(PlayerData[player].id, player)

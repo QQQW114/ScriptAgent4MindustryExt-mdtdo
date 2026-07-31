@@ -1,5 +1,7 @@
 # MDT 脚本维护总览
 
+> 项目定位、用户偏好、当前状态和新会话接手提示见 [项目长期记忆与当前状态](project-memory.md)；本文档继续保留逐次脚本/模块改动、验证和维护细节。
+
 本文档用于记录本项目中**由我们新增或修改过的脚本/模块**，便于后续维护者或 Agent 快速了解：
 
 - 文件路径
@@ -10,12 +12,90 @@
 
 > 维护规则：后续只要新增、重命名、拆分、删除或明显修改脚本职责，都应同步更新本文档。
 
+## 2026-08-01：数据库业务总开关与九个独立功能开关
+
+- 新增 `wayzer/lib/DatabaseFeatureSettings.kt` 与 `wayzer/user/databaseFeatureSettings.kts`。数据库业务总开关只暂停可选玩家业务，不物理关闭数据库连接；账号、信任权限、封禁、禁言、IP风控和性能保护始终保留。
+- 九项子开关为：在线时长记录、成就、Wiki、MDC转账/红包、最近玩家记录、信任等级自动调整、资历等级自动调整、排行榜、玩家资料数据显示。总开关作为覆盖层，不改写子开关原值。
+- 总开关 `databaseBusinessFeaturesEnabled` 使用 ScriptAgent `config.key` 持久化；子开关写入现有 `MdtSettings` 的 `serverFeatures.database.<feature>.enabled`。全部默认开启，不新增表/列，旧数据库无需迁移脚本或DDL。
+- 新增十个4级管理根指令：`/databasefeatures` 及 `/playtimerecording`、`/achievementtoggle`、`/wikitoggle`、`/mdctransfertoggle`、`/recentplayerrecording`、`/trustpromotiontoggle`、`/senioritypromotiontoggle`、`/leaderboardtoggle`、`/playerprofilestats`。`/serverfeatures` 增加数据库业务子菜单；根指令由现有 `/help` 搜索自动索引，仅总开关加入固定管理帮助入口。
+- 在线时长关闭时先记到切换时刻，停用期间不记录也不补记；信任/资历仅停止自动检测，手动设置/检查保留；红包过期退款继续；资料显示关闭仍保留交互与管理按钮，并继续读取必要信任等级防止越权。
+- 成就/Wiki/排行榜/最近玩家/资料缓存会在关闭时清理。对已打开菜单和异步读取增加二次状态/代次复核，避免开关关闭后旧回调继续写库，或慢查询完成后重新回填缓存。
+- 本地命令 Socket 实测：九项可全部关闭并显示红色状态，随后全部恢复开启；总开关关闭时九项显示“总开关暂停”且子项原值保持开启。重启后先确认九个子开关的关闭状态可落盘，再确认总开关关闭状态可跨重启保留；最终恢复全部开启。
+- 最终正常冷启动为 `共找到156脚本,加载成功152,启用成功147,出错0`；`databaseFeatureSettings` 与全部接入脚本成功加载/启用，启动日志明确显示总开关及九项子开关全部开启。测试进程已停止，6567/6859/10099 端口均释放。
+- 停服阶段若出现 ScriptAgent 集中脚本卸载超时，按项目既有插件行为记录，不计入本轮运行阶段验证失败。未覆盖边界仍是有真实玩家时的菜单排版、关闭提示、资料隐藏和操作中途切换体验。
+
+## 2026-07-30：服务器功能拆分、磁盘预热、三级技能费用与地图脚本停用修复
+
+- 已绑定玩家默认等级现在同时作为**信任等级与资历等级**下限。旧配置键 `serverFeatures.defaultBoundTrustLevel` 保持不变，避免破坏旧数据库；首次启动通过 `serverFeatures.defaultBoundLevelSeniorityMigrated` 一次性补齐旧账号资历资料，失败不会写完成标记、下次启动会重试。登录/自动登录还会按单账号兜底，两种等级均只升不降；未锁定资历的自动检测也会尊重该下限，不会随后按时长/MDC又降回0级。
+- `/serverfeatures` 保留总览、菜单和旧子指令兼容；新增五个4级管理根指令：`/mdcmultiplier`、`/forumtoggle`、`/registerrequirement`、`/socialactions`、`/defaultboundlevel`。`/help` 搜索会动态索引根指令名称、别名、描述、usage、脚本 ID 和实际权限，因此本轮无需修改搜索实现，也无需为普通新根指令维护额外索引文档。
+- 原有 H2 启动预热/周期 `SELECT 1` 逻辑仍存在于 `coreLibrary/DBConnector.kts`，现新增默认开启的运行期开关和 `/diskwarmup status|on|off|now|interval <1~1440>`。它用于避免部分云服磁盘/块存储休眠后的首次数据库读写卡顿，不是 TPS 优化器；自动与手动预热通过原子标志避免重叠。
+- `/cp` 游戏内根菜单已复核当前 v159 DP：分别提供属性 Patch、完整 Data Assets 和服务器内置 CP 入口；DP 读取 `allAssets` 并覆盖 Patch、Content、Bundle、Image、Sound、Music，DP 编号与可卸载 Patch 编号继续分离。
+- 三级技能费用调整：核弹打击固定为 `60 MDC`；其余原本有正数费用的三级技能按当前值 `×1.5` 并对半数向上取整，形成 `10→15`、`15→23`、`20→30`、`100→150`，消防车 `0 MDC` 不变。导弹齐射的本局一次/E星核心机限制保持不变，扣费同步为 `15 MDC`。
+- 地图脚本手动停用改为显式 ScriptAgent 事务；停用时不再扫描磁盘，启停后检查最终状态，并继续恢复被递归连带停用的公共脚本。洪水关闭会先确认脚本停用再移除标签，失败时保留/回滚标签；管理员技能现在直接显示底层真实结果。
+- 正式启动验证：多轮均为 `共找到155脚本,加载成功151,启用成功146,出错0`，到达 `Server loaded`。控制台/命令 Socket实测 `/diskwarmup status/now`、五个拆分设置指令状态查询、`/cp`、`/cp dp 1`、`tags/flood` 与 `14668` 的加载/停用；未出现 `No transaction available`。本地兼容迁移扫描160账号，信任提升138，资历新建37、提升60；另对一个仅0.5小时/累计85MDC、未锁定的绑定账号执行资历复查，结果仍保持默认资历1级，确认自动检测不会穿透默认下限。
+- 边界：本地停服仍有项目既知的集中脚本卸载超时；Lord 加载仍会出现既有 ContentPatcher 越界兼容警告，但本轮启用和停用成功。真实生产大库、游戏内菜单排版和多人运行仍需受控验证。
+
+## 2026-07-30：投票/帮助菜单、导弹齐射与纯净地图标签
+
+- `/vote` 子指令列表改为“带颜色的短说明 + 完整指令行”；普通菜单不再堆叠别名、脚本 ID 和权限节点，`-v` 详细视图仍可查看。各投票源的长描述已统一缩句，SuperChat 标识为直接发送而非错误的50%门槛。
+- 颜色文本清理只移除真正的 Mindustry 样式标记，不再误删 `[status]`、`[波数]` 和 `[load|unload]` 等可选参数。
+- `/help` 根菜单新增“搜索指令”；支持指令名、别名、中文说明、usage 和脚本 ID，并复用当前玩家的 `Hidden` / Permission 检查。普通玩家不会看到仅4级/admin可用的管理项，有限协管只会看到实际授权项。
+- 3级技能“导弹齐射”由无冷却改为每名玩家每局一次；参考 `/gather` 在扣除 MDC 前拒绝死亡或非 targetable 单位，E 星 `evoke` / `incite` / `emanate` 三种核心机因此不可使用。当前费用经后续调整为 15 MDC。
+- 新增 `mapScript/tags/pure.kts`：地图简介带 `[@pure]` 时自动开启当局纯净模式，地图脚本卸载/换图时恢复；复用现有纯净模式标签快照，不误删地图原有技能限制。
+- 定向测试时发现 ScriptAgent 3.4 下旧 `/unloadmapscript` 会报 `No transaction available`；`funRuleModes.kts` 已改为显式 `transactionV2 { disable(...) }`，再测 `loadmapscript tags/pure` / `unloadmapscript tags/pure` 均成功，开启和关闭广播、脚本停止记录正常。
+- 最终冷启动汇总为 `共找到155脚本,加载成功151,启用成功146,出错0`；`coreMindustry/menu`、`wayzer/map/funRuleModes`、`wayzer/user/ext/skillsLevel3` 与 `mapScript/tags/pure` 均编译/加载成功。测试服务端的既有集中停服超时仍会使 `exit` 后的 Java 进程不能及时退出，本轮已强制清理测试进程并确认 6567/6859/10099 端口释放；该停服边界与本次功能编译/运行验证分开记录。
+- 未覆盖边界：无真实玩家客户端，因此 `/vote` 菜单实际排版、`/help` 文本输入/搜索点击、导弹齐射的每局一次提示与 E 星核心机拒绝提示仍需游戏内受控复核。
+
+## 2026-07-30：正式启动与脚本加载日志链路复核
+
+- 直接在 `mdtserver` 目录运行 `start-server.ps1`，服务器正常到达 `Server loaded` 并打开 6567 端口；ScriptAgent 汇总为 `共找到154脚本,加载成功150,启用成功146,出错0`。
+- `mdtserver/config/logs/log-0.txt` 会实时记录当前 Mindustry/MindustryX 启动与运行信息；`mdtserver/config/logs/script-load/current.log` 会实时记录逐脚本加载、编译、数据库初始化和业务模块启动信息。上一轮快照、错误摘要和历史归档继续由 `last.log`、`last-error.log` 与 `history/` 管理。
+- 日志功能本轮实测可用，`start-server.ps1` 无需修改。以后冷启动/编译/脚本加载诊断优先读取上述正式日志；只有正式日志缺失、未更新、损坏或无法覆盖启动器自身输出时，才创建一次性根目录重定向日志，并在结论落入文档后清理。
+- 已清理项目根目录19个由本地验证产生的 `.tmp*` 日志、测试器和临时补丁源文件；未删除 `config/logs` 正式日志，也未触碰数据库、外部 CP、缓存备份和其他运行数据。
+
+## 2026-07-29：v159 CP/DP、当前局纯净模式与服务器功能设置
+
+- `/cp` 已从“仅列属性 Patch”扩展为 v159 Data Assets 总览：`/cp dp [编号]` 读取 `DataManager.getAllAssets()`，覆盖 Patch、Content、Bundle、Image、Sound、Music；`/cp patches` 保留可卸载属性 Patch 的独立编号。控制台动态 JSON/HJSON 预览改用字面量 `VarString`，避免花括号被占位符解析为 `unexpect char '{'`。
+- 新增 `/cp files`、`/cp server` 与 `/cp load <文件名|编号>`。快速加载不走投票，但复用 `externalCpHotReload.kts` 的目录/ZIP校验、互斥、完整失败回滚、建筑/单位兼容修复与串行世界重同步；`/vote cp` 仍保留玩家投票流程。
+- 纯净模式改为当前局即时状态：`/vote pure` 通过后立即开启，`/vote pureoff` 立即关闭，换图后不继续排队；新增管理员技能 `/skill puremodeon`、`/skill puremodeoff`。纯净模式会保存并恢复启用前 `@noSkills` / `@pureNoLevel3Skills` 的精确值，避免误删地图原有限制。
+- 完全删除 `wayzer/lib/ServerTestMode.kt` 与 `wayzer/user/serverTestMode.kts`，账号、MDC、资历、信任、晋升、结算和菜单恢复正式主体/数据库逻辑。遗留 `serverTestMode.enabled` 只作为兼容键保留，并在新设置脚本加载时强制写为 `false`；旧临时测试文件只忽略、不自动删除。
+- 新增 `ServerFeatureSettings.kt` 与 `/serverfeatures`：4级/admin或控制台可管理贡献结算 MDC 倍率、帖子总开关、注册一小时要求、点赞/点踩/认可总开关、已绑定玩家默认等级。设置复用 `MdtSettings`，默认分别为 `1/true/true/true/1`。
+- 默认绑定等级只允许 `1/2/3`。修改时在单个数据库事务中按每批400个账号主体查询并只升不降，不授予 `3+`、`3++`、`4`；存储层只返回计数，业务层清空等级缓存并仅刷新在线玩家。手动登录和自动登录还会按账号执行最低等级兜底，兼容数据库恢复或极小并发窗口。
+- 帖子关闭后所有入口统一提示“帖子系统已被关闭，请联系管理员”，不删除数据；社交功能关闭后底层点赞/点踩/认可均拒绝，玩家信息面板与帖子详情隐藏对应按钮。结算倍率与本局 `/skill doublemdcreward` 叠乘。
+- 功能验证：
+  - 最终连续两轮独立启动均为 `共找到154脚本,加载成功150,启用成功146,出错0`，均到达 `Server loaded` 并打开 6567 端口；`ScriptClassLoader.kt:24`、`VerifyError`、加载失败和编译错误均为0。
+  - 控制台实际执行 `cp`、`cp dp 1`、`cp files`、`serverfeatures status`，完整 JSON/HJSON 预览正常显示且没有命令解析异常；倍率 `0.29` 可准确保存/显示，随后已恢复为 `1`。
+  - 隔离服务器副本实际执行 `cp load 7`，成功加载“锈铜墙”并进入 v159 Data Assets 列表。
+  - 隔离数据库副本把默认等级 `1 -> 2`：扫描160账号、提升138、新建0；再改回 `1` 时提升0。停服后 SQL 复核160个账号均不低于2，配置键已持久化为1，证明“降低配置不降级现有账号”；原工作区数据库仍保持默认1且原138个1级账号未被测试修改。
+  - 启动和脚本加载诊断现统一以 `mdtserver/config/logs/log-0.txt`、`mdtserver/config/logs/script-load/current.log` 及对应 `last/history` 归档为长期路径；本轮一次性根目录重定向日志和隔离迁移测试器在关键结论写入文档后已清理，不再作为长期文件保留。
+- 尚未由本地无客户端测试覆盖：游戏内设置菜单、帖子关闭提示、社交按钮隐藏、注册验证码交互和两个管理员纯净模式技能；这些需要玩家客户端或生产/测试服受控验证。
+
+## 2026-07-29：ScriptAgent 并行加载竞态上游修复候选
+
+- ScriptAgent 维护者已针对“缓存恢复/并行启动时随机在 `ScriptClassLoader.kt:24` NPE，随后依赖脚本级联失败”的 Issue 提供修复构建，但尚未发布新的正式发行版。
+- 反编译核对确认 `ScriptManager.loadScript` 只在 `info.scriptState.loaded` 为真时返回 `info.inst`，否则继续进入加载队列等待；修复了旧实现在 `inst` 已公开但 `classLoader` 尚未就绪时提前返回的竞态。
+- 已将维护者文件 `ScriptAgent4MindustryExt-e4b136c.jar` 替换到 `mdtserver/config/mods/ScriptAgent4MindustryExt-3.4.0-allInOne.jar`；运行时显示 `ScriptAgent c2823c1`，SHA-256 为 `9D51FCDCB65D21C16564F544B83E2EDB4AAD5765427A791A577FB1F6DDDC2214`。
+- 旧的本地字节码 workaround 已备份为 `mdtserver/config/mods/ScriptAgent4MindustryExt-3.4.0-allInOne.jar.pre-upstream-e4b136c.bak`，SHA-256 为 `17BF570B0B58873D1CB85322E36FE418283EBADBA181018653E4C2061AB1477D`；不应将该历史 workaround 再作为当前运行基线。
+- 使用真实 JDK 路径连续进行两轮独立启动，每轮均到达 `Server loaded`并打开 6567 端口，汇总均为 `共找到154脚本,加载成功150,启用成功146,出错0`；启动阶段 `ScriptClassLoader.kt:24`、`VerifyError`、加载失败和编译错误均为 0。
+- 第二轮启动前已确认上一轮进程不再存在且 6567/10099 端口已释放，未再出现 H2、MVStore、RPC 或游戏端口锁冲突。停服时仍有若干脚本集中停止超时，这与本次启动竞态修复分开记录。
+- 该 JAR 当前只能标记为“维护者未发行候选、已本地验证”，不能据此推断已进入生产。正式发行版发布后仍需比对修复提交和构建差异。详细根因与验证见 `docs/issue-scriptagent-load-race.md`。
+
+## 2026-07-25：移除入服门控并恢复压力提示
+
+- 删除 `wayzer/reGrief/connectSyncGuard.kts`；`adaptivePlayerLimit.kts` 不再统计其预留/等待连接，`worldResyncCoordinator.kts` 也不再按网络等级或首次加入人数等待。首次入服完全恢复 Mindustry 原生流程，避免确认丢失后一个预留长期占用并卡住全服新连接。
+- 挂机检测改为 `throttleLevel > 0` 且在线人数达到自适应人数上限的初始/基础值时启用（默认来自启动时 `playerLimit`，当前预期为 18）；同步限制已有滞回，不再额外等待连续样本，弹窗冷却从 15 分钟延长到 30 分钟。
+- `syncThrottle.kts` 每张地图首次进入同步限制时只广播一次“同步限制与挂机检测将介入”，同局等级波动不重复提示；一次性播报标记由长期运行的 `trafficMonitor.kts` 持有，单独热重载 `serverPressure.kts` 或快照脚本不会重复播报，WorldLoad/Reset 才会清零。
+- 压力判断快照超过默认30秒未更新时，`syncThrottle` 恢复原生间隔，压力措施与挂机检测均 fail-safe，不依据旧高压快照继续处理。
+- 修复压力播报状态：性能等级降档后会同步内部播报等级，后续再次升档可重新提示；广播失败不消费升档/清理计数，后续会重试；采样/措施循环增加逐轮异常隔离，不会因一次实体、规则或网络统计异常永久停止。
+- `serverPressureActions.kts` 升档时明确广播清子弹、限单位、关闭世界/逻辑处理器等重要措施；持续清理按默认 30 秒聚合真实数量，PPS、严重上行和 L4 数量前三清理也显示准确数量；广播异常不会阻断措施循环。
+- 压力关闭逻辑处理器的位置改为内存缓存，只有新增关闭或恢复时落库，避免压力持续期间每 5 秒重复数据库读写拖低 TPS。
+
 ## 2026-07-21：MindustryX B480 / v159.7 网络同步与性能链路定稿
 
 - 参考项目更新到 Mindustry `v159.7`、MindustryX `prerelease-2026.07.20.B480`。上游的大世界发送修复仅影响 Steam `SNet`，headless 专服仍需本项目补丁。
 - B480 自定义补丁补齐批量 `Net.send` 的 `SendPacketEvent`，事件携带 `connections`、`targetCount`、`reliable`；`trafficMonitor.kts` 按实际目标数统计批量上行。游戏同步改用白名单分类，握手、欢迎、插件、音乐、CP、杂交世界流不再触发性能清理。
 - `coreUnitRespawnCompat.kts` 仅在主动取消附身或世界确认后修复核心机引用；已有核心单位时仅补快照，单位为空时才 `checkSpawn()`，最多补两份 `Unit -> Player` UDP 小快照。删除无条件 0/1/3/8 秒重放、额外 `PlayerSpawn` 与可靠实体快照，避免 TCP 拥塞后的旧核心机/旧位置闪回。
-- `worldResyncCoordinator.kts` 统一接管点歌、SFX、技能/地图杂交、外部 CP 与管理 CP。优先级为 CP 300、杂交 200、普通 150、点歌 100、SFX 50；队列上限 32、排队 180 秒、任务后恢复 2.5 秒。L1 与首次加入共享 2 槽，L2+ 全服 1 槽且首次加入优先；确认超时会继续持槽最多 120 秒。
+- `worldResyncCoordinator.kts` 统一接管点歌、SFX、技能/地图杂交、外部 CP 与管理 CP。优先级为 CP 300、杂交 200、普通 150、点歌 100、SFX 50；队列上限 32、排队 180 秒、任务后恢复 2.5 秒。内部任务保持全服单队列；首次加入不再经过插件槽位。
 - `syncThrottle.kts` 删除快照拦截与重路，只把原生间隔保守调整为 240/280/320ms；可靠建筑血量包不再降级为 UDP。
 - `serverPressureActions.kts` 每轮只使用当前级预算，L4 默认最多 400，并处理数量前三的压力单位。`performanceGuardExperimental.kts` 已收缩为兼容入口，第二套清单位、暂停与直接换图执行器彻底移除。
 - 构建：`gradle --no-daemon server:dist -x tools:doPack`；产物 `mdtserver/server-2026.07.20.B480-mdtdo.jar`；SHA-256 `8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。冷启动：156 个脚本、加载 152、启用 148、出错 0。
@@ -29,7 +109,7 @@
 - `mdtserver/config/scripts/wayzer/reGrief/trafficMonitor.kts`
 - `mdtserver/config/scripts/wayzer/map/serverPressure.kts`
 - `mdtserver/config/scripts/wayzer/map/serverPressureActions.kts`
-- `mdtserver/config/scripts/wayzer/reGrief/connectSyncGuard.kts`
+- `mdtserver/config/scripts/wayzer/reGrief/connectSyncGuard.kts`（已于 2026-07-25 删除）
 - `mdtserver/config/scripts/wayzer/reGrief/syncThrottle.kts`
 - `mdtserver/config/scripts/wayzer/map/performanceGuard.kts`
 - `mdtserver/config/scripts/wayzer/map/performanceGuardExperimental.kts`
@@ -40,7 +120,7 @@
 
 - 上行拆分为总上行、游戏同步上行、世界/资产流；积分板显示“总上行 / 同步上行”。
 - 世界流、玩家加入、音乐与 CP 只进入网络保护，不参与清单位、关闭处理器等性能判断。
-- 新增仅在网络压力时启用的入服同步门控；正常状态不限制，超时/异常/压力数据失效/卸载均 fail-open。
+- 当时新增了网络压力入服同步门控；该方案已于 2026-07-25 因可能卡住全部新连接而移除。
 - X35 的逐玩家同步接管替换为 v159 原生 `snapshotInterval` 调整；待加入连接快照重路失败时回退原版广播，不能丢快照。
 - 标准/实验性性能执行器合并，旧 `/xperf` 仅保留兼容入口；投票可关闭本局性能优化。
 - 原有分级清单位、PPS 异常退出、严重超量和等级4数量前三清理继续保留；PPS 保护 `mono/pulsar/quasar/poly/mega` 辅助线。
@@ -486,7 +566,9 @@
 - 当前正在运行的服务端不会重新读取这个 Java logging 配置；需要下次通过 `start-server.ps1`/`start-server.cmd` 正常重启后，`script-load/current.log` 才会重新生成。
 - 后续修改 Windows 启动脚本时，关键执行路径附近尽量避免中文注释，或确保 `.ps1` 以 UTF-8 BOM 保存。
 
-### 2026-06-30 `[危险]服务器测试模式`
+### 2026-06-30 `[危险]服务器测试模式`（历史记录，已于 2026-07-29 完全废弃）
+
+> 本节仅保留当时设计与追溯背景。当前脚本和服务接口已删除，后续维护不得按本节恢复测试主体、临时MDC或结算×10逻辑。
 
 类型：特殊测试服临时覆盖层、账号/MDC/资历隔离
 涉及脚本：
@@ -1213,7 +1295,7 @@
 - `/pressure tps reset`：恢复默认 TPS 阈值。
 - 注册 `scoreboard.ext.pressure`，有性能压力或快照限制时显示。
 - 性能等级只取 TPS 与游戏同步上行；网络等级取总上行、活动世界流、TCP积压和待加入时间。
-- 世界/资产流不得进入单位清理等级，只能推动快照保护和入服门控。
+- 世界/资产流不得进入单位清理等级，只能推动原生快照间隔保护；不得阻塞玩家入服。
 - 非零压力降级需要连续稳定采样，退出压力也需要连续达到恢复线，避免 TPS/上行在阈值附近反复横跳。
 - 同步限制另有独立滞回：默认启用后至少保持 5 秒，降级/退出均要经过独立稳定采样，避免在上行阈值附近频繁启停。
 
@@ -1221,7 +1303,8 @@
 
 - 只负责判断，不直接清理世界，避免检测与执行耦合。
 - 快照限制可由游戏同步或网络压力触发；即使本局投票关闭性能优化，网络保护仍可工作。
-- 压力升高播报只在当前压力周期首次升到更高等级时触发；完全恢复后才会重置播报等级，减少刷屏。
+- 压力升高时广播；降档会同步内部播报等级，因此 L4→L2→L3 可重新提示 L3，完全恢复后重置为0。
+- 采样循环逐轮捕获异常，`/pressure status` 显示最近采样年龄，便于发现数据链路是否停摆。
 
 ---
 
@@ -1240,6 +1323,9 @@
 - 游戏同步达到预算60%且2秒内多人退出时执行 PPS 兜底；保留 `mono/pulsar/quasar/poly/mega`，额外清理导弹单位与 `scathe`。
 - 游戏同步超过预算200%时清理 T4 及以下单位；世界/音乐/CP流不会触发。
 - 最终换图仅在当前TPS与滑动均值每次采样都低于5、连续2分钟时允许执行。
+- 进入等级时明确广播本轮重要措施；同级持续清火、清子弹、击杀单位或关闭新处理器时按默认30秒聚合实际数量。
+- 措施循环逐轮隔离异常；规则 `Call.setRule`、单个实体移除/击杀失败不会让后续TPS保护永久停止。
+- 已关闭逻辑处理器位置使用内存缓存，只有新增关闭或恢复时落库，不再每轮重复读取/写入数据库。
 - `/gamepause on|off|status`：3+级/4级/admin 或控制台管理暂停状态。
 - `/vote pause`、`/vote resume`：玩家投票暂停/继续。
 
@@ -1293,27 +1379,13 @@
 备注：
 
 - 脚本依赖 `serverPressure.kts`，以网络/快照压力识别最近上行繁忙状态。
-- 人数统计包含 `Groups.player`、`PlayerConnect` 待处理、`connectSyncGuard` 已预留和等待连接，防止未完成 `connectConfirm` 的幽灵连接绕过人数限制。
+- 人数统计包含 `Groups.player` 与本脚本观察到的 `PlayerConnect` 待处理连接；不再依赖额外入服门控或预留槽位。
 
 ---
 
-### `mdtserver/config/scripts/wayzer/reGrief/connectSyncGuard.kts`
+### 已删除：网络压力入服同步门控
 
-类型：v159 网络压力入服同步门控
-职责：只在网络压力时限制同时进行世界/资产同步的连接数，减少上行满载时的幽灵玩家与长期无核心机。
-
-当前功能：
-
-- 网络等级0完全不限制；等级1默认允许2名、等级2+默认允许1名同时同步。
-- 只把已经放行进入同步的连接计入名额，等待者不占自己的名额。
-- 等待队列默认最多8人、最长12秒；超时提示稍后重试。
-- 压力数据20秒未更新、脚本关闭、协程取消、异常或卸载时 fail-open。
-- `PlayerConnectionConfirmed`、退出和断线时释放预留。
-
-备注：
-
-- 该脚本依赖 `ConnectAsyncEvent`，位置必须在原版 `sendWorldAndAssets` 之前。
-- 不得改成常态门控，也不得在异常时 fail-close；重要入服链路宁可回原版高流量，不能永久拒绝所有新玩家。
+原 `wayzer/reGrief/connectSyncGuard.kts` 已于 2026-07-25 删除。原因是连接完成确认或世界/资产流异常时，预留可能长期不释放并让后续玩家全部等待/超时。当前首次入服始终使用 Mindustry 原生流程；不要重新加入 `ConnectAsyncEvent` 阶段的阻塞等待链路。
 
 ---
 
@@ -1329,6 +1401,7 @@
 - 恢复或卸载后还原原始 `snapshotInterval`。
 - 不拦截、取消、重发或改变任何状态/实体/建筑快照的可靠性。
 - 全局实体快照包含单位移动和 `Player.unit` 控制关系；降频会让丢包时的插值变粗，但不会主动删除或隐藏单位。
+- 每张地图首次进入同步限制时广播一次“同步限制与挂机检测将介入”；同局等级变化不重复广播。
 
 备注：
 
@@ -1377,12 +1450,13 @@
 
 ### `mdtserver/config/scripts/wayzer/reGrief/inactivePressureCheck.kts`
 
-类型：游戏同步压力挂机检测脚本
-职责：仅游戏同步上行超限时发送挂机确认，移出长期无响应玩家，降低同步倍数压力。
+类型：同步限制压力挂机检测脚本
+职责：同步限制已经介入且在线人数达到阈值时发送挂机确认，移出长期无响应玩家，降低同步倍数压力。
 
 当前功能：
 
-- `serverPressure.trafficLevel > 0` 时发送弹窗/聊天提示，后续每 15 分钟最多提示一次。
+- `serverPressure.throttleLevel > 0` 且在线人数达到 `adaptivePlayerLimit` 的初始/基础人数时发送弹窗/聊天提示；自适应人数脚本尚未完成启动接管时 fail-safe 暂不触发检测。
+- 不额外等待连续同步限制样本，满足限制等级与人数条件即可触发；人数条件读取自适应人数上限的初始/基础值；压力快照超过默认30秒未更新或自适应人数脚本尚未完成接管时 fail-safe 取消检测；后续每30分钟最多提示一次，避免上行波动反复弹窗。
 - 玩家点击“我还在”、聊天或点击地图均视为响应。
 - 到期无响应则踢出服务器。
 
@@ -1390,7 +1464,7 @@
 
 - 不对 3+级/4级做豁免，避免额外复杂逻辑。
 - 与菜单自动超时区分：弹窗自动关闭不会立刻判定挂机，只有超时前没有任何响应才会踢出。
-- 世界/资产流、音乐、CP和玩家加入不会触发挂机检测。
+- 同步限制解除、在线人数降到阈值以下、换图或 Reset 时取消当前未完成检测。
 
 ---
 
@@ -3598,7 +3672,7 @@
 - 2026-07-07 排查无声问题后调整：官方 v159 的 DataAsset sound 运行时 ID 从 `100001` 开始，但 `Call.sound` 的网络序列化仍写入 `short`，会导致自定义音效 ID 溢出后客户端无声。脚本现在会把 `assets/sounds` 下的小音效同时反射注册为 `SoundAsset` 与 `MusicAsset(sfx-*)`，播放默认改走 `Call.playMusic(String)` 字符串通道；客户端 `DataAudioLoader` 会把该音乐资产注册成 `dp-sfx-*`，所以播放名必须带 `dp-` 前缀。这会受客户端“音乐音量”影响，但可规避 `Call.sound` 的 ID 问题。
 - 同步策略也做了保守化：小音效定位为固定资产，脚本加载阶段即热注册，后续新进玩家理论上应走官方加入世界时的资产需求/下载流程拿到 `sfx-*` 音频；播放前不自动 `sendWorldAndAssets`。2026-07-07 晚实测发现“玩家进服后自动补发资产”会让客户端卡在无核心机/无单位状态，因此已回退所有小音效自动补发，只保留 `/sfx sync` 作为管理员手动排障入口，并在菜单/提示中标明它可能重载客户端世界、导致短暂显示异常。
 - 2026-07-07 追加修复“首次进服无声、重进正常”：官方 v159.1 未修改 `NetServer.sendWorldAndAssets` / `DataAudioLoader` / `Call.playMusic` 相关流程；问题更像是地图加载后 `state.data` 被替换导致脚本加载阶段注册的小音效资产丢失，或客户端首次进服后 `dp-sfx-*` 音频本地注册略晚于播放包。脚本现在会在 `onEnable` 与 `WorldLoadEvent` 重新注册固定小音效资产；玩家加入后的短窗口内播放小音效时，不重发世界/资产，只延迟补发一次 `playMusic` 播放包给刚进服玩家。
-- 新增 3级技能 `/skill omg`：显示名与介绍均为 `omg`，消耗 15 MDC，无技能冷却；实际效果为调用固定小音效 `omg.ogg`。
+- 新增 3级技能 `/skill omg`：显示名与介绍均为 `omg`，最初消耗 15 MDC；2026-07-30 三级技能费用统一调整后当前为 23 MDC，无技能冷却；实际效果为调用固定小音效 `omg.ogg`。
 - 音频文件检查：脚本会提示明显伪装格式，例如扩展名为 `.mp3` 但文件头为 `ftypM4A` 的 M4A/MP4 容器。此类文件本地播放器可播放，但 Mindustry sound 资产通常无法按 MP3/OGG 稳定解码，应转码为真正的 `.ogg` 或 `.mp3` 后再放入目录。
 
 ## 2026-07-07：服务器点歌 / 音乐库
@@ -3752,3 +3826,24 @@
 - `syncThrottle.kts` 确实会把包含单位移动和 `Player.unit` 的原版全局实体快照从约 200ms 降到 240/280/320ms；这会放大丢包时的插值粗糙，但不拦截、重放或删除单位，不是旧控制关系闪回的主因。
 - `serverPressureActions.kts` 的所有压力清理共用候选条件：玩家当前附身单位、`spawnedByCore`、`TimedKillc`、`BuildingTetherc`、死亡/不可击杀单位均不会被该系统击杀。
 - 隔离空缓存首次编译中，`coreUnitRespawnCompat` 编译、加载、启用均成功；最终代码又在隔离实例中明确触发该脚本重新编译。将隔离实例改为 RPC 客户避开当前运行服务端的 10099 端口后，完整汇总为 `共找到156脚本,加载成功152,启用成功148,出错0`。
+
+# 2026-07-30：DP 卸载前运行态清理与附身保护
+
+- 用户补充的生产现象是：玩家附身 DP 新增单位后卸载 DP，会导致全服玩家被踢出。v159 `DataManager` 会在运行中注销并重建 ContentAsset，如果玩家/场上实体仍引用旧 `UnitType`/Content，后续完整世界同步会写出客户端无法解析的内容 ID。
+- `coreMindustry/contentsTweaker.kts` 新增 `prepareForDataAssetReload(reason)` 中央清理器。由于 v159 每次会重建当前全部 ContentAsset，清理目标是当前全部旧动态 Content，不只是被卸载的单包。
+- 清理顺序先对玩家执行 `clearUnit()`，再删除旧 DP 单位；同时处理旧 DP 建筑、环境方块、地板、覆盖层、物品、液体、状态、载荷、建筑配置/计划、洼地、天气、波次/规则/队伍引用，并在动态 Content 重载时保守清除现存子弹。
+- 清场阶段只修改服务端 Tile，不批量发送 `setNet`；成功后仍由 `worldResyncCoordinator` 做统一串行完整重同步，避免卸载清场放大上行峰值。
+- 清理后会验证玩家、单位、建筑、洼地、天气、子弹和地图格不再引用旧 Content。失败时抛错阻止内容注销，优先保留旧 Content 仍可解析的状态；失败明细限制为64条，防止大地图异常时防护器本身堆积大量字符串。
+- `wayzer/map/externalCpHotReload.kts` 的加载/热重载、单包卸载、全部卸载、失败回滚和脚本停用清理均在 `Vars.state.data.load` 前调用该保护；`contentsTweaker.applyPatchStrings` 也在 `reloadPatches` 前调用，覆盖 `/cp unload` 等属性 Patch 重放链路。
+- 受控过程曾加载真实 `亚龙组合包 (1).zip`、生成 `dp-亚龙` 并让假玩家附身；首次卸载进入清理器时发现普通建筑 `getPayloads()` 可返回 `null`，已修改为可空处理，避免因无载荷建筑误判卸载失败。
+- 按用户指示，最终不再继续“假玩家附身后实际卸载”破坏性测试。修改后本地冷启动为 `共找到155脚本,加载成功151,启用成功146,出错0`；正式日志保留，本轮根目录临时启动/功能测试日志已清理。生产首次卸载仍应在低人数窗口观察清理摘要中 `failures=0`。
+
+# 2026-08-01：DP 新增物品后的旧 ItemModule 越界崩服修复
+
+- 生产日志 `D:\新建 文本文档.txt` 的主异常为 `ArrayIndexOutOfBoundsException: Index 22 out of bounds for length 22`，调用链是 `ItemModule.get -> CoreBlock$CoreBuild.onProximityUpdate -> Building.updateProximity -> Build.beginPlace`。`/sync` 只是在崩溃前出现，并不是根因。
+- 真实包 `仙古测试2.9.1.zip` 会把物品总数从22扩展到27；旧核心、仓库和部分地图建筑的 `ItemModule.items` 仍是22长，核心邻接更新遍历新的 `content.items()` 时读取ID 22即越界。17条普通贴图与 `generated/**` 同名警告属于v159合法导出结构，与本次崩服无关。
+- `wayzer/map/externalCpHotReload.kts` 新增轻量物品/液体模块容量修复：就地调整 `ItemModule` 数组并重算 `total/takeRotation`、停止旧流量统计，修复全局 `ItemModule.empty`；液体模块同步调整容量并替换已注销的 `current`。
+- 一次性扫描同时覆盖 `Groups.build` 和 `Vars.world.tiles[*].build`，使用身份去重。后者用于覆盖大型地图里暂时移出 `Groups.build`、随后又重新加入的旧建筑；电网与血量等较重修复仍只处理活跃实体。
+- 每次 `DataManager.load` 前先按当前 Content 修复容量，避免动态内容清理器读取新增物品时自身越界；加载/卸载后默认开启30秒逐tick轻量守护，只扫描活跃建筑并仅在实际修复时限频记录。`contentsTweaker.kts` 的动态物品/液体清理也增加数组边界防御。
+- 本地冷启动结果为155/151/146/0。地图ID24662（废料警戒进攻图）加载真实包后一次性修复1663个物品模块；加载32秒、44秒检查均为 `items=27, empty=27, bad=0`，显式调用4个核心的 `onProximityUpdate()` 正常。
+- 随后卸载成功，1/4/10秒检查均为 `items=22, empty=22, bad=0`；没有 `Index 22`、卸载失败或回滚失败。测试服务端和 `.tmp-dpfix*` 临时日志已清理，正式 `config/logs` 作为本地证据保留；生产部署状态仍待用户确认。

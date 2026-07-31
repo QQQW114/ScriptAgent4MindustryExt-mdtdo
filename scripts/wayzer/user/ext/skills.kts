@@ -577,21 +577,21 @@ onEnable {
         SkillMenuEntry("decisivesquad", "决胜中队", SkillMenuCategory.Level2, "召唤携带爆炸混合物的决胜中队；消耗6 MDC，冷却120秒", "/skill decisiveSquad"),
         SkillMenuEntry("anvilsquad", "铁砧小队", SkillMenuCategory.Level2, "呼叫不可附身雷霆(quad)运输机抵达后投放铁砧小队；死亡/40秒超时则取消且不返还MDC；消耗6 MDC，冷却120秒", "/skill anvilSquad"),
         SkillMenuEntry("hammersquad", "铁锤小队", SkillMenuCategory.Level2, "呼叫不可附身雷霆(quad)运输机抵达后投放铁锤小队；死亡/40秒超时则取消且不返还MDC；消耗6 MDC，冷却120秒", "/skill hammerSquad"),
-        SkillMenuEntry("blitz", "骇人空袭", SkillMenuCategory.Level3, "在玩家位置快速召唤三波自爆空军冲向光标附近；消耗10 MDC，一局一次"),
-        SkillMenuEntry("antiarmor", "反装甲炮击", SkillMenuCategory.Level3, "在鼠标位置标记20格炮击区，30秒内锁定区域敌方单位并每1.5秒造成10%最大生命+800伤害；消耗15 MDC，冷却300秒"),
-        SkillMenuEntry("pddcut", "拼夕夕砍一刀", SkillMenuCategory.Level3, "使全场单位当前血量减少90%；消耗10 MDC，一局一次", "/skill pddCut"),
-        SkillMenuEntry("disaster", "天灾", SkillMenuCategory.Level3, "触发随机天气并持续削减全场单位血量；消耗10 MDC，一局一次"),
-        SkillMenuEntry("redlightgreenlight", "123木头人", SkillMenuCategory.Level3, "停止全场单位并随机击杀10个单位；消耗10 MDC，一局一次", "/skill redLightGreenLight"),
-        SkillMenuEntry("gaokao", "参加高考", SkillMenuCategory.Level3, "随机生成0-750高考分数并按分数结算MDC；消耗20 MDC，每天一次"),
+        SkillMenuEntry("blitz", "骇人空袭", SkillMenuCategory.Level3, "在玩家位置快速召唤三波自爆空军冲向光标附近；消耗15 MDC，一局一次"),
+        SkillMenuEntry("antiarmor", "反装甲炮击", SkillMenuCategory.Level3, "在鼠标位置标记20格炮击区，30秒内锁定区域敌方单位并每1.5秒造成10%最大生命+800伤害；消耗23 MDC，冷却300秒"),
+        SkillMenuEntry("pddcut", "拼夕夕砍一刀", SkillMenuCategory.Level3, "使全场单位当前血量减少90%；消耗15 MDC，一局一次", "/skill pddCut"),
+        SkillMenuEntry("disaster", "天灾", SkillMenuCategory.Level3, "触发随机天气并持续削减全场单位血量；消耗15 MDC，一局一次"),
+        SkillMenuEntry("redlightgreenlight", "123木头人", SkillMenuCategory.Level3, "停止全场单位并随机击杀10个单位；消耗15 MDC，一局一次", "/skill redLightGreenLight"),
+        SkillMenuEntry("gaokao", "参加高考", SkillMenuCategory.Level3, "随机生成0-750高考分数并按分数结算MDC；消耗30 MDC，每天一次"),
         SkillMenuEntry("firetruck", "消防车", SkillMenuCategory.Level3, "6秒内每秒从自身向外散射海啸水弹灭火；消耗0 MDC，冷却300秒"),
-        SkillMenuEntry("omg", "omg", SkillMenuCategory.Level3, "omg"),
-        SkillMenuEntry("standarddefense", "标准预制防线", SkillMenuCategory.Level3, "需6x6空地；按炮台→供电/电池→墙体顺序建造塑钢墙蓝瑟防线；消耗15 MDC，一局一次", "/skill standarddefense"),
-        SkillMenuEntry("missilevolley", "导弹齐射", SkillMenuCategory.Level3, "在玩家位置召唤10个 scathe-missile-surge；消耗10 MDC，无冷却", "/skill missileVolley"),
-        SkillMenuEntry("supplyitem", "物资补给", SkillMenuCategory.Level3, "选择当前所有物资中的一种，为本队核心添加100个；消耗10 MDC", "/skill supplyitem"),
-        SkillMenuEntry("randommaga", "随机maga", SkillMenuCategory.Level3, "召唤一只携带随机有效建筑方块载荷的 mega；仍可突破载荷上限；消耗20 MDC，一局一次", "/skill randommaga"),
-        SkillMenuEntry("nuke", "核弹打击", SkillMenuCategory.Level3, "5秒后在光标坐标触发钍反应堆爆炸；消耗20 MDC，一局一次"),
-        SkillMenuEntry("refreshskills", "刷新技能", SkillMenuCategory.Level3, "清除自己当前所有技能冷却；消耗100 MDC，冷却300秒", "/skill refreshskills"),
-        SkillMenuEntry("tietie", "贴贴", SkillMenuCategory.Level3, "向目标发送贴贴请求，接受后双方贴贴并生成随机单位；消耗100 MDC，无冷却"),
+        SkillMenuEntry("omg", "omg", SkillMenuCategory.Level3, "播放服务器 omg 小音效；消耗23 MDC，无冷却"),
+        SkillMenuEntry("standarddefense", "标准预制防线", SkillMenuCategory.Level3, "需6x6空地；按炮台→供电/电池→墙体顺序建造塑钢墙蓝瑟防线；消耗23 MDC，一局一次", "/skill standarddefense"),
+        SkillMenuEntry("missilevolley", "导弹齐射", SkillMenuCategory.Level3, "在自身位置召唤10个 scathe-missile-surge；消耗15 MDC，一局一次，E星三种核心机不可使用", "/skill missileVolley"),
+        SkillMenuEntry("supplyitem", "物资补给", SkillMenuCategory.Level3, "选择当前所有物资中的一种，为本队核心添加100个；消耗15 MDC", "/skill supplyitem"),
+        SkillMenuEntry("randommaga", "随机maga", SkillMenuCategory.Level3, "召唤一只携带随机有效建筑方块载荷的 mega；仍可突破载荷上限；消耗30 MDC，一局一次", "/skill randommaga"),
+        SkillMenuEntry("nuke", "核弹打击", SkillMenuCategory.Level3, "5秒后在光标坐标触发钍反应堆爆炸；消耗60 MDC，一局一次"),
+        SkillMenuEntry("refreshskills", "刷新技能", SkillMenuCategory.Level3, "清除自己当前所有技能冷却；消耗150 MDC，冷却300秒", "/skill refreshskills"),
+        SkillMenuEntry("tietie", "贴贴", SkillMenuCategory.Level3, "向目标发送贴贴请求，接受后双方贴贴并生成随机单位；消耗150 MDC，无冷却"),
         SkillMenuEntry("examtime", "考试时间！", SkillMenuCategory.Admin, "管理员技能：全员依次生成高考成绩，仅前三获得MDC奖励", "/skill examtime"),
         SkillMenuEntry("source", "物品源", SkillMenuCategory.Admin, "管理员技能：放置3x3物品源"),
         SkillMenuEntry("ecore", "E星核心", SkillMenuCategory.Admin, "管理员技能：放置3x3核心"),
@@ -609,6 +609,8 @@ onEnable {
         SkillMenuEntry("lordoff", "关闭Lord脚本", SkillMenuCategory.Admin, "管理员技能：尝试关闭 mapScript/14668", "/skill lordoff"),
         SkillMenuEntry("addnoskill", "开启noskill限制", SkillMenuCategory.Admin, "管理员技能：为当前地图添加 @noSkills 标签", "/skill addnoskill"),
         SkillMenuEntry("removenoskill", "解除noskill限制", SkillMenuCategory.Admin, "管理员技能：移除当前地图 @noSkills 标签", "/skill removenoskill"),
+        SkillMenuEntry("puremodeon", "开启本局纯净模式", SkillMenuCategory.Admin, "管理员技能：立即禁用当前局普通技能与3级技能", "/skill puremodeon"),
+        SkillMenuEntry("puremodeoff", "关闭本局纯净模式", SkillMenuCategory.Admin, "管理员技能：关闭当前局纯净模式并保留地图原有技能限制", "/skill puremodeoff"),
     ).forEach { SkillMenuRegistry.register(it) }
 }
 
@@ -618,7 +620,7 @@ onDisable {
         "summonpoly", "summonunloader", "illuminator", "basicdefense", "extinguish", "disarm", "fortune", "sourcelottery", "coreshard", "corezone", "flying", "landing", "runfaster", "boundmega", "laststand", "rocket",
         "decisivesquad", "anvilsquad", "hammersquad", "blitz", "antiarmor", "pddcut", "disaster", "redlightgreenlight",
         "gaokao", "firetruck", "omg", "standarddefense", "missilevolley", "supplyitem", "randommaga", "nuke", "refreshskills", "tietie", "examtime", "godmenu", "source", "ecore", "invincible", "freeskillcost", "doublemdcreward", "killallunits", "infinitefire",
-        "wallkillerpro", "daoshengyi", "powersource", "floodon", "floodoff", "lordon", "lordoff", "addnoskill", "removenoskill"
+        "wallkillerpro", "daoshengyi", "powersource", "floodon", "floodoff", "lordon", "lordoff", "addnoskill", "removenoskill", "puremodeon", "puremodeoff"
     ).forEach { SkillMenuRegistry.unregister(it) }
 }
 
@@ -669,4 +671,3 @@ command("admin", "打开管理员技能分类".with(), commands = SkillCommands)
         openSkillCategoryMenu(player!!, SkillMenuCategory.Admin)
     }
 }
-

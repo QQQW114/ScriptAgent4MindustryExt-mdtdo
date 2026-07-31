@@ -1,4 +1,5 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("coreMindustry/menu", "成就菜单")
 @file:Depends("coreMindustry/utilTextInput", "成就管理输入")
 @file:Depends("wayzer/user/trustLevel", "信任等级")
@@ -13,6 +14,8 @@ package wayzer.user
 import coreMindustry.MenuBuilder
 import coreMindustry.PagedMenuBuilder
 import coreMindustry.lib.hasPermission
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.AchievementCompletedEvent
 import wayzer.lib.ForumPostCreatedEvent
@@ -24,6 +27,7 @@ import wayzer.lib.SeniorityLevelChangedEvent
 import wayzer.lib.ShopPurchaseEvent
 import wayzer.lib.TrustLevelChangedEvent
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -86,6 +90,18 @@ private val completedAchievementCache = mutableMapOf<String, CompletedAchievemen
 private var customAchievementCache: CustomAchievementCacheEntry? = null
 private val currentCheckStats = mutableMapOf<String, MdtStorage.AchievementStatsSnapshot>()
 private val pendingAchievementChecks = mutableMapOf<String, kotlinx.coroutines.Job>()
+
+private fun achievementEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.Achievement)
+
+private fun achievementDisabledMessage(): String =
+    "[yellow]成就系统已被管理员关闭，请联系管理员。"
+
+private fun ensureAchievementEnabled(player: Player): Boolean {
+    if (achievementEnabled()) return true
+    player.sendMessage(achievementDisabledMessage())
+    return false
+}
 
 private fun titleReward(code: String, displayName: String): AchievementTitleReward {
     val normalized = if (displayName.endsWith("[]")) displayName else "$displayName[]"
@@ -392,6 +408,7 @@ private fun giveRewards(uid: String, achievement: AchievementDefinition) {
 }
 
 private fun completeAchievement(uid: String, achievement: AchievementDefinition, player: Player? = onlinePlayerByUid(uid)): Boolean {
+    if (!achievementEnabled()) return false
     // 先落盘“已完成”，再发奖励，避免奖励触发的MDC/等级事件导致重复领奖。
     if (!MdtStorage.completeAchievement(uid, achievement.code, if (achievement.special) "admin" else "auto")) return false
     rememberCompletedAchievement(uid, achievement.code)
@@ -407,6 +424,7 @@ private fun completeAchievement(uid: String, achievement: AchievementDefinition,
 }
 
 fun checkAchievements(uid: String, player: Player? = onlinePlayerByUid(uid)): Int {
+    if (!achievementEnabled()) return 0
     var completedCount = 0
     val completed = completedAchievements(uid)
     val stats = MdtStorage.getAchievementStatsSnapshot(uid)
@@ -437,6 +455,10 @@ private fun checkAchievements(uids: Iterable<String>) {
 }
 
 private fun scheduleAchievementCheck(uid: String, player: Player? = onlinePlayerByUid(uid), reason: String = "event") {
+    if (!achievementEnabled()) {
+        pendingAchievementChecks.remove(uid)?.cancel()
+        return
+    }
     pendingAchievementChecks.remove(uid)?.cancel()
     pendingAchievementChecks[uid] = launch(Dispatchers.game) {
         delay(ACHIEVEMENT_CHECK_DEBOUNCE_MILLIS.coerceAtLeast(0L))
@@ -470,6 +492,7 @@ private fun optionText(completedSet: Set<String>, achievement: AchievementDefini
 }
 
 private fun showAchievement(uid: String, player: Player, achievement: AchievementDefinition) {
+    if (!ensureAchievementEnabled(player)) return
     if (!isAchievementCompleted(uid, achievement.code)) {
         val requirement = requirementText(achievement)
         player.sendMessage(
@@ -485,6 +508,7 @@ private fun showAchievement(uid: String, player: Player, achievement: Achievemen
 }
 
 private suspend fun showAchievementMenu(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
     val uid = PlayerData[player].id
     checkAchievements(uid, player)
     val completed = completedAchievements(uid)
@@ -537,7 +561,8 @@ private suspend fun inputInt(player: Player, title: String, message: String, def
     return raw.trim().toIntOrNull()?.coerceAtLeast(min)
 }
 
-private fun saveCustomAchievement(record: MdtStorage.CustomAchievementRecord): MdtStorage.CustomAchievementRecord {
+private fun saveCustomAchievement(player: Player, record: MdtStorage.CustomAchievementRecord): MdtStorage.CustomAchievementRecord? {
+    if (!ensureAchievementEnabled(player)) return null
     val saved = MdtStorage.upsertCustomAchievement(record)
     invalidateCustomAchievementCache()
     return saved
@@ -558,29 +583,32 @@ private fun newCustomAchievement(code: String, name: String): MdtStorage.CustomA
     )
 
 private suspend fun createCustomAchievement(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
     val rawCode = inputText(player, "新建成就", "输入成就代号，仅允许英文/数字/_/-；会自动加 custom_ 前缀", limit = 64) ?: return
     val code = normalizeCustomCode(rawCode) ?: run {
         player.sendMessage("[red]成就代号不合法：仅允许 2-64 位英文/数字/_/-")
         return
     }
+    if (!ensureAchievementEnabled(player)) return
     if (MdtStorage.getCustomAchievement(code) != null || code in achievementByCode(includeDisabledCustom = true)) {
         player.sendMessage("[red]成就代号已存在：$code")
         return
     }
     val name = inputText(player, "新建成就", "输入成就名称", default = code.removePrefix("custom_"), limit = 48)
         ?.ifBlank { code } ?: return
-    val saved = saveCustomAchievement(newCustomAchievement(code, name))
+    val saved = saveCustomAchievement(player, newCustomAchievement(code, name)) ?: return
     player.sendMessage("[green]已创建自定义成就：[yellow]${saved.name}[gray]（$code）")
     showCustomAchievementDetailMenu(player, saved.code)
 }
 
 private suspend fun selectConditionType(player: Player, record: MdtStorage.CustomAchievementRecord) {
+    if (!ensureAchievementEnabled(player)) return
     object : PagedMenuBuilder<ConditionPreset>(conditionPresets, prePage = 6) {
         override suspend fun renderItem(item: ConditionPreset) {
             val selected = if (item.code == record.conditionType) "[green][当前][] " else ""
             option("$selected[yellow]${item.name}\n[gray]${item.description}") {
                 val value = inputText(player, "设置条件值", item.valueHint, default = item.defaultValue, limit = 128) ?: return@option
-                val saved = saveCustomAchievement(record.copy(conditionType = item.code, conditionValue = value))
+                val saved = saveCustomAchievement(player, record.copy(conditionType = item.code, conditionValue = value)) ?: return@option
                 player.sendMessage("[green]已设置条件：[yellow]${item.name} [white]$value")
                 showCustomAchievementDetailMenu(player, saved.code)
             }
@@ -595,6 +623,7 @@ private suspend fun selectConditionType(player: Player, record: MdtStorage.Custo
 }
 
 private suspend fun showCustomAchievementDetailMenu(player: Player, code: String) {
+    if (!ensureAchievementEnabled(player)) return
     val record = MdtStorage.getCustomAchievement(code) ?: run {
         player.sendMessage("[red]自定义成就不存在或已删除：$code")
         showAchievementAdminMenu(player)
@@ -609,35 +638,35 @@ private suspend fun showCustomAchievementDetailMenu(player: Player, code: String
             |[gray]删除成就不会回滚玩家已经获得的奖励/完成记录。
         """.trimMargin()
         option(if (record.enabled) "[yellow]禁用成就" else "[green]启用成就") {
-            saveCustomAchievement(record.copy(enabled = !record.enabled))
+            saveCustomAchievement(player, record.copy(enabled = !record.enabled)) ?: return@option
             showCustomAchievementDetailMenu(player, code)
         }
         option(if (record.hidden) "[yellow]改为公开" else "[gold]改为隐藏") {
-            saveCustomAchievement(record.copy(hidden = !record.hidden))
+            saveCustomAchievement(player, record.copy(hidden = !record.hidden)) ?: return@option
             showCustomAchievementDetailMenu(player, code)
         }
         newRow()
         option("[cyan]修改名称\n[gray]当前：${record.name}") {
             val name = inputText(player, "修改成就名称", "输入新的成就名称", default = record.name, limit = 64) ?: return@option
-            saveCustomAchievement(record.copy(name = name.ifBlank { record.name }))
+            saveCustomAchievement(player, record.copy(name = name.ifBlank { record.name })) ?: return@option
             showCustomAchievementDetailMenu(player, code)
         }
         option("[cyan]修改条件\n[gray]${conditionText(record)}") { selectConditionType(player, record) }
         newRow()
         option("[yellow]修改MDC奖励\n[gray]当前：${record.rewardPoints}") {
             val points = inputInt(player, "修改MDC奖励", "输入完成时奖励的MDC，0表示无MDC奖励", record.rewardPoints) ?: return@option
-            saveCustomAchievement(record.copy(rewardPoints = points))
+            saveCustomAchievement(player, record.copy(rewardPoints = points)) ?: return@option
             showCustomAchievementDetailMenu(player, code)
         }
         option("[pink]修改称号奖励\n[gray]${record.titleDisplay ?: "无"}") {
             val titleCode = inputText(player, "称号奖励代号", "输入称号代号，留空表示清除称号奖励", default = record.titleCode ?: "", limit = 64) ?: return@option
             if (titleCode.isBlank()) {
-                saveCustomAchievement(record.copy(titleCode = null, titleDisplay = null))
+                saveCustomAchievement(player, record.copy(titleCode = null, titleDisplay = null)) ?: return@option
                 showCustomAchievementDetailMenu(player, code)
                 return@option
             }
             val display = inputText(player, "称号显示名", "输入称号显示名，可带颜色，例如 [gold][大佬]", default = record.titleDisplay ?: "[gold][${record.name}]", limit = 120) ?: return@option
-            saveCustomAchievement(record.copy(titleCode = titleCode, titleDisplay = display))
+            saveCustomAchievement(player, record.copy(titleCode = titleCode, titleDisplay = display)) ?: return@option
             showCustomAchievementDetailMenu(player, code)
         }
         newRow()
@@ -650,6 +679,7 @@ private suspend fun showCustomAchievementDetailMenu(player: Player, code: String
         option("[red]删除成就\n[gray]仅删除定义，不回滚已获得奖励") {
             val confirm = inputText(player, "确认删除", "输入 DELETE 确认删除 ${record.name}", limit = 16) ?: return@option
             if (confirm == "DELETE") {
+                if (!ensureAchievementEnabled(player)) return@option
                 MdtStorage.deleteCustomAchievement(record.code)
                 invalidateCustomAchievementCache()
                 player.sendMessage("[green]已删除自定义成就：[yellow]${record.name}")
@@ -666,6 +696,7 @@ private suspend fun showCustomAchievementDetailMenu(player: Player, code: String
 }
 
 private suspend fun showCustomAchievementListMenu(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
     val records = loadCustomAchievementRecords(includeDisabled = true, forceRefresh = true)
     object : PagedMenuBuilder<MdtStorage.CustomAchievementRecord>(records, prePage = 6) {
         override suspend fun renderItem(item: MdtStorage.CustomAchievementRecord) {
@@ -685,6 +716,7 @@ private suspend fun showCustomAchievementListMenu(player: Player) {
 }
 
 private suspend fun showConditionHelpMenu(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
     object : PagedMenuBuilder<ConditionPreset>(conditionPresets, prePage = 6) {
         override suspend fun renderItem(item: ConditionPreset) {
             option("[yellow]${item.name}\n[gray]${item.description}\n[lightgray]值：${item.valueHint}") { refresh() }
@@ -698,6 +730,7 @@ private suspend fun showConditionHelpMenu(player: Player) {
 }
 
 private suspend fun showAchievementAdminMenu(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
     MenuBuilder<Unit>("成就管理") {
         val customCount = loadCustomAchievementRecords(includeDisabled = true).size
         msg = """
@@ -710,6 +743,7 @@ private suspend fun showAchievementAdminMenu(player: Player) {
         newRow()
         option("[cyan]可用条件参数\n[gray]点赞/获赞/发帖/在线时间/登录日期等") { showConditionHelpMenu(player) }
         option("[green]刷新缓存\n[gray]重新读取自定义成就定义") {
+            if (!ensureAchievementEnabled(player)) return@option
             invalidateCustomAchievementCache()
             loadCustomAchievementRecords(includeDisabled = true, forceRefresh = true)
             player.sendMessage("[green]成就定义缓存已刷新")
@@ -758,6 +792,18 @@ listenTo<ForumPostCreatedEvent> {
     scheduleAchievementCheck(uid, reason = "forum")
 }
 
+listenTo<DatabaseFeatureChangedEvent> {
+    if (feature != DatabaseFeature.Achievement) return@listenTo
+    pendingAchievementChecks.values.forEach { it.cancel() }
+    pendingAchievementChecks.clear()
+    currentCheckStats.clear()
+    completedAchievementCache.clear()
+    customAchievementCache = null
+    if (newEnabled) Groups.player.toList().forEach {
+        scheduleAchievementCheck(PlayerData[it].id, it, "feature-on")
+    }
+}
+
 listen<EventType.PlayerJoin> {
     scheduleAchievementCheck(PlayerData[it.player].id, it.player, "join")
 }
@@ -775,6 +821,7 @@ command("achievements", "打开成就系统") {
     aliases = listOf("achievement", "成就", "成就系统")
     attr(ClientOnly)
     body {
+        if (!achievementEnabled()) returnReply(achievementDisabledMessage().with())
         showAchievementMenu(player!!)
     }
 }
@@ -784,6 +831,7 @@ command("achadmin", "管理指令：查看/授予/撤销玩家成就") {
     permission = "wayzer.admin.achievement"
     aliases = listOf("achievementadmin", "成就管理")
     body {
+        if (!achievementEnabled()) returnReply(achievementDisabledMessage().with())
         if (arg.isEmpty() || arg[0].equals("menu", ignoreCase = true) || arg[0] == "菜单") {
             val p = player ?: returnReply("[yellow]控制台请使用参数形式：/achadmin <玩家> list|check|grant|revoke".with())
             showAchievementAdminMenu(p)

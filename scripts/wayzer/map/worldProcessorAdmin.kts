@@ -1,6 +1,7 @@
 @file:Depends("coreMindustry/contentsTweaker", "读取当前已加载CP")
 @file:Depends("coreMindustry/menu", "CP管理菜单")
 @file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
+@file:Depends("wayzer/map/externalCpHotReload", "服务器CP快速加载")
 
 package wayzer.map
 
@@ -22,6 +23,7 @@ name = "世界处理器与CP管理"
 
 private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
 private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
+private val externalCp = contextScript<ExternalCpHotReload>()
 private val cpNameRegex = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"")
 private var cpAdminContentBaseline: Any? = null
 
@@ -74,6 +76,64 @@ private fun cpPreview(patch: String, limit: Int = 90): String =
         .replace(Regex("\\s+"), " ")
         .trim()
         .take(limit)
+
+private fun loadedDataAssets() = with(contentsTweaker) { loadedDataAssetInfos() }
+
+private fun dataAssetTypeName(type: String): String = when (type.lowercase()) {
+    "patch" -> "属性Patch"
+    "content" -> "内容定义"
+    "bundle" -> "语言包"
+    "image" -> "贴图"
+    "sound" -> "音效"
+    "music" -> "音乐"
+    else -> type
+}
+
+private fun dataAssetSummaryText(): String {
+    val assets = loadedDataAssets()
+    if (assets.isEmpty()) return "[yellow]当前没有可列出的v159 Data Assets（或当前端未提供allAssets接口）。"
+    val counts = assets.groupingBy { it.type }.eachCount().toSortedMap()
+    return "[cyan]v159 Data Assets：[white]${assets.size} 个  " +
+            counts.entries.joinToString("  ") { (type, count) -> "[gray]${dataAssetTypeName(type)}:[white]$count" }
+}
+
+private fun dataAssetListText(): String {
+    val assets = loadedDataAssets()
+    if (assets.isEmpty()) return dataAssetSummaryText()
+    return buildString {
+        appendLine(dataAssetSummaryText())
+        assets.forEach { asset ->
+            val status = when {
+                asset.error -> "[red]失败"
+                asset.warnings.isNotEmpty() -> "[yellow]警告${asset.warnings.size}"
+                else -> "[green]正常"
+            }
+            val contentType = asset.contentType?.let { "/$it" }.orEmpty()
+            appendLine("[gray]${asset.index}. [gold]${dataAssetTypeName(asset.type)}$contentType [white]${asset.fullPath.ifBlank { asset.name }} [gray]($status[gray])")
+        }
+        appendLine("[gray]使用 /cp dp <编号> 查看单项详情；Patch卸载仍使用 /cp unload <Patch编号>，两套编号互不混用。")
+    }.trimEnd()
+}
+
+private fun dataAssetDetailText(index: Int): String {
+    val asset = loadedDataAssets().getOrNull(index - 1)
+        ?: return "[red]没有编号为 [white]$index[red] 的v159 Data Asset。"
+    val warnings = if (asset.warnings.isEmpty()) "[green]无" else
+        asset.warnings.take(12).joinToString("\n") { "[yellow]- [white]$it" } +
+                if (asset.warnings.size > 12) "\n[gray]... 还有 ${asset.warnings.size - 12} 条" else ""
+    return buildString {
+        appendLine("[cyan]Data Asset详情 #[white]${asset.index}")
+        appendLine("[cyan]类型：[white]${dataAssetTypeName(asset.type)}${asset.contentType?.let { " / $it" }.orEmpty()}")
+        appendLine("[cyan]路径：[white]${asset.fullPath.ifBlank { asset.path }}")
+        appendLine("[cyan]名称：[white]${asset.name.ifBlank { "未知" }}")
+        asset.loadedContent?.let { appendLine("[cyan]已加载内容：[white]$it") }
+        asset.cached?.let { appendLine("[cyan]缓存状态：[white]${if (it) "已缓存" else "未缓存"}") }
+        asset.hash?.let { appendLine("[cyan]SHA-256缓存标识：[gray]$it") }
+        appendLine("[cyan]错误状态：[white]${if (asset.error) "[red]失败" else "[green]正常"}")
+        appendLine("[cyan]警告：\n$warnings")
+        asset.preview?.let { appendLine("[cyan]内容预览：\n[gray]$it") }
+    }.trimEnd()
+}
 
 private fun knownCpTagNames(): List<String> =
     with(contentsTweaker) { patchList }.filter { it.isNotBlank() }
@@ -248,24 +308,27 @@ private fun unloadCp(info: LoadedCpInfo, disableTags: Boolean, operator: String?
 
 private fun cpListText(): String {
     val patches = loadedCpPatches()
-    if (patches.isEmpty()) return "[yellow]当前没有已加载CP/数据包。"
-
     val tagNames = knownCpTagNames()
     return buildString {
-        appendLine("[cyan]当前已加载CP/数据包：[white]${patches.size} 个")
+        appendLine(dataAssetSummaryText())
+        appendLine("[cyan]属性Patch视图：[white]${patches.size} 个")
         if (tagNames.isNotEmpty()) {
             appendLine("[gray]地图/ContentsTweaker记录名：[white]${tagNames.joinToString("、")}")
         }
-        patches.forEach { info ->
-            val nameText = info.name ?: "CP#${info.index}"
-            val status = when {
-                info.error -> "[red]失败"
-                info.warnings.isNotEmpty() -> "[yellow]警告${info.warnings.size}"
-                else -> "[green]正常"
+        if (patches.isEmpty()) {
+            appendLine("[yellow]当前没有已加载属性Patch。")
+        } else {
+            patches.forEach { info ->
+                val nameText = info.name ?: "CP#${info.index}"
+                val status = when {
+                    info.error -> "[red]失败"
+                    info.warnings.isNotEmpty() -> "[yellow]警告${info.warnings.size}"
+                    else -> "[green]正常"
+                }
+                appendLine("[gray]${info.index}. [gold]$nameText[gray] [$status[gray]] - ${cpPreview(info.raw)}")
             }
-            appendLine("[gray]${info.index}. [gold]$nameText[gray] [$status[gray]] - ${cpPreview(info.raw)}")
         }
-        appendLine("[gray]游戏内输入 /cp 可打开管理菜单；控制台可用 /cp <编号> 查看详情。")
+        appendLine("[gray]/cp dp 查看完整v159资产；/cp files 查看服务器CP；/cp load <文件名|编号> 可不经投票快速加载。")
     }.trimEnd()
 }
 
@@ -299,7 +362,8 @@ private fun cpMenuMsg(): String {
     val patches = loadedCpPatches()
     val tagNames = knownCpTagNames()
     return buildString {
-        appendLine("[cyan]当前已加载CP/数据包：[white]${patches.size} 个")
+        appendLine(dataAssetSummaryText())
+        appendLine("[cyan]当前属性Patch：[white]${patches.size} 个")
         if (tagNames.isNotEmpty()) appendLine("[gray]ContentsTweaker记录名：[white]${tagNames.joinToString("、")}")
         appendLine("[yellow]临时卸载[gray]：只移出当前已应用CP，重载地图/脚本后可能恢复。")
         appendLine("[red]禁用并卸载[gray]：同时移除当前地图的CP记录，当前地图生命周期内不再自动恢复。")
@@ -319,7 +383,7 @@ private suspend fun openCpConfirmMenu(player: Player, info: LoadedCpInfo, disabl
         option("[red]确认执行") {
             val result = unloadCp(info, disableTags, player.name)
             player.sendMessage(result.message)
-            openCpListMenu(player)
+            openCpPatchListMenu(player)
         }
         option("返回详情") { openCpDetailMenu(player, info.index) }
         newRow()
@@ -331,7 +395,7 @@ private suspend fun openCpDetailMenu(player: Player, index: Int) {
     val info = loadedCpPatches().getOrNull(index - 1)
     if (info == null) {
         player.sendMessage("[red]没有编号为 [white]$index[red] 的已加载CP/数据包。")
-        openCpListMenu(player)
+        openCpPatchListMenu(player)
         return
     }
     MenuBuilder<Unit>("CP详情 #${info.index}") {
@@ -339,19 +403,21 @@ private suspend fun openCpDetailMenu(player: Player, index: Int) {
         option("[yellow]临时卸载") { openCpConfirmMenu(player, info, disableTags = false) }
         option("[red]禁用并卸载") { openCpConfirmMenu(player, info, disableTags = true) }
         newRow()
-        option("返回列表") { openCpListMenu(player) }
+        option("返回Patch列表") { openCpPatchListMenu(player) }
         option("刷新详情") { openCpDetailMenu(player, info.index) }
         newRow()
         option("关闭") {}
     }.sendTo(player, 60_000)
 }
 
-private suspend fun openCpListMenu(player: Player) {
+private suspend fun openCpPatchListMenu(player: Player) {
     val patches = loadedCpPatches()
     if (patches.isEmpty()) {
-        MenuBuilder<Unit>("CP/数据包管理") {
-            msg = "[yellow]当前没有已加载CP/数据包。"
-            option("刷新") { openCpListMenu(player) }
+        MenuBuilder<Unit>("属性Patch列表") {
+            msg = "[yellow]当前没有已加载属性Patch。\n${dataAssetSummaryText()}"
+            option("返回CP总览") { openCpRootMenu(player) }
+            option("刷新") { openCpPatchListMenu(player) }
+            newRow()
             option("关闭") {}
         }.sendTo(player, 60_000)
         return
@@ -367,10 +433,72 @@ private suspend fun openCpListMenu(player: Player) {
             openCpDetailMenu(player, info.index)
         }
     }.apply {
-        title = "CP/数据包管理"
+        title = "属性Patch列表"
         msg = cpMenuMsg()
         sendTo(player, 60_000)
     }
+}
+
+private suspend fun openDataAssetDetailMenu(player: Player, index: Int) {
+    if (loadedDataAssets().getOrNull(index - 1) == null) {
+        player.sendMessage("[red]没有编号为 [white]$index[red] 的v159 Data Asset。")
+        openDataAssetListMenu(player)
+        return
+    }
+    MenuBuilder<Unit>("Data Asset #$index") {
+        msg = dataAssetDetailText(index)
+        option("返回DP列表") { openDataAssetListMenu(player) }
+        option("刷新详情") { openDataAssetDetailMenu(player, index) }
+        newRow()
+        option("关闭") {}
+    }.sendTo(player, 60_000)
+}
+
+private suspend fun openDataAssetListMenu(player: Player) {
+    val assets = loadedDataAssets()
+    if (assets.isEmpty()) {
+        MenuBuilder<Unit>("v159 Data Assets") {
+            msg = dataAssetSummaryText()
+            option("返回CP总览") { openCpRootMenu(player) }
+            option("刷新") { openDataAssetListMenu(player) }
+            newRow()
+            option("关闭") {}
+        }.sendTo(player, 60_000)
+        return
+    }
+    PagedMenuBuilder(assets, prePage = 7) { item ->
+        val status = when {
+            item.error -> "[red]失败"
+            item.warnings.isNotEmpty() -> "[yellow]警告${item.warnings.size}"
+            else -> "[green]正常"
+        }
+        option("[gray]${item.index}. [gold]${dataAssetTypeName(item.type)}\n[white]${item.fullPath.ifBlank { item.name }.take(42)} [gray]($status[gray])") {
+            openDataAssetDetailMenu(player, item.index)
+        }
+    }.apply {
+        title = "v159 Data Assets"
+        msg = dataAssetSummaryText() + "\n[gray]这里包含Patch、内容、语言包、贴图、音效与音乐；/cp unload只操作属性Patch。"
+    }.sendTo(player, 60_000)
+}
+
+private suspend fun openCpRootMenu(player: Player) {
+    val patches = loadedCpPatches()
+    MenuBuilder<Unit>("CP/数据包管理") {
+        msg = buildString {
+            appendLine(dataAssetSummaryText())
+            appendLine("[cyan]其中属性Patch视图：[white]${patches.size} 个")
+            appendLine("[gray]服务器CP快捷加载复用外部CP系统的v159校验、失败回滚与串行世界重同步，不经过投票。")
+        }.trimEnd()
+        option("属性Patch列表\n[gray]${patches.size} 个/可卸载") { openCpPatchListMenu(player) }
+        option("v159 DP资产列表\n[gray]完整allAssets") { openDataAssetListMenu(player) }
+        newRow()
+        option("服务器内置CP\n[green]管理快速加载") {
+            with(externalCp) { openServerCpManagementMenu(player) }
+        }
+        option("刷新") { openCpRootMenu(player) }
+        newRow()
+        option("关闭") {}
+    }.sendTo(player, 60_000)
 }
 
 private fun worldProcessorStatus(): String =
@@ -415,31 +543,56 @@ private fun setWorldProcessorEditAllowed(allowed: Boolean, operator: String?, an
 }
 
 command("cp", "管理指令：列出当前已经加载的CP/数据包") {
-    usage = "[编号|unload <编号>|disable <编号>]"
+    usage = "[menu|patches|dp [编号]|files|load <服务器CP文件名/编号>|编号|unload <Patch编号>|disable <Patch编号>]"
     aliases = listOf("contentpatch", "内容包", "数据包")
     permission = "wayzer.admin.worldProcessor"
     body {
         val p = player
         when (arg.getOrNull(0)?.lowercase()) {
             null, "menu", "菜单" -> {
-                if (p != null) openCpListMenu(p) else reply(cpListText().with())
+                if (p != null) openCpRootMenu(p) else reply(cpListText().asPlaceHoldString())
+            }
+            "list", "status", "状态", "总览" -> reply(cpListText().asPlaceHoldString())
+            "patches", "patch", "属性", "补丁" -> {
+                if (p != null) openCpPatchListMenu(p) else reply(cpListText().asPlaceHoldString())
+            }
+            "dp", "data", "assets", "asset", "数据资产", "资产" -> {
+                val index = arg.getOrNull(1)?.toIntOrNull()
+                if (p != null) {
+                    if (index == null) openDataAssetListMenu(p) else openDataAssetDetailMenu(p, index)
+                } else {
+                    reply((if (index == null) dataAssetListText() else dataAssetDetailText(index)).asPlaceHoldString())
+                }
+            }
+            "files", "file", "server", "服务器cp", "内置cp" -> {
+                if (p != null && arg[0].lowercase() in setOf("server", "服务器cp", "内置cp")) {
+                    with(externalCp) { openServerCpManagementMenu(p) }
+                } else {
+                    reply(with(externalCp) { serverCpFileListText() }.asPlaceHoldString())
+                }
+            }
+            "load", "reload", "加载", "重载", "快速加载" -> {
+                val target = arg.getOrNull(1)
+                    ?: returnReply("[red]请输入服务器CP文件名或编号，例如：[white]/cp load 1".with())
+                val result = with(externalCp) { loadServerCp(target, p?.name ?: "控制台") }
+                reply(result.asPlaceHoldString())
             }
             "unload", "卸载", "临时卸载" -> {
                 val index = arg.getOrNull(1)?.toIntOrNull() ?: returnReply("[red]请输入要临时卸载的CP编号。".with())
                 val info = loadedCpPatches().getOrNull(index - 1) ?: returnReply("[red]没有编号为 [white]$index[red] 的已加载CP/数据包。".with())
                 val result = unloadCp(info, disableTags = false, operator = p?.name ?: "控制台")
-                reply(result.message.with())
+                reply(result.message.asPlaceHoldString())
             }
             "disable", "禁用", "remove", "移除" -> {
                 val index = arg.getOrNull(1)?.toIntOrNull() ?: returnReply("[red]请输入要禁用并卸载的CP编号。".with())
                 val info = loadedCpPatches().getOrNull(index - 1) ?: returnReply("[red]没有编号为 [white]$index[red] 的已加载CP/数据包。".with())
                 val result = unloadCp(info, disableTags = true, operator = p?.name ?: "控制台")
-                reply(result.message.with())
+                reply(result.message.asPlaceHoldString())
             }
             else -> {
                 val index = arg.getOrNull(0)?.toIntOrNull()
                 if (index == null) replyUsage() else {
-                    if (p != null) openCpDetailMenu(p, index) else reply(cpDetailText(index).with())
+                    if (p != null) openCpDetailMenu(p, index) else reply(cpDetailText(index).asPlaceHoldString())
                 }
             }
         }
@@ -469,7 +622,7 @@ command("worldprocessor", "管理指令：控制世界处理器并查看CP") {
             }
             "cp", "cps", "list", "列表", "数据包" -> {
                 val index = arg.getOrNull(1)?.toIntOrNull()
-                reply((if (index == null) cpListText() else cpDetailText(index)).with())
+                reply((if (index == null) cpListText() else cpDetailText(index)).asPlaceHoldString())
             }
             else -> replyUsage()
         }

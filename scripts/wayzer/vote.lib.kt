@@ -397,6 +397,7 @@ object VoteService {
         "map", "nextmap" -> "[gray]（需51%同意）"
         "gameover" -> "[gray]（默认50%；PVP同队80%）"
         "clear" -> "[gray]（同队40%）"
+        "sc" -> "[gray]（直接发送）"
         else -> "[gray]（需50%同意）"
     }
 
@@ -412,6 +413,7 @@ object VoteService {
             "pausewave", "setwave", "resumewave", "unpausewave" -> "[yellow]"
             "clear" -> "[cyan]"
             "text" -> "[lightgray]"
+            "sc" -> "[pink]"
             "killunits" -> "[red]"
             "infinitefire" -> "[orange]"
             "infinitefirepromax" -> "[scarlet]"

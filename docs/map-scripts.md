@@ -10,6 +10,7 @@ Mindustry 159/B477 后只继续维护少量明确需要的地图玩法脚本。�
 | `mapScript/15450.kts` | TankWars | 地图ID、`/loadmapscript 15450` |
 | `mapScript/tags/hybrid.kts` | 地图特色杂交 | 地图标签 `[@hybrid]`、`/loadmapscript tags/hybrid` |
 | `mapScript/tags/flood.kts` | 洪水模式兼容版 | `[@flood]` / `[@floodV2]`、`/loadmapscript tags/flood` |
+| `mapScript/tags/pure.kts` | 地图纯净模式 | 地图简介标签 `[@pure]`、`/loadmapscript tags/pure` |
 
 同时保留地图脚本框架文件：
 
@@ -51,6 +52,21 @@ Mindustry 159/B477 后只继续维护少量明确需要的地图玩法脚本。�
 - 主循环和状态显示增加异常隔离，单次建筑/单位异常不会终止整个洪水玩法循环。
 - 洪水单次计算超过默认120ms时限频记录规模与耗时，便于定位大地图洪水扩散造成的主线程压力。
 - 继续保留卸载时清理洪水视觉方块和运行态缓存的逻辑。
+- `/skill floodoff` 与 `/unloadmapscript tags/flood` 共用同一停用链路：先显式创建 ScriptAgent 事务并确认脚本最终已停用，再删除 `@flood` / `@floodV2`；若停用失败则保留或回滚标签，避免出现“脚本仍运行但标签已丢失”的半更新状态。
+
+### 纯净模式标签
+
+- 地图简介/规则标签中出现 `[@pure]` 时，`mapScript/tags/pure.kts` 随本局地图生命周期自动启用。
+- 启用后复用 `wayzer/map/funRuleModes.kts` 的纯净模式快照，禁用普通技能和3级技能；卸载/换图时只恢复本标签脚本实际开启的状态，不误删地图原有 `@noSkills` 等限制。
+- 换到不带 `[@pure]` 的地图后不会再加载该标签脚本，因此自动回到普通技能规则。
+- ScriptAgent 3.4 下手动关闭地图脚本已改为显式停用事务，避免 `/unloadmapscript tags/pure` 报 `No transaction available`。
+
+### 手动启停链路
+
+- `/loadmapscript` 启用前会扫描脚本目录，便于运维复制新脚本后立即加载；`/unloadmapscript` 停用已注册脚本时不再扫描磁盘，减少云服磁盘抖动带来的额外卡顿。
+- 启用/停用完成后会检查 `ScriptInfo.enabled` 最终状态，并把底层异常或失败原因返回给管理指令/管理员技能，而不是仅提示“查看日志”。
+- 停用目标地图脚本时仍会保护原本已启用且不依赖目标的公共脚本；若 ScriptAgent 递归停用造成连带影响，会尝试恢复这些公共脚本。
+- 2026-07-30 本地命令 Socket 已实测 `tags/flood` 与 `14668` 均可先加载再停用；未再出现 `No transaction available`。Lord 加载时仍可能打印既有 ContentPatcher 兼容警告，因此它仍属于整图专用脚本，不保证任意地图热加载均安全。
 
 ## 已移除脚本
 
@@ -76,6 +92,8 @@ loadmapscript tags/hybrid
 unloadmapscript tags/hybrid
 loadmapscript tags/flood
 unloadmapscript tags/flood
+loadmapscript tags/pure
+unloadmapscript tags/pure
 ```
 
 重点观察：

@@ -323,7 +323,6 @@
    - `getDeclaredField("statuses")`
    - `SaveOptions`
    - `snapshotInterval`
-   - `connectSyncGuard`
    - `PatchAsset`
    - `DataPatchLoadEvent`
    - `sendWorldAndAssets`
@@ -377,7 +376,8 @@
 
 - `trafficMonitor.kts` 区分总上行、游戏同步上行、世界/资产流；并读取 TCP 待发积压、待加入连接与活动流。
 - `serverPressure.kts` 将游戏同步上行用于性能等级，将世界/资产流和 TCP 积压只用于网络保护；音乐、CP、玩家入服不会再触发单位清理。
-- 新增 `connectSyncGuard.kts`：只在网络压力时限制同时进行世界同步的人数，正常状态不限制；等待超时、压力数据失效、脚本异常或卸载均 fail-open，防止永久无法入服。
+- B480 阶段曾增加网络压力入服门控；2026-07-25 因确认/世界流异常可能长期占用预留、卡住后续全部连接，已删除该脚本及 `adaptivePlayerLimit`/内部重同步中的槽位耦合，首次入服恢复原生流程。
 - `syncThrottle.kts` 当时改用 v159 原生 `snapshotInterval` 并尝试事件重路；该重路后来审计为风险过高，B480 版本已彻底移除，只保留原生间隔调整。
-- 标准/实验性性能措施合并；`/vote perf off` 只关闭本局世界清理与规则调整，网络 fail-open 保护继续运行。
+- 标准/实验性性能措施合并；`/vote perf off` 只关闭本局世界清理与规则调整，原生快照间隔保护继续运行。
 - 最终换图只允许在当前 TPS 与滑动均值每次采样都低于 5、连续 2 分钟时触发。
+- 同步限制首次进入每局只广播一次；TPS/措施循环增加逐轮异常隔离，普通清火、清子弹、关处理器和击杀单位按实际数量广播。

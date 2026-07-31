@@ -91,6 +91,24 @@ private var recoverSamples = 0
 private var downgradeCandidateLevel = -1
 private var downgradeSamples = 0
 private var tpsThresholdCache: TpsThresholds? = null
+private var lastUpdateErrorLogMillis = 0L
+private var lastThrottleAnnouncementErrorMillis = 0L
+private var lastPressureBroadcastErrorMillis = 0L
+private var localThrottleRestrictionAnnounced = false
+
+private fun safePressureBroadcast(label: String, action: () -> Unit): Boolean {
+    return runCatching {
+        action()
+        true
+    }.getOrElse {
+        val now = System.currentTimeMillis()
+        if (now - lastPressureBroadcastErrorMillis >= 30_000L) {
+            lastPressureBroadcastErrorMillis = now
+            logger.warning("服务器压力广播失败($label)，下一轮仍会继续：${it.message}")
+        }
+        false
+    }
+}
 
 private fun currentTps(): Int = Core.graphics.framesPerSecond.coerceIn(0, 255)
 
@@ -341,6 +359,7 @@ private fun stablePressureLevel(rawLevel: Int): Int {
 }
 
 private fun updatePressureSnapshot() {
+    val previousLevel = snapshot.level
     val mode = with(perfGuard) { performanceMode() }
     val avgTps = averageTps()
     val trafficCurrent = with(trafficMonitor) { currentTrafficMbps() }
@@ -396,18 +415,31 @@ private fun updatePressureSnapshot() {
     )
 
     if (snapshot.level > lastBroadcastLevel) {
-        broadcast(
-            "[yellow][服务器压力] {reason}，性能等级升至 [white]{level}[yellow]；TPS均值 [white]{tps}[yellow]，同步上行 [white]{traffic} Mbps[yellow]。".with(
-                "reason" to snapshot.reason,
-                "level" to snapshot.level,
-                "tps" to snapshot.averageTps.roundToInt(),
-                "traffic" to "%.2f".format(snapshot.averageSyncTrafficMbps),
+        val broadcasted = safePressureBroadcast("升档") {
+            broadcast(
+                "[yellow][服务器压力] {reason}，性能等级升至 [white]{level}[yellow]；TPS均值 [white]{tps}[yellow]，同步上行 [white]{traffic} Mbps[yellow]。".with(
+                    "reason" to snapshot.reason,
+                    "level" to snapshot.level,
+                    "tps" to snapshot.averageTps.roundToInt(),
+                    "traffic" to "%.2f".format(snapshot.averageSyncTrafficMbps),
+                )
             )
-        )
+        }
+        // 广播失败时不要消费本次升档状态；下一轮会重试，避免压力提示永久丢失。
+        if (broadcasted) lastBroadcastLevel = snapshot.level
+        logger.info("[服务器压力] 性能等级 $previousLevel -> ${snapshot.level}：${snapshot.reason}，TPS=${snapshot.averageTps.roundToInt()}，同步上行=${"%.2f".format(snapshot.averageSyncTrafficMbps)}Mbps")
+    } else if (snapshot.level in 1 until lastBroadcastLevel) {
+        // 降级本身不刷屏，但要同步播报状态；否则 L4->L2->L3 时 L3 会因旧的 L4 记录而不再提示。
         lastBroadcastLevel = snapshot.level
-    } else if (snapshot.level == 0 && lastBroadcastLevel > 0 && recoverSamples >= 2) {
-        broadcast("[green][服务器压力] TPS/游戏同步上行已恢复，退出自动性能等级。".with())
-        lastBroadcastLevel = 0
+        logger.info("[服务器压力] 性能等级 $previousLevel -> ${snapshot.level}：${snapshot.reason}")
+    } else if (snapshot.level == 0 && lastBroadcastLevel > 0) {
+        val recovered = snapshot.mode == "off" || safePressureBroadcast("恢复") {
+                broadcast("[green][服务器压力] TPS/游戏同步上行已恢复，退出自动性能等级。".with())
+        }
+        if (recovered) {
+            logger.info("[服务器压力] 性能等级 $previousLevel -> 0：${snapshot.reason}")
+            lastBroadcastLevel = 0
+        }
     }
 }
 
@@ -418,8 +450,50 @@ fun trafficOverLimit(): Boolean = snapshot.trafficLevel > 0
 fun networkOverLimit(): Boolean = snapshot.networkLevel > 0
 fun throttleIntervalMillis(): Long = snapshot.throttleIntervalMillis
 
+/**
+ * 在当前地图/回合首次真正需要同步限制时播报一次。
+ *
+ * 播报状态由 trafficMonitor 持有（serverPressure 另有本地 fail-safe），而不是
+ * syncThrottle 自己持有，避免只热重载 serverPressure/syncThrottle 时重复弹窗；
+ * 广播失败不消耗这次机会，下一轮仍会重试。
+ */
+fun announceThrottleRestrictionOnce(level: Int, detail: String? = null): Boolean {
+    if (localThrottleRestrictionAnnounced) return false
+    val sharedAnnounced = runCatching {
+        with(trafficMonitor) { throttleRestrictionAnnouncementSent() }
+    }.getOrElse {
+        logger.warning("读取同步限制播报状态失败，将使用本脚本保护状态：${it.message}")
+        false
+    }
+    if (sharedAnnounced) {
+        localThrottleRestrictionAnnounced = true
+        return false
+    }
+    val suffix = detail?.takeIf { it.isNotBlank() }?.let { "；$it" } ?: ""
+    val result = runCatching {
+        broadcast(
+            "[yellow][上行优化] 服务器上行压力过高，同步限制系统将介入，会启用挂机检测与同步限制；当前同步限制等级 [white]L${level.coerceAtLeast(1)}[yellow]$suffix。"
+                .with()
+        )
+    }
+    if (result.isSuccess) {
+        localThrottleRestrictionAnnounced = true
+        runCatching { with(trafficMonitor) { markThrottleRestrictionAnnouncementSent() } }.onFailure {
+            logger.warning("保存同步限制播报状态失败，本脚本仍会避免重复播报：${it.message}")
+        }
+        return true
+    }
+    val now = System.currentTimeMillis()
+    if (now - lastThrottleAnnouncementErrorMillis >= 30_000L) {
+        lastThrottleAnnouncementErrorMillis = now
+        logger.warning("同步限制启用广播失败，下一轮将重试：${result.exceptionOrNull()?.message}")
+    }
+    return false
+}
+
 fun pressureStatusText(): String {
     val s = currentPressure()
+    val sampleAgeMillis = (System.currentTimeMillis() - s.updatedAtMillis).coerceAtLeast(0L)
     return """
         |[cyan]性能模式：[white]${s.mode}
         |[cyan]性能等级：[white]${s.level}[]（TPS:${s.tpsLevel} / 游戏同步:${s.trafficLevel}）
@@ -430,6 +504,7 @@ fun pressureStatusText(): String {
         |[cyan]待加入/活动流/TCP拥塞：[white]${s.pendingJoins}/${s.activeStreams}/${s.congestedConnections}[]，最老等待 ${s.oldestPendingJoinMillis / 1000}s
         |[cyan]玩家/单位/子弹/同步实体：[white]${s.players}/${s.units}/${s.bullets}/${s.syncEntities}
         |[cyan]原因：[white]${s.reason}
+        |[cyan]最近采样：[white]${sampleAgeMillis / 1000}s 前
     """.trimMargin()
 }
 
@@ -446,6 +521,8 @@ listen<EventType.WorldLoadEvent> {
     lastBroadcastLevel = 0
     recoverSamples = 0
     resetDowngradeCandidate()
+    localThrottleRestrictionAnnounced = false
+    lastThrottleAnnouncementErrorMillis = 0L
 }
 
 listen<EventType.ResetEvent> {
@@ -455,13 +532,26 @@ listen<EventType.ResetEvent> {
     lastBroadcastLevel = 0
     recoverSamples = 0
     resetDowngradeCandidate()
+    localThrottleRestrictionAnnounced = false
+    lastThrottleAnnouncementErrorMillis = 0L
 }
 
 onEnable {
     launch(Dispatchers.game) {
         while (true) {
             delay(Duration.ofMillis(checkIntervalMillis.coerceAtLeast(1000L)).toMillis())
-            updatePressureSnapshot()
+            try {
+                updatePressureSnapshot()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // 任一反射/网络统计异常都只能影响本轮，不能让TPS压力判断永久停摆。
+                val now = System.currentTimeMillis()
+                if (now - lastUpdateErrorLogMillis >= 30_000L) {
+                    lastUpdateErrorLogMillis = now
+                    logger.warning("服务器压力采样异常，下一轮将继续：${e.message}")
+                }
+            }
         }
     }
 }
@@ -496,10 +586,12 @@ command("pressure", "查看/管理服务器压力判断") {
                 }
                 val thresholds = normalizeTpsThresholds(nums[0], nums[1], nums[2], nums[3], recover)
                 saveTpsThresholds(thresholds)
-                broadcast("[yellow][服务器压力] {operator} 已设置TPS压力阈值：[white]{thresholds}".with(
-                    "operator" to (player?.name ?: "控制台"),
-                    "thresholds" to thresholdText(thresholds),
-                ))
+                safePressureBroadcast("设置阈值") {
+                    broadcast("[yellow][服务器压力] {operator} 已设置TPS压力阈值：[white]{thresholds}".with(
+                        "operator" to (player?.name ?: "控制台"),
+                        "thresholds" to thresholdText(thresholds),
+                    ))
+                }
             }
             else -> replyUsage()
         }

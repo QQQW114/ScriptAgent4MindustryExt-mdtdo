@@ -3,6 +3,7 @@
 @file:Depends("coreMindustry/utilTextInput", "帖子文本输入")
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
 @file:Depends("wayzer/ext/playerReputation", "玩家赞踩")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.user
 
@@ -11,6 +12,7 @@ import wayzer.lib.ForumPostCreatedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.MdtTextFormat
 import wayzer.lib.PlayerData
+import wayzer.lib.ServerFeatureSettings
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -79,6 +81,16 @@ private val FORUM_DELETE_SHORT_WINDOW_MILLIS = 10 * 60_000L
 private val FORUM_CACHE_TTL_MILLIS = 30_000L
 private val FORUM_TIME_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
+
+private val FORUM_DISABLED_MESSAGE = "帖子系统已被关闭，请联系管理员"
+
+private fun forumEnabled(): Boolean = ServerFeatureSettings.getOrNull()?.forumEnabled() ?: true
+private fun socialActionsEnabled(): Boolean = ServerFeatureSettings.getOrNull()?.socialActionsEnabled() ?: true
+private fun ensureForumEnabled(player: Player): Boolean {
+    if (forumEnabled()) return true
+    player.sendMessage(FORUM_DISABLED_MESSAGE)
+    return false
+}
 
 private suspend fun <T> db(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
@@ -478,6 +490,7 @@ private fun forumCommentPageCached(postId: Int, offset: Int, limit: Int): MdtSto
 }
 
 private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     db { cleanupForumPostsIfNeeded() }
     val manager = canManageForum(player)
     var selectedPage = initialPage
@@ -521,6 +534,7 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
 }
 
 private suspend fun openForumFormatHelp(player: Player, backPostId: Int? = null, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     MenuBuilder<Unit>("帖子格式帮助") {
         msg = MdtTextFormat.helpText
         if (backPostId != null) option("返回帖子") { openForumPost(player, backPostId, sectionCode) }
@@ -530,6 +544,7 @@ private suspend fun openForumFormatHelp(player: Player, backPostId: Int? = null,
 }
 
 private suspend fun openForumPostHistoryMenu(player: Player) {
+    if (!ensureForumEnabled(player)) return
     val historyText = db { forumPostHistoryTextCached() }
     MenuBuilder<Unit>("帖子最近变更") {
         msg = """
@@ -543,6 +558,7 @@ private suspend fun openForumPostHistoryMenu(player: Player) {
 }
 
 private suspend fun openForumTrashMenu(player: Player, initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     if (!canAdminForum(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以查看帖子回收站。")
         return
@@ -578,6 +594,7 @@ private suspend fun openForumTrashMenu(player: Player, initialPage: Int = 1) {
 }
 
 private suspend fun openForumTrashPostMenu(player: Player, postId: Int, trashPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     if (!canAdminForum(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以管理帖子回收站。")
         return
@@ -623,6 +640,7 @@ private suspend fun openForumTrashPostMenu(player: Player, postId: Int, trashPag
 }
 
 private suspend fun confirmPurgeForumPost(player: Player, postId: Int, trashPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     if (!canAdminForum(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以彻底删除帖子。")
         return
@@ -649,6 +667,7 @@ private suspend fun confirmPurgeForumPost(player: Player, postId: Int, trashPage
 }
 
 private suspend fun openForumPostList(player: Player, sectionCode: String = "all", initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     db { cleanupForumPostsIfNeeded() }
     val section = db { forumSectionOrDefaultCached(sectionCode) }
     if (!canViewForumSection(player, section.code)) {
@@ -697,6 +716,7 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
 }
 
 private suspend fun openForumPost(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
         openForumPostList(player, sectionCode)
@@ -723,7 +743,7 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
                 |[gray]帖子 #[white]${post.id}[]  [gray]作者：[white]${post.authorName}[]  [gray]$time
                 |[gray]分区：[white]${postSection.name}
                 |${if (protected) "[red]保护锁：[white]已开启，仅4级/admin可编辑或删除" else "[gray]保护锁：未开启"}
-                |[gray]页数：[white]$selectedPage/${pages.size}[]  [gray]通过此页可直接为作者点赞/点踩。
+                |[gray]页数：[white]$selectedPage/${pages.size}[]${if (socialActionsEnabled()) "  [gray]通过此页可直接为作者点赞/点踩。" else ""}
                 |
                 |${pages[selectedPage - 1]}
             """.trimMargin()
@@ -732,15 +752,17 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
             option("$selectedPage/${pages.size}") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(pages.size); refresh() }
             newRow()
-            option("为作者点赞") {
-                val ok = with(reputation) { likePlayer(player, post.authorUid, post.authorName) }
-                if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "like") }) clearForumCache()
-                openForumPost(player, post.id, sectionCode, selectedPage)
-            }
-            option("为作者点踩") {
-                val ok = with(reputation) { dislikePlayer(player, post.authorUid, post.authorName) }
-                if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "dislike") }) clearForumCache()
-                openForumPost(player, post.id, sectionCode, selectedPage)
+            if (socialActionsEnabled()) {
+                option("为作者点赞") {
+                    val ok = with(reputation) { likePlayer(player, post.authorUid, post.authorName) }
+                    if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "like") }) clearForumCache()
+                    openForumPost(player, post.id, sectionCode, selectedPage)
+                }
+                option("为作者点踩") {
+                    val ok = with(reputation) { dislikePlayer(player, post.authorUid, post.authorName) }
+                    if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "dislike") }) clearForumCache()
+                    openForumPost(player, post.id, sectionCode, selectedPage)
+                }
             }
             newRow()
             option("发布评论") { createForumCommentFlow(player, post.id, sectionCode) }
@@ -782,6 +804,7 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
 }
 
 private suspend fun shareForumPostToChat(player: Player, postId: Int, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
         openForumPostList(player, sectionCode)
@@ -806,6 +829,7 @@ private suspend fun shareForumPostToChat(player: Player, postId: Int, sectionCod
 }
 
 private suspend fun openForumComments(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
         openForumPostList(player, sectionCode)
@@ -850,6 +874,7 @@ private suspend fun openForumComments(player: Player, postId: Int, sectionCode: 
 }
 
 private suspend fun createForumPostFlow(player: Player, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     if (!canUseForum(player)) {
         player.sendMessage("[yellow]等级不足：1级及以上玩家才能发布帖子。")
         return
@@ -901,6 +926,7 @@ private suspend fun createForumPostFlow(player: Player, sectionCode: String = "a
 }
 
 private suspend fun createForumCommentFlow(player: Player, postId: Int, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     if (!canUseForum(player)) {
         player.sendMessage("[yellow]等级不足：1级及以上玩家才能评论。")
         return
@@ -941,6 +967,7 @@ private suspend fun createForumCommentFlow(player: Player, postId: Int, sectionC
 }
 
 private suspend fun editForumPostFlow(player: Player, postId: Int, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
         openForumPostList(player, sectionCode)
@@ -991,6 +1018,7 @@ private suspend fun editForumPostFlow(player: Player, postId: Int, sectionCode: 
 }
 
 private suspend fun confirmDeleteForumPost(player: Player, postId: Int, sectionCode: String = "all") {
+    if (!ensureForumEnabled(player)) return
     if (!canManageForum(player)) {
         player.sendMessage("[red]权限不足：只有3+级玩家与管理员可以删除帖子。")
         return
@@ -1037,6 +1065,7 @@ private suspend fun confirmDeleteForumPost(player: Player, postId: Int, sectionC
 }
 
 private suspend fun openForumSectionManageMenu(player: Player, initialPage: Int = 1) {
+    if (!ensureForumEnabled(player)) return
     if (!canManageForum(player)) {
         player.sendMessage("[red]权限不足：只有3+级玩家与管理员可以管理帖子分区。")
         return
@@ -1072,6 +1101,7 @@ private suspend fun openForumSectionManageMenu(player: Player, initialPage: Int 
 }
 
 private suspend fun openForumSectionEditMenu(player: Player, sectionCode: String) {
+    if (!ensureForumEnabled(player)) return
     if (!canManageForum(player)) {
         player.sendMessage("[red]权限不足：只有3+级玩家与管理员可以管理帖子分区。")
         return
@@ -1098,6 +1128,7 @@ private suspend fun openForumSectionEditMenu(player: Player, sectionCode: String
 }
 
 private suspend fun editForumSectionFlow(player: Player, fixedCode: String?) {
+    if (!ensureForumEnabled(player)) return
     if (!canManageForum(player)) {
         player.sendMessage("[red]权限不足：只有3+级玩家与管理员可以管理帖子分区。")
         return
@@ -1177,6 +1208,7 @@ command("posts", "打开帖子列表") {
     attr(ClientOnly)
     body {
         val player = player!!
+        if (!ensureForumEnabled(player)) return@body
         when (val sub = arg.firstOrNull()) {
             null -> openForumIndex(player)
             "new", "add", "发布", "发帖" -> createForumPostFlow(player)

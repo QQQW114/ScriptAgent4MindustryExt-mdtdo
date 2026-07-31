@@ -1,5 +1,6 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.ext
 
@@ -7,6 +8,7 @@ import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.PlayerRecognizedEvent
 import wayzer.lib.RecognitionChangedEvent
+import wayzer.lib.ServerFeatureSettings
 import java.time.LocalDate
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
@@ -58,6 +60,10 @@ private fun resolveRecognitionTarget(text: String): Pair<String, String> {
 }
 
 fun recognizePlayer(viewer: Player, targetUid: String, targetName: String) {
+    if (ServerFeatureSettings.getOrNull()?.socialActionsEnabled() == false) {
+        viewer.sendMessage("[yellow]点赞/点踩/认可功能已被关闭，请联系管理员。")
+        return
+    }
     pruneOldDailyRecognitions()
 
     val fromUid = PlayerData[viewer].id

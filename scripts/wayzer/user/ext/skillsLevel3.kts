@@ -137,12 +137,12 @@ private suspend fun openSupplyItemMenu(caster: Player) {
         return
     }
     PagedMenuBuilder(items) { item ->
-        option("${item.emoji()} ${item.localizedName}\n[gray]${item.name}；消耗10 MDC，为本队核心+100") {
+        option("${item.emoji()} ${item.localizedName}\n[gray]${item.name}；消耗15 MDC，为本队核心+100") {
             RootCommands.handleInput("/skill supplyitem ${item.name}", caster, "/")
         }
     }.apply {
         title = "选择物资补给"
-        msg = "[cyan]选择一种当前内容列表中的物资；确认后消耗 [gold]10 MDC[cyan]，为你所在队伍核心添加 [gold]100[cyan] 该物资。"
+        msg = "[cyan]选择一种当前内容列表中的物资；确认后消耗 [gold]15 MDC[cyan]，为你所在队伍核心添加 [gold]100[cyan] 该物资。"
         sendTo(caster, 60_000)
     }
 }
@@ -350,7 +350,7 @@ command("blitz", "3级技能：骇人空袭".with(), commands = SkillCommands) {
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
         val source = player.unit() ?: returnReply("[red]无法获取当前单位".with())
-        if (!spendSkillCost(player, 10, "blitz")) returnReply("[red]MDC不足：骇人空袭需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "blitz")) returnReply("[red]MDC不足：骇人空袭需要 15 MDC".with())
         val team = player.team()
         val target = clampedAimTarget(source, 360f)
         launch(Dispatchers.game) {
@@ -371,7 +371,7 @@ command("antiarmor", "3级技能：反装甲炮击".with(), commands = SkillComm
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown(300_000))
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 15, "antiarmor")) returnReply("[red]MDC不足：反装甲炮击需要 15 MDC".with())
+        if (!spendSkillCost(player, 23, "antiarmor")) returnReply("[red]MDC不足：反装甲炮击需要 23 MDC".with())
         val x = player.mouseX
         val y = player.mouseY
         val team = player.team()
@@ -396,7 +396,7 @@ command("pddCut", "3级技能：拼夕夕砍一刀".with(), commands = SkillComm
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 10, "pddCut")) returnReply("[red]MDC不足：拼夕夕砍一刀需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "pddCut")) returnReply("[red]MDC不足：拼夕夕砍一刀需要 15 MDC".with())
         damageAllUnits(0.9f)
         broadcastSkill("拼夕夕砍一刀")
     }
@@ -407,7 +407,7 @@ command("disaster", "3级技能：天灾".with(), commands = SkillCommands) {
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 10, "disaster")) returnReply("[red]MDC不足：天灾需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "disaster")) returnReply("[red]MDC不足：天灾需要 15 MDC".with())
         val weather = randomWeather()
         Call.createWeather(weather, 1f, 120f * 60f, 0f, 0f)
         launch(Dispatchers.game) {
@@ -425,7 +425,7 @@ command("redLightGreenLight", "3级技能：123木头人".with(), commands = Ski
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 10, "redLightGreenLight")) returnReply("[red]MDC不足：123木头人需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "redLightGreenLight")) returnReply("[red]MDC不足：123木头人需要 15 MDC".with())
         Groups.unit.toList().forEach {
             it.apply(StatusEffects.disarmed, 5f * 60f)
             it.apply(StatusEffects.unmoving, 5f * 60f)
@@ -446,7 +446,7 @@ command("gaokao", "3级技能：参加高考".with(), commands = SkillCommands) 
         if (MdtStorage.getSetting(key) == today) {
             returnReply("[yellow]今天已经参加过高考了，明天再来吧。".with())
         }
-        if (!spendSkillCost(player, 20, "gaokao")) returnReply("[red]MDC不足：参加高考需要 20 MDC".with())
+        if (!spendSkillCost(player, 30, "gaokao")) returnReply("[red]MDC不足：参加高考需要 30 MDC".with())
         MdtStorage.setSetting(key, today)
 
         val score = Random.nextInt(0, 751)
@@ -503,7 +503,7 @@ command("omg", "3级技能：omg".with(), commands = SkillCommands) {
         if (!soundEffects.hasFixedSoundEffect("omg")) {
             returnReply("[red]未找到小音效 omg.ogg，请检查服务器 assets/sounds。".with())
         }
-        if (!spendSkillCost(player, 15, "omg")) returnReply("[red]MDC不足：omg需要 15 MDC".with())
+        if (!spendSkillCost(player, 23, "omg")) returnReply("[red]MDC不足：omg需要 23 MDC".with())
         val result = soundEffects.playFixedSoundEffect("omg", player.name, ignoreInterval = true)
         if (!result.startsWith("[green]")) player.sendMessage(result)
         broadcastSkill("omg")
@@ -516,7 +516,7 @@ command("standarddefense", "3级技能：标准预制防线".with(), commands = 
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
         prefabAreaError(player, -2..3, "标准预制防线")?.let { returnReply(it.with()) }
-        if (!spendSkillCost(player, 15, "standarddefense")) returnReply("[red]MDC不足：标准预制防线需要 15 MDC".with())
+        if (!spendSkillCost(player, 23, "standarddefense")) returnReply("[red]MDC不足：标准预制防线需要 23 MDC".with())
         launch(Dispatchers.game) { buildStandardPrefabDefense(player) }
         broadcastSkill("标准预制防线")
     }
@@ -524,12 +524,15 @@ command("standarddefense", "3级技能：标准预制防线".with(), commands = 
 
 command("missileVolley", "3级技能：导弹齐射".with(), commands = SkillCommands) {
     aliases = listOf("导弹齐射", "导弹雨", "missilevolley")
-    attr(SkillPrecheckLevel3); attr(SkillNoPvp)
+    attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
+        if (player.dead() || !player.unit().type.targetable) {
+            returnReply("[red]当前单位无法使用导弹齐射；E星的 evoke/incite/emanate 三种核心机不可使用。".with())
+        }
         val missileType = unitTypeByName("scathe-missile-surge")
             ?: returnReply("[red]未找到单位 scathe-missile-surge，无法释放导弹齐射".with())
-        if (!spendSkillCost(player, 10, "missilevolley")) returnReply("[red]MDC不足：导弹齐射需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "missilevolley")) returnReply("[red]MDC不足：导弹齐射需要 15 MDC".with())
         spawnAround(missileType, player, 10, 24f) { it.rotation(Random.nextFloat() * 360f) }
         broadcastSkill("导弹齐射")
     }
@@ -549,7 +552,7 @@ command("supplyitem", "3级技能：物资补给".with(), commands = SkillComman
         val item = resolveSupplyItem(itemText)
             ?: returnReply("[red]未找到物资：$itemText。请直接打开菜单选择当前可用物资。".with())
         val core = player.team().core() ?: returnReply("[red]当前队伍没有核心，无法添加物资。".with())
-        if (!spendSkillCost(player, 10, "supplyitem")) returnReply("[red]MDC不足：物资补给需要 10 MDC".with())
+        if (!spendSkillCost(player, 15, "supplyitem")) returnReply("[red]MDC不足：物资补给需要 15 MDC".with())
         core.items.add(item, 100)
         player.sendMessage("[green]已为本队核心添加 ${item.emoji()} [white]${item.localizedName} [gold]x100[white]。")
         broadcastSkill("物资补给(${item.localizedName}x100)")
@@ -563,7 +566,7 @@ command("randommaga", "3级技能：随机maga".with(), commands = SkillCommands
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
         val block = randomMegaPayloadBlock()
             ?: returnReply("[red]当前内容列表中没有有效建筑方块，无法召唤随机maga。".with())
-        if (!spendSkillCost(player, 20, "randommaga")) returnReply("[red]MDC不足：随机maga需要 20 MDC".with())
+        if (!spendSkillCost(player, 30, "randommaga")) returnReply("[red]MDC不足：随机maga需要 30 MDC".with())
         summonPayloadMega(player, block)
         broadcast(
             "[cyan]{player.name}[white]召唤了随机maga，载荷为：[accent]{block}[white]！".with(
@@ -580,7 +583,7 @@ command("nuke", "3级技能：核弹打击".with(), commands = SkillCommands) {
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 20, "nuke")) returnReply("[red]MDC不足：核弹打击需要 20 MDC".with())
+        if (!spendSkillCost(player, 60, "nuke")) returnReply("[red]MDC不足：核弹打击需要 60 MDC".with())
         val x = player.mouseX
         val y = player.mouseY
         val tileX = (x / Vars.tilesize).roundToInt()
@@ -606,7 +609,7 @@ command("refreshskills", "3级技能：刷新技能".with(), commands = SkillCom
     attr(SkillPrecheckLevel3); attr(SkillNoPvp); attr(SkillCooldown(300_000))
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 100, "refreshskills")) returnReply("[red]MDC不足：刷新技能需要 100 MDC".with())
+        if (!spendSkillCost(player, 150, "refreshskills")) returnReply("[red]MDC不足：刷新技能需要 150 MDC".with())
         SkillCommands.allCooldown.forEach { it.reset(player) }
         broadcastSkill("刷新技能")
     }
@@ -628,7 +631,7 @@ command("tietie", "3级技能：贴贴".with(), commands = SkillCommands) {
             returnReply("[yellow]贴贴至少需要两个人，不能只和自己贴贴。".with())
         }
         if (target.dead()) returnReply("[red]目标处于死亡状态，无法贴贴。".with())
-        if (!spendSkillCost(player, 100, "tietie")) returnReply("[red]MDC不足：贴贴需要 100 MDC".with())
+        if (!spendSkillCost(player, 150, "tietie")) returnReply("[red]MDC不足：贴贴需要 150 MDC".with())
         broadcast("[pink]{caster.name}[white]向[pink]{target.name}[white]发送了贴贴请求！".with("caster" to player, "target" to target), quite = true)
         val accepted = askTietieAccept(player, target)
         if (accepted == true) startTietieSuccess(player, target) else startTietieFailure(player, target)

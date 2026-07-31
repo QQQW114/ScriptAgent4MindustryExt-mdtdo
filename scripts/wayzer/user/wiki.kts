@@ -1,4 +1,5 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("coreMindustry/menu", "Wiki菜单")
 @file:Depends("coreMindustry/utilTextInput", "Wiki文本输入")
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
@@ -8,9 +9,12 @@ package wayzer.user
 import coreMindustry.MenuBuilder
 import cf.wayzer.placehold.PlaceHoldApi.with
 import mindustry.gen.Groups
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.MdtTextFormat
 import wayzer.lib.PlayerData
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -71,6 +75,14 @@ private data class WikiTimedCache<T>(
 private val wikiSummaryPageCache = mutableMapOf<String, WikiTimedCache<WikiSummaryPage>>()
 private val wikiPageCache = mutableMapOf<String, WikiTimedCache<WikiPage?>>()
 private val wikiHistoryTextCache = mutableMapOf<String, WikiTimedCache<String>>()
+
+private fun wikiEnabled(): Boolean = isDatabaseFeatureEnabled(DatabaseFeature.Wiki)
+
+private fun ensureWikiEnabled(player: Player): Boolean {
+    if (wikiEnabled()) return true
+    player.sendMessage("[yellow]Wiki系统已被关闭，请联系管理员。")
+    return false
+}
 
 private suspend fun <T> db(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
@@ -474,11 +486,24 @@ private suspend fun askWikiText(
 }
 
 private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     val manager = canManageWiki(player)
     var selectedPage = initialPage
     object : MenuBuilder<Unit>(false) {
         override suspend fun build() {
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             val pageData = db { listWikiSummariesPagedCached(selectedPage, WIKI_LIST_PAGE_SIZE) }
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             selectedPage = pageData.page
             val totalPage = pageData.totalPage
             val pageItems = pageData.items
@@ -512,11 +537,13 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
 }
 
 private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     val page = db { getWikiPageCached(id) } ?: run {
         player.sendMessage("[yellow]未找到Wiki页面：$id")
         openWikiIndex(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     val manager = canManageWiki(player)
     val adminWiki = canAdminWiki(player)
     val protected = db { isWikiProtected(page.id) }
@@ -525,6 +552,12 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
     var selectedPage = initialPage
     object : MenuBuilder<Unit>(false) {
         override suspend fun build() {
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             selectedPage = selectedPage.coerceIn(1, bodyPages.size)
             title = page.title
             msg = """
@@ -543,6 +576,7 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
             newRow()
             if (canEdit) option("编辑此页") { openWikiEditMenu(player, page.id) }
             if (adminWiki) option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
+                if (!ensureWikiEnabled(player)) return@option
                 if (db { setWikiProtected(page.id, !protected) }) {
                     player.sendMessage(if (protected) "[green]已解除Wiki保护锁" else "[green]已设置Wiki保护锁，4级以下不可编辑/删除")
                 } else {
@@ -557,11 +591,13 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
 }
 
 private suspend fun shareWikiPageToChat(player: Player, id: String) {
+    if (!ensureWikiEnabled(player)) return
     val page = db { getWikiPageCached(id) } ?: run {
         player.sendMessage("[yellow]未找到Wiki页面：$id")
         openWikiIndex(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     val message = "[cyan][Wiki分享] [white]{player.name}[cyan] 分享了 Wiki [gold]{title}[cyan]（ID: [white]{id}[cyan]）。[gray]输入 [gold]/wiki {id}[] 快速打开。".with(
         "player" to player,
         "title" to compactLine(page.title, 36),
@@ -573,6 +609,7 @@ private suspend fun shareWikiPageToChat(player: Player, id: String) {
 }
 
 private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {
+    if (!ensureWikiEnabled(player)) return
     MenuBuilder<Unit>("Wiki格式帮助") {
         msg = MdtTextFormat.helpText
         if (backId != null) option("返回编辑") { openWikiEditMenu(player, backId) }
@@ -582,11 +619,13 @@ private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {
 }
 
 private suspend fun openWikiHistoryMenu(player: Player, id: String) {
+    if (!ensureWikiEnabled(player)) return
     val data = db { getWikiPageCached(id)?.let { it to wikiHistoryTextCached(it.id) } } ?: run {
         player.sendMessage("[yellow]未找到Wiki页面：$id")
         openWikiIndex(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     val page = data.first
     val historyText = data.second
     MenuBuilder<Unit>("Wiki最近修改：${page.title}") {
@@ -602,6 +641,7 @@ private suspend fun openWikiHistoryMenu(player: Player, id: String) {
 }
 
 private suspend fun createWikiFlow(player: Player) {
+    if (!ensureWikiEnabled(player)) return
     if (!canManageWiki(player)) {
         player.sendMessage("[red]权限不足：只有3+级与管理员可以编辑Wiki")
         return
@@ -613,6 +653,7 @@ private suspend fun createWikiFlow(player: Player) {
         openWikiManageMenu(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     if (db { getWikiSummary(id) != null }) {
         player.sendMessage("[yellow]该ID已存在：$id")
         openWikiManageMenu(player)
@@ -635,6 +676,7 @@ private suspend fun createWikiFlow(player: Player) {
         openWikiManageMenu(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     val editorName = player.plainName()
     val saved = db { saveWikiPage(id, title, body, editorName, "新增") }
     if (saved == null) {
@@ -647,6 +689,7 @@ private suspend fun createWikiFlow(player: Player) {
 }
 
 private suspend fun openWikiEditMenu(player: Player, id: String) {
+    if (!ensureWikiEnabled(player)) return
     if (!canManageWiki(player)) {
         player.sendMessage("[red]权限不足：只有3+级与管理员可以编辑Wiki")
         return
@@ -656,6 +699,7 @@ private suspend fun openWikiEditMenu(player: Player, id: String) {
         openWikiManageMenu(player)
         return
     }
+    if (!ensureWikiEnabled(player)) return
     val page = data.first
     val historyText = data.second
     val protected = db { isWikiProtected(page.id) }
@@ -678,6 +722,7 @@ private suspend fun openWikiEditMenu(player: Player, id: String) {
         """.trimMargin()
         option("修改标题") {
             val newTitle = askWikiText(player, "修改Wiki标题", "当前标题：${page.title}", default = page.title, limit = WIKI_MAX_TITLE_LENGTH)
+            if (!ensureWikiEnabled(player)) return@option
             val editorName = player.plainName()
             if (newTitle != null && db { saveWikiPage(page.id, newTitle, page.body, editorName, "修改标题") } != null)
                 player.sendMessage("[green]已修改标题")
@@ -691,6 +736,7 @@ private suspend fun openWikiEditMenu(player: Player, id: String) {
                 default = page.body,
                 limit = WIKI_MAX_BODY_LENGTH,
             )
+            if (!ensureWikiEnabled(player)) return@option
             val editorName = player.plainName()
             if (newBody != null && db { saveWikiPage(page.id, page.title, newBody, editorName, "修改正文") } != null)
                 player.sendMessage("[green]已修改正文")
@@ -700,6 +746,7 @@ private suspend fun openWikiEditMenu(player: Player, id: String) {
         option("格式帮助") { openWikiFormatHelp(player, page.id) }
         newRow()
         if (adminWiki) option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
+            if (!ensureWikiEnabled(player)) return@option
             if (db { setWikiProtected(page.id, !protected) }) {
                 player.sendMessage(if (protected) "[green]已解除Wiki保护锁" else "[green]已设置Wiki保护锁，4级以下不可编辑/删除")
             } else {
@@ -716,6 +763,7 @@ private suspend fun openWikiEditMenu(player: Player, id: String) {
 }
 
 private suspend fun confirmDeleteWiki(player: Player, id: String) {
+    if (!ensureWikiEnabled(player)) return
     if (!canManageWiki(player)) {
         player.sendMessage("[red]权限不足：只有3+级与管理员可以删除Wiki")
         return
@@ -745,6 +793,7 @@ private suspend fun confirmDeleteWiki(player: Player, id: String) {
                     openWikiEditMenu(player, page.id)
                     return@option
                 }
+            if (!ensureWikiEnabled(player)) return@option
             val actorName = player.plainName()
             if (db { deleteWikiPage(page.id) }) {
                 db {
@@ -762,6 +811,7 @@ private suspend fun confirmDeleteWiki(player: Player, id: String) {
 }
 
 private suspend fun openWikiTrashMenu(player: Player, initialPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     if (!canAdminWiki(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以查看Wiki回收站。")
         return
@@ -769,7 +819,19 @@ private suspend fun openWikiTrashMenu(player: Player, initialPage: Int = 1) {
     var selectedPage = initialPage
     object : MenuBuilder<Unit>(false) {
         override suspend fun build() {
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             val pageData = db { listWikiTrashSummariesPaged(selectedPage, WIKI_LIST_PAGE_SIZE) }
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             selectedPage = pageData.page
             val totalPage = pageData.totalPage
             val pageItems = pageData.items
@@ -798,6 +860,7 @@ private suspend fun openWikiTrashMenu(player: Player, initialPage: Int = 1) {
 }
 
 private suspend fun openWikiTrashPageMenu(player: Player, id: String, trashPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     if (!canAdminWiki(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以管理Wiki回收站。")
         return
@@ -823,6 +886,7 @@ private suspend fun openWikiTrashPageMenu(player: Player, id: String, trashPage:
             |[gray]正文预览：${compactLine(page.body, 80)}
         """.trimMargin()
         option("恢复Wiki") {
+            if (!ensureWikiEnabled(player)) return@option
             if (db { restoreWikiPage(page.id) }) {
                 clearWikiCache(page.id)
                 player.sendMessage("[green]已恢复Wiki：[white]${page.title}")
@@ -840,6 +904,7 @@ private suspend fun openWikiTrashPageMenu(player: Player, id: String, trashPage:
 }
 
 private suspend fun confirmPurgeWikiPage(player: Player, id: String, trashPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     if (!canAdminWiki(player)) {
         player.sendMessage("[red]权限不足：只有4级/admin可以彻底删除Wiki。")
         return
@@ -857,6 +922,7 @@ private suspend fun confirmPurgeWikiPage(player: Player, id: String, trashPage: 
     MenuBuilder<Unit>("彻底删除Wiki") {
         msg = "[red]确认彻底删除Wiki：[white]${page.title}[]？\n[gray]此操作会删除正文、摘要、历史和删除记录，无法从回收站恢复。"
         option("确认彻底删除") {
+            if (!ensureWikiEnabled(player)) return@option
             if (db { purgeWikiPage(page.id) }) {
                 clearWikiCache(page.id)
                 player.sendMessage("[green]已彻底删除Wiki：[white]${page.title}")
@@ -870,6 +936,7 @@ private suspend fun confirmPurgeWikiPage(player: Player, id: String, trashPage: 
 }
 
 private suspend fun openWikiManageMenu(player: Player, initialPage: Int = 1) {
+    if (!ensureWikiEnabled(player)) return
     if (!canManageWiki(player)) {
         player.sendMessage("[red]权限不足：只有3+级与管理员可以编辑Wiki")
         return
@@ -877,7 +944,19 @@ private suspend fun openWikiManageMenu(player: Player, initialPage: Int = 1) {
     var selectedPage = initialPage
     object : MenuBuilder<Unit>(false) {
         override suspend fun build() {
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             val pageData = db { listWikiSummariesPagedCached(selectedPage, WIKI_LIST_PAGE_SIZE) }
+            if (!wikiEnabled()) {
+                title = "Wiki已关闭"
+                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+                option("关闭") {}
+                return
+            }
             selectedPage = pageData.page
             val totalPage = pageData.totalPage
             val pageItems = pageData.items
@@ -906,17 +985,25 @@ private suspend fun openWikiManageMenu(player: Player, initialPage: Int = 1) {
 }
 
 private fun seedInitialWikiIfNeeded() {
+    if (!wikiEnabled()) return
     if (MdtStorage.getSetting(WIKI_SEEDED_KEY) == "true") return
+    if (!wikiEnabled()) return
     if (getWikiPage(initialWikiId) == null) {
+        if (!wikiEnabled()) return
         saveWikiPage(initialWikiId, initialWikiTitle, initialWikiBody, null)
     }
+    if (!wikiEnabled()) return
     MdtStorage.setSetting(WIKI_SEEDED_KEY, "true")
 }
 
 onEnable {
-    launch(Dispatchers.IO) {
-        seedInitialWikiIfNeeded()
-    }
+    if (wikiEnabled()) launch(Dispatchers.IO) { seedInitialWikiIfNeeded() }
+}
+
+listenTo<DatabaseFeatureChangedEvent> {
+    if (feature != DatabaseFeature.Wiki) return@listenTo
+    clearWikiCache()
+    if (newEnabled) launch(Dispatchers.IO) { seedInitialWikiIfNeeded() }
 }
 
 command("wiki", "打开Wiki列表") {
@@ -925,6 +1012,7 @@ command("wiki", "打开Wiki列表") {
     attr(ClientOnly)
     body {
         val player = player!!
+        if (!ensureWikiEnabled(player)) return@body
         when (val sub = arg.firstOrNull()) {
             null -> openWikiIndex(player)
             "share", "分享" -> {
@@ -943,6 +1031,7 @@ command("wikiadmin", "Wiki管理：新增/编辑/保护/回收Wiki页面") {
     attr(ClientOnly)
     body {
         val player = player!!
+        if (!ensureWikiEnabled(player)) return@body
         if (!canManageWiki(player)) {
             returnReply("[red]权限不足：只有3+级与管理员可以编辑Wiki".with())
         }

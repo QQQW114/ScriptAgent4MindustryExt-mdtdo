@@ -310,7 +310,7 @@ onEnable {
     }
 
     val script = this
-    VoteEvent.VoteCommands += CommandInfo(script, "perf", "[cyan]性能优化开关[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "perf", "[cyan]常驻性能保护[gray]（需50%同意）") {
         aliases = listOf("性能优化", "性能保护")
         usage = "<on|off|status>"
         permission = "wayzer.vote.perf"

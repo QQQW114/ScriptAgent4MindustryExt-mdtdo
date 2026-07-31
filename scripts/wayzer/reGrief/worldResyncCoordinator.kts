@@ -1,4 +1,3 @@
-@file:Depends("wayzer/map/serverPressure", "网络压力状态")
 @file:Depends("wayzer/reGrief/trafficMonitor", "上行状态展示")
 
 package wayzer.reGrief
@@ -11,17 +10,14 @@ import mindustry.game.EventType
 import mindustry.gen.Call
 import mindustry.gen.Player
 import mindustry.net.NetConnection
-import wayzer.map.ServerPressure
 
 name = "v159世界与资产重同步协调器"
 
-private val pressure = contextScript<ServerPressure>()
 private val trafficMonitor = contextScript<TrafficMonitor>()
 private val defaultTimeoutMillis by config.key(120_000L, "等待客户端重新确认世界的默认超时(ms)")
 private val queueTimeoutMillis by config.key(180_000L, "内部重同步最长排队时间(ms)")
 private val orphanHoldMillis by config.key(120_000L, "确认超时后继续占用同步槽位的最长时间(ms)")
 private val recoveryMillis by config.key(2_500L, "每次完整同步后的统一上行恢复间隔(ms)")
-private val stalePressureFailOpenMillis by config.key(20_000L, "压力状态过期后自动放行(ms)")
 private val maxQueuedTasks by config.key(32, "内部完整重同步全局队列上限")
 
 private data class QueueTask(
@@ -65,27 +61,6 @@ private fun priorityFor(reason: String): Int = when {
     else -> 150
 }
 
-private fun pendingInitialJoins(): Int = net.connections.count {
-    it.isConnected && it.hasBegunConnecting && !it.hasConnected && !it.hasDisconnected &&
-        active?.task?.connection !== it
-}
-
-private fun pressureFresh(): Boolean {
-    val snapshot = with(pressure) { currentPressure() }
-    return System.currentTimeMillis() - snapshot.updatedAtMillis <= stalePressureFailOpenMillis.coerceAtLeast(5_000L)
-}
-
-private fun canStartInternal(): Boolean {
-    if (!pressureFresh()) return true
-    val level = with(pressure) { currentPressure().networkLevel }
-    val initial = pendingInitialJoins()
-    return when {
-        level <= 0 -> true
-        level == 1 -> initial < 2 // L1共享总槽位2，内部任务自身占1个。
-        else -> initial == 0     // L2+全服最多一个完整世界/资产流，首次加入优先。
-    }
-}
-
 private fun cancelQueued(predicate: (QueueTask) -> Boolean) {
     val removed = queue.filter(predicate)
     queue.removeAll(removed.toSet())
@@ -95,7 +70,7 @@ private fun cancelQueued(predicate: (QueueTask) -> Boolean) {
 private fun pumpQueue() {
     publishStatus()
     if (!enabled || active != null || reserved != null || queue.isEmpty()) return
-    if (System.currentTimeMillis() < recoveryUntil || !canStartInternal()) return
+    if (System.currentTimeMillis() < recoveryUntil) return
     cancelQueued { it.epoch != worldEpoch || !it.connection.isConnected || it.connection.hasDisconnected }
     val next = queue.sortedWith(compareByDescending<QueueTask> { it.priority }.thenBy { it.sequence }).firstOrNull() ?: return
     queue.remove(next)
@@ -105,7 +80,6 @@ private fun pumpQueue() {
 }
 
 fun isWorldResyncActive(): Boolean = active != null || reserved != null
-fun internalTransferSlotCount(): Int = if (isWorldResyncActive() || System.currentTimeMillis() < recoveryUntil) 1 else 0
 fun queuedResyncCount(): Int = queue.size
 fun activeResyncReason(): String? = active?.task?.reason ?: reserved?.reason
 

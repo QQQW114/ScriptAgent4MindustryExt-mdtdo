@@ -33,7 +33,7 @@ private suspend fun startCompatVote(starter: Player, enable: Boolean): Boolean {
 
 onEnable {
     val script = this
-    VoteEvent.VoteCommands += CommandInfo(script, "xperf", "[cyan]统一性能优化旧入口[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "xperf", "[cyan]性能保护兼容入口[gray]（需50%同意）") {
         aliases = listOf("实验性性能优化", "强力性能优化")
         usage = "<on|off|status>"
         permission = "wayzer.vote.xperf"

@@ -6,18 +6,19 @@
 - `/helps`：`/help` 的兼容别名。
 - `/help <页码>`：打开传统完整指令列表的指定页。
 - `/help -v`：在有 `command.detail` 权限时打开带详细信息的完整指令列表。
-- `/vote`：打开投票指令列表；列表仍不进入全局 `/help` 分区菜单，但投票项会按类型给指令名着色，并把用法行标成 `[yellow]`。
+- `/vote`：打开投票子指令列表；每项只显示一行带颜色的简短说明和一行完整指令，普通视图不再堆叠别名/脚本等低频信息。
 
 ## 当前分区
 
 - **玩家指令**：账号注册/登录/改密/注销、玩家信息、私聊、成就、排行榜、帖子列表、Wiki、Tips提示、服务器点歌、称号、随机变换形态、认可、MDC查询/转账/红包、资历等级/在线时长、地图列表/详情、集合、PVP全体聊天、观察者、跨服传送、积分板、语言、历史查询、自动存档槽、颜色/粒子/像素画工具、服务器状态、估算上行、服务器压力、3+队伍管理等常用玩家功能。
-- **投票指令**：`/vote` 入口及投降/结束、立即换图（51%同意）、下次自动轮换地图（51%同意）、回档、踢出、旧 `/votekick` 兼容、强制观战、创建存档、跳波、暂停/调整/取消暂停波次、清理建筑记录、自定义文本投票、外部 CP 加载/卸载、banmap、今日 PVP、性能优化、暂停/继续游戏、投票击杀单位、标准无限火力/无限火力promax、反应堆爆炸开关、一票否决等相关入口。
+- **投票指令**：`/vote` 入口及投降/结束、立即换图（51%同意）、下次自动轮换地图（51%同意）、回档、踢出、旧 `/votekick` 兼容、强制观战、创建存档、跳波、暂停/调整/取消暂停波次、清理建筑记录、自定义文本投票、外部 CP 加载/卸载、banmap、今日 PVP、性能优化、暂停/继续游戏、投票击杀单位、标准无限火力/无限火力promax、反应堆爆炸开关、当前局纯净模式开关、一票否决等相关入口。
 - **帖子列表**：快捷打开 `/posts`，作为根菜单直接入口。
 - **商店列表**：快捷打开 `/shop`。
 - **技能指令**：快捷打开 `/skill`。
-- **管理指令**：仅显示当前玩家有权限看到的管理项，例如安全风控、`[危险]服务器测试模式`、管理员频道、服务器介绍轮播、服务器小音效、服务器点歌、管理员技能入口、设置脚下方块/地板、区域填充、单位效果、名字后缀标记、击杀/传送选择器单位、封禁账号/IP、最近玩家面板、CP列表/外部CP、世界处理器/静默世界处理器、换图、资源站代理、加载/关闭/查看地图脚本、结束游戏、强制观战、强制观战高人数清理、禁言/禁建、信任等级/资历等级/在线时长/MDC/账号/IP防熊/地区查询/地图筛选/性能优化管理、暂停/继续游戏、上行预算、服务器压力、人数上限、Wiki/帖子保护与回收站、ScriptAgent 脚本控制等。
+- **管理指令**：仅显示当前玩家有权限看到的管理项，例如安全风控、服务器功能设置、数据库业务总开关与九个子开关、管理员频道、服务器介绍轮播、服务器小音效、服务器点歌、管理员技能入口、设置脚下方块/地板、区域填充、单位效果、名字后缀标记、击杀/传送选择器单位、封禁账号/IP、最近玩家面板、CP列表/外部CP、世界处理器/静默世界处理器、换图、资源站代理、加载/关闭/查看地图脚本、结束游戏、强制观战、强制观战高人数清理、禁言/禁建、信任等级/资历等级/在线时长/MDC/账号/IP防熊/地区查询/地图筛选/性能优化管理、暂停/继续游戏、上行预算、服务器压力、人数上限、Wiki/帖子保护与回收站、ScriptAgent 脚本控制等。
 - **其他指令**：点击后动态加载当前可见但尚未纳入固定分区的指令。
 - **Wiki列表**：快捷打开 `/wiki`；如果脚本未加载才会提示暂未开放。
+- **搜索指令**：输入指令名、别名、中文说明、usage 或脚本 ID 关键字，列出当前玩家实际有权查看/使用的匹配项。
 - **完整指令列表**：点击后动态加载传统完整列表兜底入口。
 
 ## 性能注意
@@ -25,8 +26,10 @@
 - 顶层 `/help` 只构建固定分区，不再立即扫描全部命令权限，避免菜单打开时造成全服卡顿。
 - “其他指令”和“完整指令列表”仍需要扫描当前可见命令，因此只在玩家点击对应入口时懒加载。
 - “其他指令”和“完整指令列表”只构建当前页按钮/文本，不再提前把全部指令转成菜单选项。
+- “搜索指令”只在玩家主动输入关键字后扫描，并复用指令自身的 `Hidden` / Permission 可见性判断；普通玩家不会因搜索看到仅4级/admin可用的管理指令，有限协管也只会看到自身实际权限项。
+- 搜索会动态扫描根指令的名称、别名、描述、usage 与脚本 ID；因此新增普通根指令只要正确填写描述/别名/权限，就会自动进入搜索，不需要每次修改搜索脚本或新建专项文档。只有未来引入非根指令/特殊容器时，才需单独设计索引适配。
 - 固定分区条目会在标题前显示对应快捷指令，例如 `/account,账号系统`；完整指令列表只显示“指令（别名）/ 用法”，不再把长描述塞进按钮，避免菜单过宽。
-- `/vote` 子指令列表额外按投票类型着色：例如踢出/结束类偏 `[red]`，地图/存档类偏 `[green]`，CP 类偏 `[purple]`，用法行统一偏 `[yellow]`，提高投票选择页可读性。
+- `/vote` 子指令列表额外按投票类型着色：例如踢出/结束类偏 `[red]`，地图/存档类偏 `[green]`，CP 类偏 `[purple]`，SuperChat 为 `[pink]`；用法行保留 `[status]`、`[波数]` 等可选参数，仅清理真正的颜色标记。
 - 玩家指令/管理指令固定分区的标题已加入颜色辅助阅读：`[cyan]` 偏核心/安全入口，`[pink]` 偏内容/社区展示，`[green]` 偏地图/服务器运维与状态，`[yellow]` 偏等级/资料/经济，`[red]` 偏处罚或危险操作，`[light_gray]` 偏底层低频工具。
 - 权限判断在单次页面构建中按权限节点缓存，减少同一页刷新时的重复权限检查开销。
 - 如果后续添加新的长文本/大列表菜单，应优先分页、懒加载，不要在游戏主线程一次性生成所有内容。
@@ -62,12 +65,16 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
 - `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON/JSON5 CP 或 v159 Data Assets ZIP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
 - `/vote reactor <on|off|status>`：投票开启/关闭反应堆爆炸或查看当前状态。
+- `/vote pure`、`/vote pureoff`：投票立即开启/关闭当前这局纯净模式，不再排队未来局数；关闭会恢复开启前的技能限制标签。
 - `/votekick <玩家>`：兼容旧原版入口，已归入投票指令分区；内部仍重定向到强制观战投票。
 - `/perf`、`/xperf`：3+级/管理员管理性能优化。
 - `/traffic`、`/pressure`、`/tickwatchdog`、`/gamepause`：查看上行/压力、主线程卡顿诊断、设置 TPS 压力阈值与管理暂停状态。
 - `/ipguard`、`/ipregion`：IP防熊管理与玩家地区查询。
 - `/security`：安全风控管理，查看/设置风控模式、IP封禁、聊天/菜单/连接限速状态。
-- `/servertestmode`、`/testmode`、`/测试模式`：`[危险]服务器测试模式` 管理菜单；特殊测试服临时切换全员登录主体、临时 MDC/资历覆盖和结算 ×10，启用/关闭都需要明确确认。
+- `/serverfeatures`、`/features`、`/serverconfig`：仅4级/admin或控制台可查看服务器功能总览/打开菜单；菜单内已加入数据库业务功能子菜单，旧子指令仍兼容。
+- `/mdcmultiplier`、`/forumtoggle`、`/registerrequirement`、`/socialactions`、`/defaultboundlevel`：拆分后的五个服务器功能管理根指令；分别管理结算MDC倍率、帖子、注册一小时要求、赞踩认可和已绑定玩家默认信任/资历下限。它们会自动被“搜索指令”索引。
+- `/databasefeatures`：查看、打开菜单或统一暂停数据库业务功能；只覆盖可选玩家业务，不关闭数据库连接，也不影响账号、权限、封禁、禁言、IP风控与性能保护。
+- `/playtimerecording`、`/achievementtoggle`、`/wikitoggle`、`/mdctransfertoggle`、`/recentplayerrecording`、`/trustpromotiontoggle`、`/senioritypromotiontoggle`、`/leaderboardtoggle`、`/playerprofilestats`：九个4级数据库业务子开关。全部是根指令，会自动进入权限过滤的“搜索指令”；普通玩家不会看到这些管理项。
 - `/forceobclean`：在线人数过高时清理已登录且被强制观战的普通玩家；3++协管可查看状态/执行单次清理，4级/admin可修改长期开关。
 - `/logicdraw`：管理画布/逻辑显示器/逻辑绘图方块，可用于处理不适当显示内容风险；`roundoff/roundon/roundclear` 为仅本局覆盖。
 - `/blockban ban <方块ID>`、`/blockban unban <方块ID>`、`/blockunban <方块ID>`：管理员本局单独禁用/解禁某个建筑方块。
@@ -95,12 +102,13 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/recentplayers`：3++/4级/admin 查看最近80名玩家，离线玩家也可打开面板并在自身层级边界内封禁账号或最近 IP。
 - `/buildban <玩家id/3位id/#游戏id> [理由]`、`/buildunban <玩家id/3位id/#游戏id>`：禁止/解除在线玩家建造与拆除；玩家信息面板执行时可输入分钟数作为临时禁建，留空为永久。
 - `/setseniority`、`/lockseniority`、`/setplaytime`、`/addplaytime`：管理玩家资历等级（手动设置会锁定）、资历锁与累计在线时长。
-- `/cp`、`/externalcp`、`/worldprocessor <status|on|off|edit on|edit off|cp>`、`/wpq <status|on|off|edit on|edit off>`：查看/卸载当前 CP、管理外部 JSON/HJSON CP、开启/关闭世界处理器；`/wpq` 为静默版本，不全局播报；`edit on` 会按原版全局规则允许所有玩家编辑世界处理器。
+- `/cp`、`/externalcp`、`/worldprocessor <status|on|off|edit on|edit off|cp>`、`/wpq <status|on|off|edit on|edit off>`：`/cp dp` 查看v159完整Data Assets，`/cp files` 查看服务器CP，`/cp load <文件名|编号>` 可不经投票快速加载；属性Patch卸载仍用独立Patch编号。`/externalcp` 管理同一外部CP运行态；`/wpq` 为静默世界处理器控制。
 - `/resourceproxy`：开关/设置地图资源站请求的本机代理，例如 `/resourceproxy set 7890 http`、`/resourceproxy set 10808 socks`。
 - `/adaptiveplayerlimit`：查看/管理自适应人数上限；默认从服务端启动时人数上限开始，接近满员且上行压力低时每轮扩容，回收带缓冲防止抖动，原生管理员也不再超员插队。
+- `/diskwarmup [status|on|off|now|interval <分钟>]`：管理H2云服磁盘预热/保活，减少磁盘或块存储休眠后首次数据库读写卡顿；不是TPS优化器。
 - `/ScriptAgent` 及 `/ScriptAgent scan|list|load|hotReload|enable|disable|unload|config|permission|vars`：已归入管理指令高级区；此前这些控制项不是根指令，菜单快捷入口已改为正确的 `/ScriptAgent ...` 子指令形式。
 - `/loadmapscript`：管理员手动尝试加载 `scripts/mapScript/<id>.kts`，例如 `/loadmapscript 14668`。
-- `/unloadmapscript`、`/mapscripts`：管理员手动关闭指定地图脚本/模式，或列出当前启用的地图脚本。
+- `/unloadmapscript`、`/mapscripts`：管理员手动关闭指定地图脚本/模式，或列出当前启用的地图脚本。关闭时会显式创建 ScriptAgent 事务、检查最终状态，且不额外扫描磁盘；已实测 `tags/flood` 与 `14668` 可加载后再正常停用。
 - `/posts`、`/posts trash`：帖子管理/回收站快捷入口；保护锁在帖子详情页内设置或解除。
 - `/wikiadmin`、`/wikiadmin trash`：Wiki 管理/回收站快捷入口；保护锁在 Wiki 页面或管理页内设置或解除。
 

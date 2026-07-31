@@ -138,7 +138,7 @@ private suspend fun startGuestForceObReleaseVote(starter: Player): Boolean {
 onEnable {
     loadGuestForceObStateAsync()
     val script = this
-    VoteEvent.VoteCommands += CommandInfo(script, "guestOb", "[cyan]今日未登录玩家强制观战[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "guestOb", "[cyan]开启游客强制观战[gray]（需50%同意）") {
         aliases = listOf("游客观战", "未登录观战")
         permission = "wayzer.vote.guestOb"
         body {
@@ -146,7 +146,7 @@ onEnable {
             startGuestForceObVote(starter)
         }
     }
-    VoteEvent.VoteCommands += CommandInfo(script, "guestObOff", "[yellow]解除今日未登录玩家强制观战[gray]（需50%同意）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "guestObOff", "[yellow]解除游客强制观战[gray]（需50%同意）") {
         aliases = listOf("解除游客观战", "解除未登录观战", "游客观战解除")
         permission = "wayzer.vote.guestOb"
         body {

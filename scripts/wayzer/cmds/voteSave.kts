@@ -109,7 +109,7 @@ private suspend fun writeVoteSave(slot: Int, note: String, starterName: String):
 }
 
 fun VoteService.registerVoteSave() {
-    addSubVote("创建当前游戏存档", "[存档ID] [备注]", "save", "存档") {
+    addSubVote("保存当前游戏", "[存档ID] [备注]", "save", "存档") {
         if (!Vars.state.`is`(GameState.State.playing))
             returnReply("[red]当前不在游戏中，不能创建存档。".with())
 

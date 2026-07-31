@@ -11,31 +11,9 @@ name = "投票临时玩法规则"
 
 private val funRules = contextScript<wayzer.map.FunRuleModes>()
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
-private var pureModeRoundsLeft = 0
-private var pureModeAddedNoSkillThisRound = false
-private var pureModeAddedLevel3BlockThisRound = false
-
-private fun pureModeStatusText(): String =
-    "[cyan]纯净模式：[white]剩余排队局数 [gold]$pureModeRoundsLeft[white]，当前局添加 @noSkills：[gold]${if (pureModeAddedNoSkillThisRound) "是" else "否"}[white]，禁用3级技能：[gold]${if (pureModeAddedLevel3BlockThisRound) "是" else "否"}"
-
-private fun applyQueuedPureModeForNewRound() {
-    pureModeAddedNoSkillThisRound = false
-    pureModeAddedLevel3BlockThisRound = false
-    if (pureModeRoundsLeft <= 0) return
-    val changed = with(funRules) { addNoSkillsTag() }
-    val level3Changed = with(funRules) { addPureModeLevel3BlockTag() }
-    pureModeAddedNoSkillThisRound = changed
-    pureModeAddedLevel3BlockThisRound = level3Changed
-    pureModeRoundsLeft--
-    broadcast("[cyan]纯净模式已生效：当前局已添加 @noSkills 并禁用3级技能，剩余排队局数 [gold]$pureModeRoundsLeft[cyan]。".with())
-}
-
-listen<EventType.WorldLoadEvent> {
-    applyQueuedPureModeForNewRound()
-}
 
 fun VoteService.registerFunRuleVotes() {
-    addSubVote("击杀当前所有单位", "", "killunits", "killallunits", "击杀单位") {
+    addSubVote("清空当前所有单位", "", "killunits", "killallunits", "击杀单位") {
         VoteService.start(
             player!!,
             "击杀所有单位".with(),
@@ -46,7 +24,7 @@ fun VoteService.registerFunRuleVotes() {
         }
     }
 
-    addSubVote("开启120秒标准无限火力", "", "infinitefire", "standardfire", "firepower", "无限火力", "标准无限火力") {
+    addSubVote("标准无限火力（120秒）", "", "infinitefire", "standardfire", "firepower", "无限火力", "标准无限火力") {
         VoteService.start(
             player!!,
             "开启标准无限火力".with(),
@@ -56,7 +34,7 @@ fun VoteService.registerFunRuleVotes() {
         }
     }
 
-    addSubVote("开启120秒无限火力promax", "", "infinitefirepromax", "firepowerpro", "promaxfire", "无限火力promax") {
+    addSubVote("无限火力ProMax（120秒）", "", "infinitefirepromax", "firepowerpro", "promaxfire", "无限火力promax") {
         if (!with(trustLevel) { hasTrustLevel(player!!, "2") }) {
             returnReply("[red]无限火力promax投票需要2级信任等级及以上。普通无限火力可使用 [gold]/vote infinitefire[]。".with())
         }
@@ -69,7 +47,7 @@ fun VoteService.registerFunRuleVotes() {
         }
     }
 
-    addSubVote("开启/关闭反应堆爆炸", "<on|off|status>", "reactor", "reactorexplosions", "反应堆爆炸") {
+    addSubVote("切换反应堆爆炸", "<on|off|status>", "reactor", "reactorexplosions", "反应堆爆炸") {
         val mode = arg.firstOrNull()?.lowercase()
         val enabled = when (mode) {
             "on", "true", "1", "enable", "enabled", "开启", "开" -> true
@@ -93,45 +71,40 @@ fun VoteService.registerFunRuleVotes() {
         }
     }
 
-    addSubVote("安排接下来若干局纯净模式", "<局数1-10|status>", "pure", "puremode", "cleanskill", "纯净模式") {
+    addSubVote("开启本局纯净模式", "[status]", "pure", "puremode", "cleanskill", "纯净模式") {
         val first = arg.firstOrNull()?.lowercase()
-        if (first in setOf("status", "状态")) returnReply(pureModeStatusText().with())
-        val rounds = (first?.toIntOrNull() ?: 1).coerceIn(1, 10)
+        if (first in setOf("status", "状态")) returnReply(with(funRules) { pureModeStatusText() }.with())
+        if (first != null) returnReply("[red]用法：/vote pure [status]；纯净模式现在只对当前这局生效。".with())
+        if (with(funRules) { isPureModeEnabled() }) {
+            returnReply("[yellow]当前这局已经开启纯净模式。".with())
+        }
         VoteService.start(
             player!!,
-            "开启纯净模式(${rounds}局)".with(),
+            "为当前局开启纯净模式".with(),
             extDesc = """
                 |[cyan]玩法分类：[white]技能限制
-                |[yellow]通过后从下一局开始，连续 [white]$rounds[yellow] 局自动添加 @noSkills 标签，并额外禁用3级技能。
-                |[gray]最高可排队10局；如需取消可发起 /vote pureoff。
+                |[yellow]通过后立即为当前这局添加 @noSkills，并额外禁用3级技能。
+                |[gray]换图/下一局不会自动延续；当前局可用 /vote pureoff 解除。
             """.trimMargin()
         ) {
-            pureModeRoundsLeft = rounds
-            pureModeAddedNoSkillThisRound = false
-            pureModeAddedLevel3BlockThisRound = false
-            broadcast("[cyan]投票已通过：接下来 [gold]$rounds[cyan] 局将自动进入纯净模式（添加 @noSkills，并禁用3级技能）。".with())
+            with(funRules) { enablePureMode("投票") }
         }
     }
 
-    addSubVote("解除/取消纯净模式", "", "pureoff", "purecancel", "取消纯净模式", "解除纯净模式") {
+    addSubVote("关闭本局纯净模式", "", "pureoff", "purecancel", "取消纯净模式", "解除纯净模式") {
+        if (!with(funRules) { isPureModeEnabled() }) {
+            returnReply("[yellow]当前这局没有开启纯净模式。".with())
+        }
         VoteService.start(
             player!!,
-            "解除纯净模式".with(),
+            "关闭当前局纯净模式".with(),
             extDesc = """
                 |[cyan]玩法分类：[white]技能限制
-                |[yellow]通过后会清空后续纯净模式排队局数。
-                |[gray]如果当前局的 @noSkills/3级禁用标签是纯净模式自动添加的，也会同步移除。
+                |[yellow]通过后立即关闭当前这局纯净模式。
+                |[gray]只移除纯净模式自己添加的标签，不会误删地图原本自带的 @noSkills 等限制。
             """.trimMargin()
         ) {
-            pureModeRoundsLeft = 0
-            val removed = if (pureModeAddedNoSkillThisRound) with(funRules) { removeNoSkillsTag() } else false
-            val removedLevel3 = if (pureModeAddedLevel3BlockThisRound) with(funRules) { removePureModeLevel3BlockTag() } else false
-            pureModeAddedNoSkillThisRound = false
-            pureModeAddedLevel3BlockThisRound = false
-            broadcast(
-                (if (removed || removedLevel3) "[green]投票已通过：已取消后续纯净模式，并解除当前局纯净模式技能限制。"
-                else "[green]投票已通过：已取消后续纯净模式。").with()
-            )
+            with(funRules) { disablePureMode("投票") }
         }
     }
 }

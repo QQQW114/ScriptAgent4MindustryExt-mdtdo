@@ -1,17 +1,22 @@
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("wayzer/ext/playerReputation", "玩家口碑/赞踩")
 @file:Depends("wayzer/ext/playerRecognition", "玩家认可")
 @file:Depends("wayzer/user/trustPoint", "MDC")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.user
 
 import wayzer.lib.MdtStorage
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.PlayerData
 import wayzer.lib.RecognitionChangedEvent
 import wayzer.lib.ReputationChangedEvent
-import wayzer.lib.ServerTestMode
+import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.TrustLevelLockChangedEvent
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.time.LocalDate
 import kotlin.math.max
 
@@ -25,6 +30,9 @@ private val dirtyLock = Any()
 private val AUTO_FULL_CHECK_MILLIS by config.key(5 * 60_000L, "信任等级在线玩家兜底全量复查间隔(ms)")
 private val AUTO_CHECK_BATCH_SIZE by config.key(6, "信任等级每轮自动检测最多处理玩家数，避免一次性打库卡主线程")
 private val EFFECTIVE_DISLIKE_RECENT_DAYS = 7L
+
+private fun trustPromotionEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.TrustPromotion)
 
 private fun recentReputationSinceDate(): String =
     LocalDate.now().minusDays(EFFECTIVE_DISLIKE_RECENT_DAYS - 1).toString()
@@ -50,10 +58,12 @@ fun effectiveDislikes(uid: String): Int {
 }
 
 fun markTrustDirty(uid: String) {
+    if (!trustPromotionEnabled()) return
     synchronized(dirtyLock) { dirtyUids += uid }
 }
 
 fun markTrustDirty(uids: Iterable<String>) {
+    if (!trustPromotionEnabled()) return
     synchronized(dirtyLock) { dirtyUids.addAll(uids) }
 }
 
@@ -65,6 +75,10 @@ private fun drainDirtyUids(): List<String> = synchronized(dirtyLock) {
 
 private fun requeueDirtyUids(uids: Iterable<String>) {
     synchronized(dirtyLock) { dirtyUids.addAll(uids) }
+}
+
+private fun clearDirtyUids() {
+    synchronized(dirtyLock) { dirtyUids.clear() }
 }
 
 private fun onlinePlayerByUid(uid: String): Player? =
@@ -81,10 +95,13 @@ private fun isOnlineGuestUid(uid: String): Boolean =
 private fun displayName(uid: String, player: Player?): String =
     player?.name ?: PlayerData.findByShortId(uid)?.name ?: uid
 
-private fun trustLevelCodeFromStats(stats: MdtStorage.TrustPromotionStats, player: Player?): String {
+private fun defaultBoundTrustLevelCode(): String =
+    ServerFeatureSettings.getOrNull()?.defaultBoundTrustLevelCode()?.takeIf { it in setOf("1", "2", "3") } ?: "1"
+
+private fun trustLevelCodeFromStats(uid: String, stats: MdtStorage.TrustPromotionStats, player: Player?): String {
     if (player != null && !PlayerData[player].authed) return "0"
     if (player?.admin == true) return "4"
-    return stats.manualLevelCode ?: if (player != null) "1" else "0"
+    return stats.manualLevelCode ?: if (player != null || uid.startsWith("account:")) defaultBoundTrustLevelCode() else "0"
 }
 
 private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionStats, current: String): String {
@@ -92,6 +109,7 @@ private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionSta
     if (current == "3++" || current == "4") return current
 
     val bound = player != null && PlayerData[player].authed || with(trustLevel) { trustLevelOrder(current) >= 10 }
+    val boundFloor = if (bound) defaultBoundTrustLevelCode() else "0"
     val receivedLikes = stats.reputation.receivedLikes
     val givenLikes = stats.reputation.givenLikes
     val receivedRecognitions = stats.recognition.received
@@ -125,7 +143,7 @@ private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionSta
         can3Plus -> "3+"
         can3 -> "3"
         can2 -> "2"
-        bound -> "1"
+        bound -> boundFloor
         else -> "0"
     }
 
@@ -136,10 +154,9 @@ private fun targetLevelCode(player: Player?, stats: MdtStorage.TrustPromotionSta
 }
 
 fun checkTrustLevel(uid: String) {
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.let { return }
     val player = onlinePlayerByUid(uid)
     val stats = MdtStorage.getTrustPromotionStats(uid)
-    val oldLevel = trustLevelCodeFromStats(stats, player)
+    val oldLevel = trustLevelCodeFromStats(uid, stats, player)
     if (oldLevel == "4") return
     if (stats.levelLocked) return
 
@@ -191,6 +208,12 @@ listenTo<TrustLevelLockChangedEvent> {
     markTrustDirty(uids)
 }
 
+listenTo<DatabaseFeatureChangedEvent> {
+    if (feature != DatabaseFeature.TrustPromotion) return@listenTo
+    if (newEnabled) Groups.player.toList().forEach { safeMarkPlayerDirty(it, "feature-on") }
+    else clearDirtyUids()
+}
+
 listen<EventType.PlayerJoin> {
     safeMarkPlayerDirty(it.player, "join")
 }
@@ -209,6 +232,10 @@ onEnable {
         var lastFullCheckAt = 0L
         while (true) {
             delay(3000)
+            if (!trustPromotionEnabled()) {
+                clearDirtyUids()
+                continue
+            }
             val now = System.currentTimeMillis()
             if (now - lastFullCheckAt >= AUTO_FULL_CHECK_MILLIS.coerceAtLeast(60_000L)) {
                 Groups.player.toList().forEach { safeMarkPlayerDirty(it, "full-check") }

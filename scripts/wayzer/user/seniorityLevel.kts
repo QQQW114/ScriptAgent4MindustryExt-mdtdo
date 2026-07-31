@@ -1,17 +1,21 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
+@file:Depends("wayzer/user/databaseFeatureSettings", "数据库业务功能开关")
 @file:Depends("wayzer/user/trustLevel", "信任等级")
 @file:Depends("wayzer/user/trustPoint", "MDC")
 
 package wayzer.user
 
 import coreLibrary.lib.PermissionApi
+import wayzer.lib.DatabaseFeature
+import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
-import wayzer.lib.ServerTestMode
+import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.SeniorityLevelChangedEvent
 import wayzer.lib.SeniorityLevelLockChangedEvent
 import wayzer.lib.TrustLevelChangedEvent
 import wayzer.lib.TrustPointChangedEvent
+import wayzer.lib.isDatabaseFeatureEnabled
 import java.util.Locale
 
 /**
@@ -54,6 +58,12 @@ private val requirements = listOf(
     SeniorityRequirement("3", 64L, 2000),
 )
 
+private fun playTimeRecordingEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.PlayTimeRecording)
+
+private fun seniorityPromotionEnabled(): Boolean =
+    isDatabaseFeatureEnabled(DatabaseFeature.SeniorityPromotion)
+
 fun normalizeSeniorityLevelCode(level: String): String? = when (level.trim().lowercase()) {
     "0" -> "0"
     "1" -> "1"
@@ -72,6 +82,21 @@ fun seniorityLevelOrder(levelCode: String): Int = when (normalizeSeniorityLevelC
     else -> 0
 }
 
+@Volatile private var lastKnownDefaultBoundSeniorityLevelCode = "1"
+
+private fun defaultBoundSeniorityLevelCode(): String {
+    val current = ServerFeatureSettings.getOrNull()
+        ?.defaultBoundTrustLevelCode()
+        ?.takeIf { it in setOf("1", "2", "3") }
+    if (current != null) lastKnownDefaultBoundSeniorityLevelCode = current
+    // serverFeatureSettings 依赖本脚本以刷新缓存，不能反向声明脚本依赖；
+    // 服务热重载的短窗口沿用最近值，避免暂时取不到服务时把资历下限误降回1。
+    return current ?: lastKnownDefaultBoundSeniorityLevelCode
+}
+
+private fun maxSeniorityLevelCode(first: String, second: String): String =
+    if (seniorityLevelOrder(first) >= seniorityLevelOrder(second)) first else second
+
 fun seniorityLevelName(levelCode: String): String = when (normalizeSeniorityLevelCode(levelCode) ?: "0") {
     "0" -> "资历0级"
     "1" -> "资历1级"
@@ -82,11 +107,25 @@ fun seniorityLevelName(levelCode: String): String = when (normalizeSeniorityLeve
 }
 
 private fun storedSeniorityLevelCode(uid: String): String {
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.let { return "3" }
     if (!seniorityLevelCache.containsKey(uid)) {
         seniorityLevelCache[uid] = MdtStorage.getSeniorityLevelCode(uid)?.let { normalizeSeniorityLevelCode(it) }
     }
     return seniorityLevelCache[uid] ?: "0"
+}
+
+fun invalidateSeniorityLevelCache(uid: String) {
+    seniorityLevelCache.remove(uid)
+    seniorityLockCache.remove(uid)
+}
+
+fun invalidateSeniorityLevelCache(uids: Iterable<String>) {
+    uids.forEach(::invalidateSeniorityLevelCache)
+}
+
+/** 服务器级默认等级批量调整后使用，避免从生产大库携带全量变更 UID 回到游戏线程。 */
+fun clearSeniorityLevelCache() {
+    seniorityLevelCache.clear()
+    seniorityLockCache.clear()
 }
 
 private fun isTrustLevel4(uid: String, player: Player?): Boolean =
@@ -95,11 +134,6 @@ private fun isTrustLevel4(uid: String, player: Player?): Boolean =
 fun isSessionAuthedForSeniority(player: Player): Boolean = PlayerData[player].authed
 
 fun getSeniorityLevelCode(uid: String, player: Player? = null): String {
-    player?.let { p ->
-        ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.isTestSession(p) }?.let {
-            return if (isTrustLevel4(uid, p)) "4" else "3"
-        }
-    }
     if (player != null && !isSessionAuthedForSeniority(player)) return "0"
     if (isTrustLevel4(uid, player)) return "4"
     return storedSeniorityLevelCode(uid)
@@ -145,17 +179,14 @@ fun setSeniorityLevelLocked(uid: String, locked: Boolean): Boolean {
 
 fun toggleSeniorityLevelLocked(uid: String): Boolean = setSeniorityLevelLocked(uid, !isSeniorityLevelLocked(uid))
 
-fun playMillis(uid: String): Long =
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.getPlayMillis(uid)
-        ?: MdtStorage.getPlayMillis(uid)
+fun playMillis(uid: String): Long = MdtStorage.getPlayMillis(uid)
 fun playHours(uid: String): Double = playMillis(uid).toDouble() / HOUR_MILLIS.toDouble()
 
 fun formatPlayHours(millis: Long): String = String.format(Locale.ROOT, "%.1f小时", millis.toDouble() / HOUR_MILLIS.toDouble())
 fun formatPlayHours(uid: String): String = formatPlayHours(playMillis(uid))
 
 private fun addPlayMillis(uid: String, millis: Long): Long {
-    val added = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.addPlayMillis(uid, millis)
-        ?: MdtStorage.addPlayMillis(uid, millis)
+    val added = MdtStorage.addPlayMillis(uid, millis)
     markSeniorityDirty(uid)
     return added
 }
@@ -177,13 +208,6 @@ private fun drainPendingPlayMillis(): Map<String, Long> = synchronized(pendingPl
 private fun flushPendingPlayMillis(reason: String = "auto") {
     val batch = drainPendingPlayMillis()
     if (batch.isEmpty()) return
-    val testMode = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }
-    if (testMode != null) {
-        val testBatch = batch.filterKeys { testMode.ownsUid(it) }
-        if (testBatch.isNotEmpty()) testMode.addPlayMillisBatch(testBatch)
-        markSeniorityDirty(testBatch.keys)
-        return
-    }
     launch(Dispatchers.IO) {
         runCatching {
             val startedAt = System.currentTimeMillis()
@@ -205,16 +229,9 @@ private fun flushPendingPlayMillis(reason: String = "auto") {
 private fun flushPendingPlayMillisBlocking(reason: String = "disable") {
     val batch = drainPendingPlayMillis()
     if (batch.isEmpty()) return
-    val testMode = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() }
-    val normalBatch = if (testMode != null) {
-        val testBatch = batch.filterKeys { testMode.ownsUid(it) }
-        if (testBatch.isNotEmpty()) testMode.addPlayMillisBatch(testBatch)
-        emptyMap()
-    } else batch
-    if (normalBatch.isEmpty()) return
     runCatching {
-        MdtStorage.addPlayMillisBatch(normalBatch)
-        markSeniorityDirty(normalBatch.keys)
+        MdtStorage.addPlayMillisBatch(batch)
+        markSeniorityDirty(batch.keys)
     }.onFailure {
         logger.warning("资历系统在线时长最终写入失败(reason=$reason, size=${batch.size}): ${it.message}")
     }
@@ -222,45 +239,40 @@ private fun flushPendingPlayMillisBlocking(reason: String = "disable") {
 
 private fun setPlayHours(uid: String, hours: Double): Long {
     val fixed = (hours.coerceAtLeast(0.0) * HOUR_MILLIS).toLong()
-    val value = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.let {
-        val current = it.getPlayMillis(uid)
-        it.addPlayMillis(uid, fixed - current)
-    } ?: MdtStorage.setPlayMillis(uid, fixed)
+    val value = MdtStorage.setPlayMillis(uid, fixed)
     markSeniorityDirty(uid)
     return value
 }
 
 private fun addPlayHours(uid: String, hours: Double): Long {
     val delta = (hours * HOUR_MILLIS).toLong().coerceAtLeast(0L)
-    val value = ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.addPlayMillis(uid, delta)
-        ?: MdtStorage.addPlayMillis(uid, delta)
+    val value = MdtStorage.addPlayMillis(uid, delta)
     markSeniorityDirty(uid)
     return value
 }
 
 fun targetSeniorityLevelCode(uid: String, player: Player? = null): String {
-    player?.let { p ->
-        ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.isTestSession(p) }?.let {
-            return if (isTrustLevel4(uid, p)) "4" else "3"
-        }
-    }
     if (player != null && !isSessionAuthedForSeniority(player)) return "0"
     if (isTrustLevel4(uid, player)) return "4"
     val millis = playMillis(uid)
     val totalMdc = with(trustPoint) { getTotalTrustPoints(uid) }
-    return when {
+    val naturalLevel = when {
         millis >= 64L * HOUR_MILLIS && totalMdc >= 2000 -> "3"
         millis >= 16L * HOUR_MILLIS && totalMdc >= 600 -> "2"
         millis >= 1L * HOUR_MILLIS && totalMdc >= 100 -> "1"
         else -> "0"
     }
+    val bound = player?.let(::isSessionAuthedForSeniority) ?: uid.startsWith("account:")
+    return if (bound) maxSeniorityLevelCode(naturalLevel, defaultBoundSeniorityLevelCode()) else naturalLevel
 }
 
 fun markSeniorityDirty(uid: String) {
+    if (!seniorityPromotionEnabled()) return
     synchronized(dirtyLock) { dirtyUids += uid }
 }
 
 fun markSeniorityDirty(uids: Iterable<String>) {
+    if (!seniorityPromotionEnabled()) return
     synchronized(dirtyLock) { dirtyUids.addAll(uids) }
 }
 
@@ -292,7 +304,6 @@ private fun displayName(uid: String, player: Player?): String =
     player?.name ?: PlayerData.findByShortId(uid)?.name ?: uid
 
 fun checkSeniorityLevel(uid: String) {
-    ServerTestMode.getOrNull()?.takeIf { it.isEnabled() && it.ownsUid(uid) }?.let { return }
     val player = onlinePlayerByUid(uid)
     val stats = MdtStorage.getSeniorityAutoCheckStats(uid)
     val stored = stats.seniority.levelCode?.let { normalizeSeniorityLevelCode(it) } ?: "0"
@@ -308,7 +319,7 @@ fun checkSeniorityLevel(uid: String) {
     }
     if (!trust4 && stats.seniority.levelLocked) return
 
-    val newLevel = when {
+    val naturalLevel = when {
         !sessionAuthed -> "0"
         trust4 -> "4"
         stats.seniority.playMillis >= 64L * HOUR_MILLIS && stats.trustPoints.total >= 2000 -> "3"
@@ -316,6 +327,10 @@ fun checkSeniorityLevel(uid: String) {
         stats.seniority.playMillis >= 1L * HOUR_MILLIS && stats.trustPoints.total >= 100 -> "1"
         else -> "0"
     }
+    val bound = sessionAuthed && (player != null || uid.startsWith("account:"))
+    val newLevel = if (!trust4 && bound) {
+        maxSeniorityLevelCode(naturalLevel, defaultBoundSeniorityLevelCode())
+    } else naturalLevel
     if (oldLevel == newLevel) return
 
     if (!trust4) {
@@ -334,14 +349,18 @@ fun checkSeniorityLevel(uid: String) {
     }
 }
 
-private fun tickPlayTime(player: Player, now: Long = System.currentTimeMillis()) {
+private fun tickPlayTime(
+    player: Player,
+    now: Long = System.currentTimeMillis(),
+    record: Boolean = playTimeRecordingEnabled(),
+) {
     val key = player.uuid()
     val data = PlayerData[player]
     val currentAuthed = data.authed
     val wasAuthed = playTickAuthed.put(key, currentAuthed) ?: currentAuthed
     val last = playTickAt.put(key, now) ?: now
     val delta = (now - last).coerceAtLeast(0L)
-    if (delta > 0L && currentAuthed && wasAuthed) {
+    if (record && delta > 0L && currentAuthed && wasAuthed) {
         enqueuePlayMillis(data.id, delta)
     }
 }
@@ -414,6 +433,24 @@ listenTo<TrustPointChangedEvent> { markSeniorityDirty(uids) }
 listenTo<TrustLevelChangedEvent> { markSeniorityDirty(uid) }
 listenTo<SeniorityLevelLockChangedEvent> { markSeniorityDirty(uids) }
 
+listenTo<DatabaseFeatureChangedEvent> {
+    when (feature) {
+        DatabaseFeature.PlayTimeRecording -> {
+            // 关闭时精确记到开关变更时刻；开启时只重置计时锚点，避免把停用期间补记进去。
+            Groups.player.toList().forEach { player ->
+                runCatching { tickPlayTime(player, changedAtMillis, record = oldEnabled) }
+                    .onFailure { logger.warning("在线时长开关切换时刷新计时锚点失败(${player.plainName()}): ${it.message}") }
+            }
+            if (!newEnabled) flushPendingPlayMillis("feature-off")
+        }
+        DatabaseFeature.SeniorityPromotion -> {
+            if (newEnabled) Groups.player.toList().forEach { safeMarkPlayerDirty(it, "feature-on") }
+            else clearDirtyUids()
+        }
+        else -> Unit
+    }
+}
+
 listen<EventType.PlayerJoin> {
     playTickAt[it.player.uuid()] = System.currentTimeMillis()
     playTickAuthed[it.player.uuid()] = PlayerData[it.player].authed
@@ -460,6 +497,10 @@ onEnable {
         var lastFullCheckAt = 0L
         while (true) {
             delay(3000)
+            if (!seniorityPromotionEnabled()) {
+                clearDirtyUids()
+                continue
+            }
             val now = System.currentTimeMillis()
             if (now - lastFullCheckAt >= AUTO_FULL_CHECK_MILLIS.coerceAtLeast(60_000L)) {
                 Groups.player.toList().forEach { safeMarkPlayerDirty(it, "full-check") }

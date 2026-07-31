@@ -113,7 +113,7 @@ listen<EventType.ResetEvent> {
 }
 
 fun VoteService.register() {
-    addSubVote("投降或结束该局游戏，进行结算", "", "gameOver", "投降", "结算") {
+    addSubVote("结束本局并结算", "", "gameOver", "投降", "结算") {
         // 部分特殊地图会把 canGameOver 置为 false 来阻止原版自动结算。
         // 投票投降是玩家主动结算入口，不再被该标记拦截；PVP 仍走本队投降逻辑，只摧毁本队核心。
         if (state.rules.pvp) {
@@ -136,7 +136,7 @@ fun VoteService.register() {
             Events.fire(GameOverEvent(state.rules.waveTeam))
         }
     }
-    addSubVote("快速出波(默认10波,最高50)", "[波数]", "skipWave", "跳波") {
+    addSubVote("快速出波（默认10，最多50）", "[波数]", "skipWave", "跳波") {
         if (Groups.player.any { it.team() == state.rules.waveTeam })
             returnReply("[red]当前模式禁止跳波".with())
         val lastResetTime by PlaceHold.reference<Instant>("state.startTime")
@@ -156,7 +156,7 @@ fun VoteService.register() {
             }
         }
     }
-    addSubVote("暂停波次计时(默认300秒,最高1800)", "[秒数]", "pauseWave", "暂停波次") {
+    addSubVote("暂停波次计时（默认300秒）", "[秒数]", "pauseWave", "暂停波次") {
         if (!state.rules.waves) returnReply("[red]当前地图未启用波次。".with())
         if (state.rules.pvp) returnReply("[red]PVP模式禁止投票暂停波次。".with())
         if (Groups.player.any { it.team() == state.rules.waveTeam })
@@ -175,7 +175,7 @@ fun VoteService.register() {
             pauseWaves(seconds * 1000L, player!!.plainName())
         }
     }
-    addSubVote("调整当前波次到目标波次", "<目标波次>", "setWave", "wave", "调整波次") {
+    addSubVote("调整当前波次", "<目标波次>", "setWave", "wave", "调整波次") {
         if (!state.rules.waves) returnReply("[red]当前地图未启用波次。".with())
         if (state.rules.pvp) returnReply("[red]PVP模式禁止投票调整波次。".with())
         if (Groups.player.any { it.team() == state.rules.waveTeam })
@@ -197,7 +197,7 @@ fun VoteService.register() {
             setCurrentWave(fixed, player!!.plainName())
         }
     }
-    addSubVote("取消当前暂停波次", "", "resumeWave", "unpauseWave", "取消暂停波次", "恢复波次") {
+    addSubVote("恢复波次计时", "", "resumeWave", "unpauseWave", "取消暂停波次", "恢复波次") {
         if (!state.rules.waves) returnReply("[red]当前地图未启用波次。".with())
         if (state.rules.pvp) returnReply("[red]PVP模式禁止投票调整波次。".with())
         if (wavePauseSnapshot == null) returnReply("[yellow]当前没有正在生效的波次暂停。".with())
@@ -213,7 +213,7 @@ fun VoteService.register() {
             resumePausedWaves(player!!.plainName())
         }
     }
-    addSubVote("清理本队建筑记录", "", "clear", "清理", "清理记录") {
+    addSubVote("清空本队建筑记录", "", "clear", "清理", "清理记录") {
         val team = player!!.team()
         start(
             player!!, "清理建筑记录({team.colorizeName}[yellow]队|需要2/5同意)".with("team" to team),
@@ -222,11 +222,11 @@ fun VoteService.register() {
             team.data().plans.clear()
         }
     }
-    addSubVote("自定义投票", "<内容>", "text", "文本", "t") {
+    addSubVote("自定义文字投票", "<内容>", "text", "文本", "t") {
         if (arg.isEmpty()) returnReply("[red]请输入投票内容".with())
         start(player!!, "自定义([green]{text}[yellow])".with("text" to arg.joinToString(" "))) {}
     }
-    addSubVote("发送SuperChat公告(1级信任以上,2分钟冷却,不发起实际投票)", "<内容>", "sc", "superchat", "醒目留言") {
+    addSubVote("发送醒目留言（1级，冷却2分钟）", "<内容>", "sc", "superchat", "醒目留言") {
         val player = player!!
         if (!with(trustLevel) { hasTrustLevel(player, "1") }) {
             returnReply("[red]SuperChat 需要 1级信任及以上。".with())

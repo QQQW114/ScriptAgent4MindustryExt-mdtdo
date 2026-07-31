@@ -11,6 +11,7 @@ name = "v159全局快照频率保护"
 private val pressure = contextScript<ServerPressure>()
 private val enabled by config.key(true, "启用v159全局快照频率保护")
 private val maxIntervalMillis by config.key(320L, "v159快照保护最大间隔(ms)")
+private val stalePressureSnapshotMillis by config.key(30_000L, "压力快照过期后恢复原生快照间隔(ms)")
 
 private data class NativeSnapshotInterval(
     val field: Field,
@@ -53,7 +54,9 @@ private fun setNativeInterval(value: Int): Boolean {
 
 private fun desiredInterval(): Int {
     if (!enabled) return originalInterval
-    val requested = with(pressure) { throttleIntervalMillis() }
+    val snapshot = with(pressure) { currentPressure() }
+    val fresh = System.currentTimeMillis() - snapshot.updatedAtMillis <= stalePressureSnapshotMillis.coerceAtLeast(5_000L)
+    val requested = if (fresh) snapshot.throttleIntervalMillis else 0L
     if (requested <= 0L) return originalInterval
     // 旧脚本的等级1曾使用 160ms，会比v159默认200ms更频繁；保证绝不降低原生频率。
     val maxInterval = maxIntervalMillis.coerceAtLeast(originalInterval.toLong()).toInt()
@@ -61,7 +64,17 @@ private fun desiredInterval(): Int {
 }
 
 listen(EventType.Trigger.update) {
+    val pressureSnapshot = with(pressure) { currentPressure() }
+    val pressureFresh = System.currentTimeMillis() - pressureSnapshot.updatedAtMillis <= stalePressureSnapshotMillis.coerceAtLeast(5_000L)
     if (nativeInterval == null) {
+        if (enabled && pressureFresh && pressureSnapshot.throttleLevel > 0) {
+            with(pressure) {
+                announceThrottleRestrictionOnce(
+                    pressureSnapshot.throttleLevel,
+                    "保留原生快照间隔（当前端无可用接口）",
+                )
+            }
+        }
         if (!warnedUnsupported) {
             warnedUnsupported = true
             logger.warning("v159原生 snapshotInterval 不可反射，快照频率保护已降级为仅监控。")
@@ -76,6 +89,12 @@ listen(EventType.Trigger.update) {
             } else if (lastAppliedInterval >= 0) {
                 logger.info("v159全局快照间隔已恢复为 ${originalInterval}ms")
             }
+        }
+    }
+
+    if (enabled && pressureFresh && pressureSnapshot.throttleLevel > 0) {
+        with(pressure) {
+            announceThrottleRestrictionOnce(pressureSnapshot.throttleLevel, "快照间隔约 ${target}ms")
         }
     }
 }

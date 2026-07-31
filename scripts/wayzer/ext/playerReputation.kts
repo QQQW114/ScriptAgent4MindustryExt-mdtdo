@@ -1,6 +1,7 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
 @file:Depends("wayzer/user/playerTitle", "玩家正式称号")
+@file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 
 package wayzer.ext
 
@@ -8,6 +9,7 @@ import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.PlayerLikedEvent
 import wayzer.lib.ReputationChangedEvent
+import wayzer.lib.ServerFeatureSettings
 import java.time.LocalDate
 
 private data class VoteLimits(
@@ -101,6 +103,10 @@ private fun pruneOldDailyCounters(date: String) {
 }
 
 private fun performVote(viewer: Player, targetUid: String, targetName: String, type: VoteType): Boolean {
+    if (ServerFeatureSettings.getOrNull()?.socialActionsEnabled() == false) {
+        viewer.sendMessage("[yellow]点赞/点踩/认可功能已被关闭，请联系管理员。")
+        return false
+    }
     val fromUid = playerReputationUid(viewer)
     if (fromUid == targetUid) {
         viewer.sendMessage("[yellow]${type.selfMessage}")

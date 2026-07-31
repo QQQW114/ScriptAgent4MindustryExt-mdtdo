@@ -123,6 +123,18 @@ object MdtStorage {
         val recognition: RecognitionCounts = RecognitionCounts(),
     )
 
+    data class BoundTrustLevelUpgradeResult(
+        val levelCode: String,
+        val scannedAccounts: Int = 0,
+        val insertedProfiles: Int = 0,
+        val upgradedProfiles: Int = 0,
+        val insertedSeniorityProfiles: Int = 0,
+        val upgradedSeniorityProfiles: Int = 0,
+    ) {
+        val changedCount: Int get() =
+            insertedProfiles + upgradedProfiles + insertedSeniorityProfiles + upgradedSeniorityProfiles
+    }
+
     data class SeniorityAutoCheckStats(
         val seniority: SeniorityProfileRecord,
         val trustManualLevelCode: String?,
@@ -775,7 +787,15 @@ object MdtStorage {
         account
     }
 
-    fun recordAccountLogin(gameUuid: String, accountId: Int, ip: String, usid: String, lastName: String?): String = transaction {
+    fun recordAccountLogin(
+        gameUuid: String,
+        accountId: Int,
+        ip: String,
+        usid: String,
+        lastName: String?,
+        minimumTrustLevelCode: String? = null,
+        minimumSeniorityLevelCode: String? = null,
+    ): String = transaction {
         val accountEntity = EntityID(accountId, Accounts)
         val loginAt = now()
         val existing = PlayerSubjects.selectAll().where { PlayerSubjects.id eq gameUuid }.firstOrNull()
@@ -822,6 +842,8 @@ object MdtStorage {
         Accounts.update({ Accounts.id eq accountId }) {
             it[lastLoginAt] = loginAt
         }
+        minimumTrustLevelCode?.let { ensureMinimumManualLevelCodeInTx(subjectUid, it) }
+        minimumSeniorityLevelCode?.let { ensureMinimumSeniorityLevelCodeInTx(subjectUid, it) }
         subjectUid
     }
 
@@ -901,6 +923,11 @@ object MdtStorage {
 
     fun setSetting(key: String, value: String?) = transaction {
         setSettingInTx(key, value)
+        Unit
+    }
+
+    fun setSettings(values: Map<String, String?>) = transaction {
+        values.forEach { (key, value) -> setSettingInTx(key, value) }
         Unit
     }
 
@@ -1014,6 +1041,164 @@ object MdtStorage {
                 ?: RecognitionCounts(),
         )
     }
+
+    private fun trustLevelOrderForStorage(levelCode: String?): Int = when (levelCode?.trim()?.lowercase()) {
+        "1" -> 10
+        "2" -> 20
+        "3" -> 30
+        "3+", "3p", "3plus" -> 35
+        "3++", "3pp", "3plusplus" -> 38
+        "4", "admin", "4+admin", "4admin" -> 40
+        else -> 0
+    }
+
+    private fun seniorityLevelOrderForStorage(levelCode: String?): Int = when (levelCode?.trim()?.lowercase()) {
+        "1" -> 10
+        "2" -> 20
+        "3" -> 30
+        "4", "admin", "4+admin", "4admin" -> 40
+        else -> 0
+    }
+
+    private fun ensureMinimumManualLevelCodeInTx(uid: String, levelCode: String): Boolean {
+        val requiredOrder = trustLevelOrderForStorage(levelCode)
+        require(requiredOrder in 10..30) { "Default bound trust level must be 1, 2 or 3: $levelCode" }
+        val existing = TrustProfiles.selectAll().where { TrustProfiles.id eq uid }.firstOrNull()
+        if (existing == null) {
+            TrustProfiles.insert {
+                it[id] = uid
+                it[manualLevelCode] = levelCode
+            }
+            return true
+        }
+        if (trustLevelOrderForStorage(existing[TrustProfiles.manualLevelCode]) >= requiredOrder) return false
+        TrustProfiles.update({ TrustProfiles.id eq uid }) {
+            it[manualLevelCode] = levelCode
+            it[updatedAt] = now()
+        }
+        return true
+    }
+
+    fun ensureMinimumManualLevelCode(uid: String, levelCode: String): Boolean = transaction {
+        ensureMinimumManualLevelCodeInTx(uid, levelCode)
+    }
+
+    private fun ensureMinimumSeniorityLevelCodeInTx(uid: String, levelCode: String): Boolean {
+        val requiredOrder = seniorityLevelOrderForStorage(levelCode)
+        require(requiredOrder in 10..30) { "Default bound seniority level must be 1, 2 or 3: $levelCode" }
+        val existing = SeniorityProfiles.selectAll().where { SeniorityProfiles.id eq uid }.firstOrNull()
+        if (existing == null) {
+            SeniorityProfiles.insert {
+                it[SeniorityProfiles.id] = uid
+                it[SeniorityProfiles.levelCode] = levelCode
+            }
+            return true
+        }
+        if (seniorityLevelOrderForStorage(existing[SeniorityProfiles.levelCode]) >= requiredOrder) return false
+        SeniorityProfiles.update({ SeniorityProfiles.id eq uid }) {
+            it[SeniorityProfiles.levelCode] = levelCode
+            it[SeniorityProfiles.updatedAt] = now()
+        }
+        return true
+    }
+
+    fun ensureMinimumSeniorityLevelCode(uid: String, levelCode: String): Boolean = transaction {
+        ensureMinimumSeniorityLevelCodeInTx(uid, levelCode)
+    }
+
+    /** 为单个已绑定账号同时兜底信任等级与资历等级，保持一次事务完成。 */
+    fun ensureMinimumBoundPlayerLevels(uid: String, levelCode: String): Pair<Boolean, Boolean> = transaction {
+        ensureMinimumManualLevelCodeInTx(uid, levelCode) to ensureMinimumSeniorityLevelCodeInTx(uid, levelCode)
+    }
+
+    /**
+     * 原子写入新的“已绑定玩家默认等级”，并把所有账号主体中低于该等级的
+     * 信任等级与资历等级资料一并批量抬升。
+     *
+     * 不新增表/列，兼容旧数据库；查询与更新按小批次构造 IN 条件，避免生产库账号量较大时
+     * 触发 SQLite/数据库驱动的参数数量上限。整个过程仍处于同一个事务中，失败会整体回滚。
+     */
+    fun setDefaultBoundPlayerLevelAndRaise(settingKey: String, levelCode: String): BoundTrustLevelUpgradeResult = transaction {
+        val requiredTrustOrder = trustLevelOrderForStorage(levelCode)
+        val requiredSeniorityOrder = seniorityLevelOrderForStorage(levelCode)
+        require(requiredTrustOrder in 10..30) { "Default bound trust level must be 1, 2 or 3: $levelCode" }
+        require(requiredSeniorityOrder in 10..30) { "Default bound seniority level must be 1, 2 or 3: $levelCode" }
+
+        val accountUids = Accounts.selectAll().map { accountSubjectUid(it[Accounts.id].value) }
+        var insertedProfiles = 0
+        var upgradedProfiles = 0
+        var insertedSeniorityProfiles = 0
+        var upgradedSeniorityProfiles = 0
+
+        // 逐块读取并立即处理，避免生产库账号较多时同时保留全量等级 Map、缺失列表、
+        // 升级列表和 changed UID 列表。事务仍覆盖完整扫描与设置写入，失败整体回滚。
+        accountUids.chunked(400).forEach { chunk ->
+            if (chunk.isEmpty()) return@forEach
+            val existingLevels = TrustProfiles.selectAll()
+                .where { TrustProfiles.id inList chunk }
+                .associate { row -> row[TrustProfiles.id].value to row[TrustProfiles.manualLevelCode] }
+
+            val missing = chunk.filterNot(existingLevels::containsKey)
+            missing.forEach { uid ->
+                TrustProfiles.insert {
+                    it[id] = uid
+                    it[manualLevelCode] = levelCode
+                }
+            }
+            insertedProfiles += missing.size
+
+            val upgrades = existingLevels
+                .filterValues { trustLevelOrderForStorage(it) < requiredTrustOrder }
+                .keys
+                .toList()
+            if (upgrades.isNotEmpty()) {
+                TrustProfiles.update({ TrustProfiles.id inList upgrades }) {
+                    it[manualLevelCode] = levelCode
+                    it[updatedAt] = now()
+                }
+                upgradedProfiles += upgrades.size
+            }
+
+            val existingSeniorityLevels = SeniorityProfiles.selectAll()
+                .where { SeniorityProfiles.id inList chunk }
+                .associate { row -> row[SeniorityProfiles.id].value to row[SeniorityProfiles.levelCode] }
+
+            val missingSeniority = chunk.filterNot(existingSeniorityLevels::containsKey)
+            missingSeniority.forEach { uid ->
+                SeniorityProfiles.insert {
+                    it[SeniorityProfiles.id] = uid
+                    it[SeniorityProfiles.levelCode] = levelCode
+                }
+            }
+            insertedSeniorityProfiles += missingSeniority.size
+
+            val seniorityUpgrades = existingSeniorityLevels
+                .filterValues { seniorityLevelOrderForStorage(it) < requiredSeniorityOrder }
+                .keys
+                .toList()
+            if (seniorityUpgrades.isNotEmpty()) {
+                SeniorityProfiles.update({ SeniorityProfiles.id inList seniorityUpgrades }) {
+                    it[SeniorityProfiles.levelCode] = levelCode
+                    it[SeniorityProfiles.updatedAt] = now()
+                }
+                upgradedSeniorityProfiles += seniorityUpgrades.size
+            }
+        }
+        setSettingInTx(settingKey, levelCode)
+
+        BoundTrustLevelUpgradeResult(
+            levelCode = levelCode,
+            scannedAccounts = accountUids.size,
+            insertedProfiles = insertedProfiles,
+            upgradedProfiles = upgradedProfiles,
+            insertedSeniorityProfiles = insertedSeniorityProfiles,
+            upgradedSeniorityProfiles = upgradedSeniorityProfiles,
+        )
+    }
+
+    /** 保留旧方法名，供热重载期间尚未更新的调用方兼容。 */
+    fun setDefaultBoundTrustLevelAndRaise(settingKey: String, levelCode: String): BoundTrustLevelUpgradeResult =
+        setDefaultBoundPlayerLevelAndRaise(settingKey, levelCode)
 
     fun addTrustPoints(uid: String, amount: Int): Int = transaction {
         ensureTrustProfile(uid)

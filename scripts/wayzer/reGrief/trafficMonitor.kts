@@ -16,6 +16,7 @@ import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.time.Duration
 import kotlin.math.max
+import mindustry.game.EventType
 
 name = "上行流量估算"
 
@@ -85,6 +86,9 @@ private var lastPacket: Packet? = null
 private var lastPacketAtNanos = 0L
 private var lastSampleMillis = System.currentTimeMillis()
 private val serializationWarningAt = mutableMapOf<String, Long>()
+// 由 serverPressure 使用；放在较长期存活的流量监控脚本中，避免单独热重载
+// serverPressure/syncThrottle 在同一回合重复播报同步限制介入提示。
+private var throttleRestrictionAnnouncementSentState = false
 private val sendPacketEventClass: Class<*>? = runCatching { Class.forName("mindustryX.events.SendPacketEvent") }.getOrNull()
 private val hasBatchTargetCount = sendPacketEventClass?.let { clazz ->
     runCatching {
@@ -93,6 +97,21 @@ private val hasBatchTargetCount = sendPacketEventClass?.let { clazz ->
     }.getOrDefault(false)
 } == true
 @Volatile private var resyncCoordinator = ResyncCoordinatorSnapshot()
+
+fun throttleRestrictionAnnouncementSent(): Boolean = synchronized(lock) {
+    throttleRestrictionAnnouncementSentState
+}
+
+fun markThrottleRestrictionAnnouncementSent() = synchronized(lock) {
+    throttleRestrictionAnnouncementSentState = true
+}
+
+fun resetThrottleRestrictionAnnouncement() = synchronized(lock) {
+    throttleRestrictionAnnouncementSentState = false
+}
+
+listen<EventType.WorldLoadEvent> { resetThrottleRestrictionAnnouncement() }
+listen<EventType.ResetEvent> { resetThrottleRestrictionAnnouncement() }
 
 fun updateResyncCoordinatorStatus(
     activeReason: String?,

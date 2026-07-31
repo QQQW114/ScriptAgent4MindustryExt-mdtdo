@@ -26,6 +26,13 @@ mdtserver/config/scripts/wayzer/user/forumPosts.kts
 - `/help` → 玩家指令 → **帖子列表**：快速进入帖子系统。
 - `/help` → 管理指令：已加入 **帖子管理 / 帖子回收站 / 帖子保护锁** 快捷入口；4级/admin进入帖子详情页后，会在评论按钮下方看到独立的 **设置保护锁（4）/解除保护锁（4）** 按钮。
 
+## 服务器功能开关
+
+- 4级管理员可使用 `/forumtoggle on|off` 开启或关闭整个帖子系统，默认开启；旧 `/serverfeatures forum on|off` 仅保留兼容。
+- 关闭后，玩家通过 `/post`、`/posts`、帮助菜单或旧菜单回调尝试打开帖子时，不会读取/显示帖子列表，只会提示：`帖子系统已被关闭，请联系管理员`。
+- 关闭不删除帖子、评论、分区或回收站数据；重新开启后原数据继续可用。
+- `/socialactions off` 会单独关闭点赞/点踩/认可：帖子仍可浏览、发布和评论，但详情页不显示“为作者点赞/点踩”按钮，底层调用也会拒绝；旧 `/serverfeatures social off` 仅保留兼容。
+
 ## 定位
 
 - Wiki：用于服务器规则、准则、长期重要内容。
@@ -143,6 +150,8 @@ mdtserver/config/scripts/wayzer/lib/MdtStorage.kt
 - `forum.protectedPostIds`：4级/admin 保护锁帖子 ID 列表，存放在 `MdtSettings`。
 - `forum.postChangeHistory`：最近 10 条玩家修改/删除帖子记录，存放在 `MdtSettings`。
 - `forum.deleted.<帖子ID>.by/reason/at`：回收站删除者、原因和时间，存放在 `MdtSettings`。
+- `serverFeatures.forumEnabled`：帖子系统总开关，默认 `true`。
+- `serverFeatures.socialActionsEnabled`：点赞/点踩/认可总开关，默认 `true`。
 
 ## 成就埋点
 

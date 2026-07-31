@@ -637,8 +637,11 @@ command("floodon", "管理员技能：开启洪水地图脚本".with(), commands
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
-        val ok = with(funRules) { setFloodMode(true) }
-        reply(if (ok) "[green]已尝试开启洪水地图脚本。".with() else "[red]洪水地图脚本加载失败，请查看日志。".with())
+        val result = with(funRules) { setFloodModeDetailed(true) }
+        reply(
+            if (result.success) "[green]已开启洪水地图脚本：[white]${result.message}".with()
+            else "[red]洪水地图脚本加载失败：[white]${result.message}".with()
+        )
     }
 }
 
@@ -647,8 +650,11 @@ command("floodoff", "管理员技能：关闭洪水地图脚本".with(), command
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
-        val ok = with(funRules) { setFloodMode(false) }
-        reply(if (ok) "[green]已尝试关闭洪水地图脚本。".with() else "[red]洪水地图脚本关闭失败，请查看日志。".with())
+        val result = with(funRules) { setFloodModeDetailed(false) }
+        reply(
+            if (result.success) "[green]已关闭洪水地图脚本：[white]${result.message}".with()
+            else "[red]洪水地图脚本关闭失败：[white]${result.message}".with()
+        )
     }
 }
 
@@ -657,10 +663,10 @@ command("lordon", "管理员技能：开启Lord地图脚本".with(), commands = 
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
-        val ok = with(funRules) { setLordOfWarMode(true) }
+        val result = with(funRules) { setLordOfWarModeDetailed(true) }
         reply(
-            if (ok) "[green]已尝试加载 Lord of War 脚本 mapScript/14668。".with()
-            else "[red]加载 Lord of War 脚本失败，请查看日志。".with()
+            if (result.success) "[green]已加载 Lord of War 脚本 mapScript/14668：[white]${result.message}".with()
+            else "[red]加载 Lord of War 脚本失败：[white]${result.message}".with()
         )
     }
 }
@@ -670,8 +676,11 @@ command("lordoff", "管理员技能：关闭Lord地图脚本".with(), commands =
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
-        val ok = with(funRules) { setLordOfWarMode(false) }
-        reply(if (ok) "[green]已尝试关闭 Lord of War 脚本。".with() else "[red]关闭 Lord of War 脚本失败，请查看日志。".with())
+        val result = with(funRules) { setLordOfWarModeDetailed(false) }
+        reply(
+            if (result.success) "[green]已关闭 Lord of War 脚本：[white]${result.message}".with()
+            else "[red]关闭 Lord of War 脚本失败：[white]${result.message}".with()
+        )
     }
 }
 
@@ -696,5 +705,25 @@ command("removenoskill", "管理员技能：解除当前地图noskill限制".wit
         val msg = if (had) "[yellow][管理员技能][white]{player.name}[yellow] 已解除当前地图 @noSkills 限制。"
         else "[yellow][管理员技能][white]{player.name}[yellow] 当前地图没有 @noSkills 标签。"
         broadcast(msg.with("player" to player), quite = true)
+    }
+}
+
+command("puremodeon", "管理员技能：开启本局纯净模式".with(), commands = SkillCommands) {
+    aliases = listOf("开启纯净模式", "pureOn", "cleanmodeon")
+    attr(ClientOnly)
+    skillBody {
+        if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
+        val changed = with(funRules) { enablePureMode("管理员技能:${player.plainName()}") }
+        if (!changed) returnReply("[yellow]当前这局已经开启纯净模式。".with())
+    }
+}
+
+command("puremodeoff", "管理员技能：关闭本局纯净模式".with(), commands = SkillCommands) {
+    aliases = listOf("关闭纯净模式", "pureOff", "cleanmodeoff")
+    attr(ClientOnly)
+    skillBody {
+        if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
+        val changed = with(funRules) { disablePureMode("管理员技能:${player.plainName()}") }
+        if (!changed) returnReply("[yellow]当前这局没有开启纯净模式。".with())
     }
 }
