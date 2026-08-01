@@ -11,6 +11,7 @@ import mindustry.Vars
 import mindustry.ctype.Content
 import mindustry.ctype.UnlockableContent
 import mindustry.game.MapObjectives
+import mindustry.gen.Building
 import mindustry.gen.Groups
 import mindustry.gen.Payloadc
 import mindustry.type.Item
@@ -23,6 +24,7 @@ import mindustry.type.Weather
 import mindustry.game.EventType
 import mindustry.world.Block
 import mindustry.world.blocks.environment.Floor
+import mindustry.world.blocks.storage.Unloader
 import mindustry.content.Blocks
 import mindustry.world.modules.LiquidModule
 import java.lang.reflect.Array
@@ -384,6 +386,66 @@ private fun currentDynamicContentTargets(): DynamicContentTargets {
     )
 }
 
+private fun currentReachableBuildings(): List<Building> {
+    val seen = IdentityHashMap<Building, Boolean>()
+    val builds = mutableListOf<Building>()
+
+    fun add(build: Building?) {
+        if (build != null && seen.put(build, true) == null) builds += build
+    }
+
+    // Groups.build 只包含当前活跃实体；大型地图/存档逻辑可能暂时把 Building 移出组，
+    // 但同一对象仍挂在 tile.build，稍后又会重新加入更新组。
+    Groups.build.toList().forEach(::add)
+    Vars.world.tiles?.forEach { tile -> add(tile.build) }
+    return builds
+}
+
+private val unloaderAllItemsField by lazy {
+    Unloader::class.java.getDeclaredField("allItems").apply { trySetAccessible() }
+}
+
+/**
+ * v159 DataManager 运行期增删 Item 后会调整 Content 与模块容量，但原版 Unloader.allItems
+ * 是仅在 Block.init() 生成一次的静态快照。若卸载 DP 后仍保留旧 Item，空筛选卸载器会把
+ * 已注销物品传给相邻建筑，最终在 ItemModule.get(item) 发生越界。
+ *
+ * 必须在 DataManager.load/reloadPatches 返回后同步刷新该缓存；同时清除任何因离组等原因
+ * 漏过注销前扫描、且已经不属于当前 ContentLoader 的卸载器筛选物品。
+ */
+fun refreshDynamicContentRuntimeCaches(reason: String) {
+    val currentItems = Vars.content.items().toArray<Item>(Item::class.java)
+    val previousSize = runCatching {
+        (unloaderAllItemsField.get(null) as? kotlin.Array<*>)?.size ?: -1
+    }.getOrDefault(-1)
+
+    runCatching { unloaderAllItemsField.set(null, currentItems) }
+        .getOrElse { throw IllegalStateException("刷新 Unloader.allItems 失败", it) }
+
+    var clearedUnloaderConfigs = 0
+    currentReachableBuildings().forEach { build ->
+        val unloader = build as? Unloader.UnloaderBuild ?: return@forEach
+        val item = unloader.sortItem ?: return@forEach
+        val id = item.id.toInt()
+        if (id !in currentItems.indices || currentItems[id] !== item) {
+            // 变更后会统一同步世界；直接清字段，避免 configureAny 额外广播或再次解析旧 Content。
+            unloader.sortItem = null
+            clearedUnloaderConfigs++
+        }
+    }
+
+    val refreshed = unloaderAllItemsField.get(null) as? kotlin.Array<*>
+        ?: throw IllegalStateException("Unloader.allItems 刷新后不是 Item[]")
+    if (refreshed.size != currentItems.size || currentItems.indices.any { refreshed[it] !== currentItems[it] }) {
+        throw IllegalStateException("Unloader.allItems 刷新校验失败：${refreshed.size}/${currentItems.size}")
+    }
+
+    logger.info(
+        "DataAsset运行态内容缓存刷新 ($reason): items=${currentItems.size}, " +
+            "unloaderItems=$previousSize->${currentItems.size}, staleUnloaderConfigs=$clearedUnloaderConfigs"
+    )
+}
+
 private fun objectiveReferencesDynamicContent(objective: MapObjectives.MapObjective, targets: DynamicContentTargets): Boolean {
     var clazz: Class<*>? = objective.javaClass
     while (clazz != null && clazz != Any::class.java) {
@@ -542,7 +604,7 @@ fun prepareForDataAssetReload(reason: String): DynamicContentCleanupReport {
             .onFailure { report.addFailure("清理子弹#${bullet.id}失败: ${it.message}") }
     }
 
-    Groups.build.toList().forEach { build ->
+    currentReachableBuildings().forEach { build ->
         if (build.block in targets.blocks) {
             // 成功加载后会统一完整重同步；清场阶段只改服务端世界，避免大量 setNet 包放大上行压力。
             runCatching { build.tile.setBlock(Blocks.air) }
@@ -802,6 +864,7 @@ fun applyPatchStrings(patches: Iterable<String>) {
         false
     }
     if (!applied) error("当前 Mindustry 版本未提供可用的 CP/DataAsset patcher")
+    refreshDynamicContentRuntimeCaches("属性Patch重载 patches=${list.size}")
 }
 
 @JvmName("addPatchV3")
@@ -839,6 +902,7 @@ fun addPatchOld(name: String, patch: String): String {
 export(::addPatch)
 onEnable {
     ensureDefaultContentStateBaseline()
+    refreshDynamicContentRuntimeCaches("ContentsTweaker启用")
 }
 
 listen<EventType.ResetEvent> {
@@ -854,4 +918,9 @@ listen<EventType.WorldLoadBeginEvent> {
         val patch = state.map.tags.get("CT@$name") ?: return@forEach
         addPatch(name, patch)
     }
+}
+
+listen<EventType.WorldLoadEvent> {
+    // 地图切换时 v159 DataManager 可能在 ResetEvent 之后再次重建 Data Assets。
+    refreshDynamicContentRuntimeCaches("世界加载完成")
 }

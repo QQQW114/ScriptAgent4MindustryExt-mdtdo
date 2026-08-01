@@ -64,6 +64,7 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 与当前地图、服务器资产或其他外部包发生路径/名称冲突时仍拒绝加载，不允许借 `generated` 优先级跨包覆盖；
 - 同一时刻只允许一个加载/卸载操作；
 - v159 `DataManager.load/reloadPatches` 会重建当前 ContentAsset 对象；每次重载前都会保守清理全部旧动态 Content 的运行态引用，而不是只处理本次被卸载的一个包；
+- 原版 `Unloader.allItems` 只在方块初始化时生成一次静态物品快照。动态物品加载/卸载后会立即把该缓存刷新为当前 `Vars.content.items()`，并清除仍指向已注销物品的卸载器筛选配置，避免空筛选卸载器把旧物品传给相邻单位工厂后触发 `ItemModule.get` 越界；
 - 玩家若正在附身 DP 新增单位，会在内容注销前先 `clearUnit()`，随后删除旧 DP 单位，防止完整世界同步写出客户端已无法解析的内容 ID；
 - 清理范围还包括 DP 建筑/环境方块/地板/覆盖层、单位与建筑内的自定义物品/液体/状态/载荷/配置/建造计划、自定义洼地/天气、波次/规则/队伍引用；动态 Content 重载时保守清理现存子弹；
 - 清场阶段只修改服务端世界，不对每个方块批量发送 `setNet`，成功后由统一完整重同步更新客户端，避免卸载时反而放大上行峰值；
@@ -122,3 +123,10 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 加载、卸载和失败回滚现在会就地调整 `ItemModule.empty`、活跃建筑及 `tile.build` 中暂时离组建筑的物品数组，并同步维护 `total`、`takeRotation` 和流量统计；`LiquidModule` 同步调整数组容量并修复失效 `current`。
 - 动态 Content 注销前先按当前内容数量做一次容量预修复，清理器读取动态物品/液体时另有边界判断；`DataManager.load` 后再完整修复，并开启默认30秒的逐tick轻量守护覆盖迟到的活跃建筑。电网重建不进入高频守护。
 - 地图24662加载真实 `仙古测试2.9.1.zip` 后，32秒与44秒检查均为 `items=27, ItemModule.empty=27, bad=0`，4个核心显式邻接更新正常；卸载后1/4/10秒均恢复 `items=22, ItemModule.empty=22, bad=0`，未见越界、卸载失败或回滚失败。冷启动仍为155/151/146/0。
+
+2026-08-02 补充原版卸载器静态物品缓存保护：
+
+- 生产日志在 DP 全部卸载后出现 `ItemModule.get -> UnitFactoryBuild.acceptItem -> UnloaderBuild.isPossibleItem/updateTile`，同时清理摘要已有 `itemArrays=892`，据此排除物品模块容量未缩回的旧问题。
+- 对照 v159 `Unloader.java` 确认：无指定筛选物品的卸载器会遍历仅在 `Unloader.init()` 缓存一次的静态 `allItems`。DP 加载后该数组包含新增物品 ID，卸载后若不刷新，单位工厂会用已注销物品 ID 读取已恢复为原版长度的 `ItemModule`，从而越界。
+- `coreMindustry/contentsTweaker.kts` 现统一扫描 `Groups.build` 与 `tile.build` 可达建筑，反射刷新 `Unloader.allItems`，校验对象身份与数组长度，并清除残留旧 `sortItem`；属性 Patch、脚本启用、世界加载和外部 DP 的正常/回滚 `DataManager.load` 链路都会刷新。
+- 本地冷启动为 `共找到156脚本,加载成功152,启用成功147,出错0`。同一命令 Socket 内加载真实 `仙古测试2.9.1.zip` 时记录 `items=27, unloaderItems=22->27`，随后全部卸载记录 `items=22, unloaderItems=27->22`、`failures=0`；卸载后继续观察20秒，未出现 `ArrayIndexOutOfBoundsException`、`UnitFactoryBuild.acceptItem` 或 `UnloaderBuild.updateTile`。按既定边界未执行附身 DP 单位的破坏性卸载测试。

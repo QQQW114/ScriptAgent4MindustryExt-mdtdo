@@ -12,6 +12,15 @@
 
 > 维护规则：后续只要新增、重命名、拆分、删除或明显修改脚本职责，都应同步更新本文档。
 
+## 2026-08-02：DP 卸载后的卸载器静态物品缓存越界修复
+
+- 生产堆栈为 `ItemModule.get -> UnitFactoryBuild.acceptItem -> UnloaderBuild.isPossibleItem/updateTile`。本次清理摘要已经显示大量 `itemArrays` 完成修复，因此根因不是旧建筑物品模块容量遗漏，而是原版 `Unloader.allItems` 在 `init()` 后不再更新：DP 加载时缓存新增物品，卸载后空筛选卸载器仍遍历旧物品对象。
+- `coreMindustry/contentsTweaker.kts` 新增统一可达建筑扫描，合并 `Groups.build` 与 `Vars.world.tiles[*].build` 并按对象身份去重，避免暂时离组建筑漏清理。动态 Content 注销前的建筑清理也改用该扫描。
+- 新增 `refreshDynamicContentRuntimeCaches(reason)`：把 `Unloader.allItems` 原位替换为当前 `Vars.content.items()`，随后逐项校验长度和对象身份；同时把仍引用已注销物品的 `UnloaderBuild.sortItem` 清空。日志记录 `items`、`unloaderItems=旧->新` 与清理的失效筛选数量，刷新失败会中止当前加载/卸载并进入既有回滚，而不是继续带病运行。
+- 属性 Patch 重载、`ContentsTweaker` 启用、世界加载完成，以及 `externalCpHotReload.kts` 正常应用和失败回滚的每次 `Vars.state.data.load` 后都会立即刷新，保证下一游戏 tick 前完成更新。
+- 本地正式冷启动为 `共找到156脚本,加载成功152,启用成功147,出错0`。同一命令 Socket 内加载真实 `仙古测试2.9.1.zip` 得到 `items=27, unloaderItems=22->27`，全部卸载得到 `items=22, unloaderItems=27->22`，清理 `failures=0`；继续观察20秒未出现对应越界堆栈。按用户要求未执行附身 DP 单位后卸载的破坏性测试。
+- 本地 `exit` 后仍遇到项目既有的 ScriptAgent 集中卸载停滞，已按已知边界强制清理测试进程并确认 6567/6859/10099 端口释放；一次性 `.tmp-contents-cache-test*` 文件已删除，正式 `config/logs`、数据库、外部 CP 与资产缓存未清理。
+
 ## 2026-08-01：数据库业务总开关与九个独立功能开关
 
 - 新增 `wayzer/lib/DatabaseFeatureSettings.kt` 与 `wayzer/user/databaseFeatureSettings.kts`。数据库业务总开关只暂停可选玩家业务，不物理关闭数据库连接；账号、信任权限、封禁、禁言、IP风控和性能保护始终保留。

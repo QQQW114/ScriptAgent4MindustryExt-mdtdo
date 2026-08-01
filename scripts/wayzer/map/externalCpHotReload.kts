@@ -1044,6 +1044,7 @@ private fun applyDataAssetsAndSanitize(assets: List<DataAsset>, externalAssets: 
     repairContentModulesBeforeDataReload(reason)
     with(contentsTweaker) { prepareForDataAssetReload(reason) }
     Vars.state.data.load(seq)
+    with(contentsTweaker) { refreshDynamicContentRuntimeCaches(reason) }
     armContentModuleCapacityGuard(reason)
 
     val failures = mutableListOf<String>()
@@ -1076,6 +1077,7 @@ private fun restoreDataAssetsAfterFailure(previousAssets: List<DataAsset>, reaso
     repairContentModulesBeforeDataReload(reason)
     with(contentsTweaker) { prepareForDataAssetReload(reason) }
     Vars.state.data.load(seq)
+    with(contentsTweaker) { refreshDynamicContentRuntimeCaches(reason) }
     armContentModuleCapacityGuard(reason)
     repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
     sanitizeInvalidTurretAmmo(reason)
