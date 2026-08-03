@@ -54,10 +54,10 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 
 - 文件必须位于外部 CP 目录内，拒绝路径越界；
 - ZIP 条目拒绝绝对路径、`..`、空路径和非法路径；
-- 最大 2048 个 ZIP 文件、单资产 32MB、累计解压 128MB；
+- 最大 16384 个 ZIP 文件、单资产 32MB、累计解压 128MB；
 - 最大压缩比 200:1，阻止常见 ZIP 炸弹；
 - 单包最多 4096 个 Data Assets；
-- PNG 必须具有合法文件头，尺寸不得超过 v159 的 2000×2000 上限；
+- 贴图按真实文件头校验：`.png` 实为 PNG 时按 PNG magic 与 IHDR 尺寸校验；实为 JPEG（部分模组/转换产物会把 JPEG 数据命名为 .png，参考项目 `DataImagePacker.pack` 用 `new Pixmap(cacheFile)` 按文件头解码，本身支持 JPEG/PNG）时按 `FF D8` 头、`FF D9` 尾与 SOF0~SOF15 标记解析真实尺寸；两者均不得超过 v159 的 2000×2000 上限，文件头与尺寸都合法才放行，否则整包拒绝；
 - 不支持的目录或扩展名不会执行，只记录警告；
 - 同一包内重复路径直接拒绝；
 - 同一包内重复名称原则上拒绝；唯一例外是恰好一张 `sprites/generated/**/<name>.png` 与一张普通同名贴图并存。该组合是 v159 原生生成资产格式，保留两项并按原版规则优先使用 `generated` 贴图，同时记录加载警告；多张 `generated`、第三张同名图或其他同名资产仍直接拒绝；
@@ -130,3 +130,11 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 对照 v159 `Unloader.java` 确认：无指定筛选物品的卸载器会遍历仅在 `Unloader.init()` 缓存一次的静态 `allItems`。DP 加载后该数组包含新增物品 ID，卸载后若不刷新，单位工厂会用已注销物品 ID 读取已恢复为原版长度的 `ItemModule`，从而越界。
 - `coreMindustry/contentsTweaker.kts` 现统一扫描 `Groups.build` 与 `tile.build` 可达建筑，反射刷新 `Unloader.allItems`，校验对象身份与数组长度，并清除残留旧 `sortItem`；属性 Patch、脚本启用、世界加载和外部 DP 的正常/回滚 `DataManager.load` 链路都会刷新。
 - 本地冷启动为 `共找到156脚本,加载成功152,启用成功147,出错0`。同一命令 Socket 内加载真实 `仙古测试2.9.1.zip` 时记录 `items=27, unloaderItems=22->27`，随后全部卸载记录 `items=22, unloaderItems=27->22`、`failures=0`；卸载后继续观察20秒，未出现 `ArrayIndexOutOfBoundsException`、`UnitFactoryBuild.acceptItem` 或 `UnloaderBuild.updateTile`。按既定边界未执行附身 DP 单位的破坏性卸载测试。
+
+2026-08-03 修复“以 .png 命名的 JPEG 伪装贴图”导致整包被拒：
+
+- 现象：加载真实外部包 `饱和火力4.0.4.2程序转换无平衡保证.zip` 时，旧 `validatePngDimensions` 只识别 PNG magic，`sprites/gked.png`（内容实为 JPEG，SOF 208x208）被判为“PNG文件头无效”，整个包在读取阶段被拒。
+- 改动（`externalCpHotReload.kts`，已提交 `ed576b0`，仅此一文件，未推送）：PNG 分支不变；`.png` 但非 PNG magic 时改走 `jpegDimensionsOrNull`——校验 `FF D8` 头与 `FF D9` 尾，按段长扫描 SOF0~SOF15 标记读取真实宽高，超限文案区分“JPEG尺寸超限”。
+- 预检：ZIP 共 2474 个非目录条目（content=321、bundles=2、sprites=2141、sounds=10），其中真 PNG 2140、伪装 JPEG 1（`sprites/gked.png`），累计解压 6,935,773 B，预检全部通过。
+- 本地冷启动后在同一命令 Socket 执行 `cp load 11` 加载该真实包成功：`assets=content=321, bundles=2, sprites=2141, sounds=10 / expanded=6.61MB slow=true warnings=165`，2141 张贴图全部进入资产表；`DataAsset运行态内容缓存刷新: items=37, unloaderItems=37->37`。warnings 全部为无害的“同名贴图 generated 优先”提示，无尺寸错误、无失败回滚。
+- 清理：测试进程树已结束，6567/6859/10099 端口释放，`server.properties` 已还原（socketInput=false），未新增任何运行产物。

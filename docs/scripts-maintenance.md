@@ -12,6 +12,24 @@
 
 > 维护规则：后续只要新增、重命名、拆分、删除或明显修改脚本职责，都应同步更新本文档。
 
+## 2026-08-03：放行以 .png 命名的 JPEG 伪装贴图，并沉淀本地服务器运行/调试方法
+
+- 真实外部包 `饱和火力4.0.4.2程序转换无平衡保证.zip` 的 `sprites/gked.png` 内容实为 JPEG（SOF 208x208）。旧 `validatePngDimensions` 只按 PNG magic 校验，读取阶段判“PNG文件头无效”导致整包被拒。
+- 对照参考项目 `DataImagePacker.pack` 用 `new Pixmap(cacheFile)` 按文件头解码（本身支持 JPEG/PNG），`externalCpHotReload.kts` 改为按真实图片头校验：PNG 分支不变；`.png` 但非 PNG magic 时走 `jpegDimensionsOrNull`（校验 `FF D8` 头、`FF D9` 尾，按段长扫描 SOF0~SOF15 读取真实宽高），超过 v159 2000x2000 上限才拒绝。已提交 `ed576b0`，仅此一文件，未推送。
+- 预检（仅脚本，未走服务端）：ZIP 共 2474 条目（content=321、bundles=2、sprites=2141、sounds=10），真 PNG 2140、伪装 JPEG 1，累计解压 6,935,773 B，全部通过。
+- 本地冷启动后同一命令 Socket `cp load 11` 加载该真实包成功：`assets=content=321, bundles=2, sprites=2141, sounds=10 / expanded=6.61MB slow=true warnings=165`，2141 张贴图全部进入资产表；`DataAsset运行态内容缓存刷新: items=37, unloaderItems=37->37`。warnings 均为无害“同名贴图 generated 优先”提示，无尺寸错误、无失败回滚。
+- 清理：测试进程树已结束，6567/6859/10099 端口释放，`server.properties` 还原为 socketInput=false，无新增运行产物。
+
+服务器运行与调试要点（2026-08-03 实测，长期有效）：
+
+- 正常启动用 `mdtserver/start-server.ps1`（自带 `-Dfile.encoding=UTF-8`、Java logging 配置与异常退出重启）。`start-server.ps1` 会把 `server.properties` 里的 socket 相关项拼成多条 `config socketInput*`（如 `config socketInputPort 6859`、`config socketInputAddress localhost`、`config socketInput true`）追加到启动参数。
+- **命令 Socket 竞态**：ServerControl 的 `Trigger.socketConfigChanged` 会对每条 `config socketInput*` 执行 `toggleSocket(false)+toggleSocket(true)`。多条配置连续触发会让 accept 线程在重启竞态中死亡，`log-0.txt` 出现 `[E] Command input socket already in use...` 与 `java.net.SocketException: Socket is not bound yet`；此时 TCP 能连上 6859 但命令无回显（连接被接受、读取线程未就绪）。
+- **规避**：调试/自动化测试时直接以 java 命令行启动，只传单条 `config socketInput true`（不带 port/address，用默认 6859/localhost），socket server 只启动一次，命令回显正常。
+- **命令通道**：框架把 `ServerControl.handler` 反射替换为 `MyCommandHandler("", Config.serverCommands)`（`coreMindustry/lib/CommandImpl.kt` 的 `hookGameHandler`），因此命令 Socket 与游戏内 `/sa`、`/cp`、`/externalcp` 共用框架命令根；游戏原生命令仍由原生 handler 执行。已验证 Socket 上 `cp files`、`cp load 11`、`externalcp list` 均正常回显（UTF-8）。
+- **自动化启动**：可直接 `java <JVM参数> -jar server-2026.07.20.B480-mdtdo.jar "config name ...,config port 6567,...,config socketInput true,playerlimit 16,shuffle all,host"`，stdin 走管道即可（JLine 退化为 dumb terminal，控制台与 Socket 都能执行框架命令），命令回显出现在 stdout 与日志文件。
+- **退出与清理**：socket `exit` 在脚本停用后可能不生效；stdin EOF 会触发 JLine 退出路径（`停止脚本`）并遇到项目既有的 ScriptAgent 集中卸载停滞，进程可能不退出。清理时结束 java 进程树并确认 6567/6859/10099 端口释放；临时改过的 `server.properties` 要从备份还原。
+- 日志定位：`config/logs/log-0.txt`（运行日志，含 socket 报错与命令输出）、`config/logs/script-load/current.log`（逐脚本加载、`contentsTweaker` 刷新、`externalCpHotReload` 摘要）。
+
 ## 2026-08-02：DP 卸载后的卸载器静态物品缓存越界修复
 
 - 生产堆栈为 `ItemModule.get -> UnitFactoryBuild.acceptItem -> UnloaderBuild.isPossibleItem/updateTile`。本次清理摘要已经显示大量 `itemArrays` 完成修复，因此根因不是旧建筑物品模块容量遗漏，而是原版 `Unloader.allItems` 在 `init()` 后不再更新：DP 加载时缓存新增物品，卸载后空筛选卸载器仍遍历旧物品对象。

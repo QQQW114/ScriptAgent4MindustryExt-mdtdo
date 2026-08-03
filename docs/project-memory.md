@@ -1,6 +1,6 @@
 # MDT DO 项目长期记忆与当前状态
 
-> 更新时间：2026-08-02
+> 更新时间：2026-08-03
 > 维护对象：C:\Users\qw114\Desktop\other\mdt保留
 > 文档性质：给新会话和接手项目的 Agent 使用的上下文、判断依据与状态面板。
 
@@ -24,7 +24,7 @@
 
 ### 生产与证据边界
 
-Agent 可以在本工作区分析、编辑、构建、运行测试副本并准备交付材料；**不能代替用户或运维访问、停启、替换、回滚或确认生产服务器**。目前已知生产目录为 E:\mdtserver，不在本工作区；生产部署与生产实测只能由用户/运维执行并提供证据。
+Agent 可以在本工作区分析、编辑、构建、运行测试副本并准备交付材料；**不能代替用户或运维访问、停启、替换、回滚或确认生产服务器**。生产服不存在于本机，Agent 也无法推送/部署到生产；生产部署、推送与生产实测只能由用户/运维执行并提供证据。
 
 以下状态互不等同，应分别记录：
 
@@ -46,7 +46,16 @@ Agent 可以在本工作区分析、编辑、构建、运行测试副本并准�
 
 只有上述正式日志缺失、没有随本轮启动更新、损坏，或确实无法覆盖启动器自身输出时，才创建一次性根目录临时日志；诊断结论写入文档后应及时清理。清理临时产物时不得删除 `config/logs` 正式日志，也不得触碰数据库、外部 CP、缓存备份或其他运行数据。
 
-## 1. 当前快照（最近核对：2026-08-02）
+### 本地服务器启动与命令 Socket 调试要点（2026-08-03 实测）
+
+- 正常启动用 `mdtserver/start-server.ps1`（自带 `-Dfile.encoding=UTF-8`、Java logging 配置与异常退出重启）。`start-server.ps1` 会把 `server.properties` 的 socket 相关项拼成多条 `config socketInput*`（如 `config socketInputPort 6859`、`config socketInputAddress localhost`、`config socketInput true`）追加到启动参数。
+- **命令 Socket 竞态**：ServerControl 的 `Trigger.socketConfigChanged` 对每条 `config socketInput*` 执行 `toggleSocket(false)+toggleSocket(true)`；多条连续触发会让 accept 线程在重启竞态中死亡，`log-0.txt` 出现 `[E] Command input socket already in use...` 与 `java.net.SocketException: Socket is not bound yet`，TCP 能连上 6859 但命令无回显。
+- **规避**：直接以 java 命令行启动、只传单条 `config socketInput true`（不带 port/address，用默认 6859/localhost），socket server 只启动一次，命令回显正常。
+- **命令通道**：`hookGameHandler` 把 `ServerControl.handler` 反射替换为 `MyCommandHandler("", Config.serverCommands)`，命令 Socket 与游戏内 `/sa`、`/cp`、`/externalcp` 共用框架命令根；原生命令仍由原生 handler 执行。已验证 Socket 上 `cp files`、`cp load 11`、`externalcp list` 正常回显（UTF-8）。
+- **自动化启动**：`java <JVM参数> -jar server-2026.07.20.B480-mdtdo.jar "config name ...,config port 6567,...,config socketInput true,playerlimit 16,shuffle all,host"`，stdin 走管道即可（JLine 退化为 dumb terminal），命令回显在 stdout 与日志文件。
+- **退出与清理**：socket `exit` 在脚本停用后可能不生效；stdin EOF 触发 JLine 退出路径并遇到项目既有的 ScriptAgent 集中卸载停滞，进程可能不退出。清理时结束 java 进程树并确认 6567/6859/10099 端口释放；临时改过的 `server.properties` 要从备份还原。
+
+## 1. 当前快照（最近核对：2026-08-03）
 
 | 项目 | 当前记录 | 解释 |
 |---|---|---|
@@ -56,8 +65,8 @@ Agent 可以在本工作区分析、编辑、构建、运行测试副本并准�
 | 候选 JAR | mdtserver/server-2026.07.20.B480-mdtdo.jar | 文档记录的 SHA-256 为 8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC；使用前仍应现场重算。 |
 | JAR 与脚本时点 | 候选 JAR 主要对应 7 月 21 日 B480 构建，脚本树随后持续更新至 8 月 1 日 | 不能因为 JAR 可用就假设它包含 HEAD 之后的全部脚本改动；发布前要重新匹配构建物与脚本。 |
 | 脚本运行时 | 工作区脚本已按 ScriptAgent 3.4.0 迁移；2026-07-29 已替换为维护者提供的未发行竞态修复构建 | 构建文件名为 `ScriptAgent4MindustryExt-e4b136c.jar`，运行时显示 `ScriptAgent c2823c1`；旧本地字节码 workaround 已备份。该构建尚未进入正式发行版，也不能推断生产正在使用。 |
-| 最近本地证据 | 2026-08-02 最新整轮冷启动为 156/152/147/0 | 针对生产 DP 卸载后 `Unloader -> UnitFactory -> ItemModule.get` 越界，已在同一命令 Socket 内完成真实包 `仙古测试2.9.1.zip` 加载/全部卸载：卸载器静态物品缓存 `22->27->22`，清理 `failures=0`，卸载后观察20秒无对应越界。数据库业务十项开关此前的落盘验证仍有效。测试进程与临时根目录日志已清理，6567/6859/10099 端口释放；停服集中卸载超时仍按既有插件边界处理。 |
-| 生产状态 | 生产待用户/运维确认（已知目录 E:\mdtserver） | Agent 无法完成生产部署、停启、替换或回滚；当前 HEAD 之后的改动尤其不能默认已经部署。 |
+| 最近本地证据 | 2026-08-03 最新整轮验证为 156/152/147/0 基线；放行以 .png 命名的 JPEG 伪装贴图（`externalCpHotReload.kts`，已提交 `ed576b0`） | 2026-08-02 的 DP 卸载器缓存验证仍有效（`仙古测试2.9.1.zip` 加载/卸载 `22->27->22`、`failures=0`）。2026-08-03 新增：命令 Socket 加载真实 `饱和火力4.0.4.2程序转换无平衡保证.zip` 成功，`assets=content=321, bundles=2, sprites=2141, sounds=10 / expanded=6.61MB slow=true warnings=165`，`items=37, unloaderItems=37->37`，无回滚。测试进程已清理、端口释放、`server.properties` 已还原。 |
+| 生产状态 | 生产待用户/运维确认（生产服不存在于本机，Agent 无法推送/部署） | Agent 无法完成生产部署、停启、替换、推送或回滚；当前 HEAD 之后的改动尤其不能默认已经部署。 |
 | 远程仓库状态 | 2026-07-29 核对 `git remote -v` 未显示远程 | 不要把本地 HEAD 或本地提交推断为已推送；远程状态应在实际操作前再次核对。 |
 | 工作区漂移 | 有外部 CP、资产缓存、SA 备份、服务器配置备份、Issue/验证文档和 session浓缩 等未跟踪运行/临时内容 | 不要把运行数据、缓存、数据库、备份、外部内容或会话提取物自动纳入源码提交。 |
 
@@ -164,6 +173,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - **2026-08-01**：生产日志定位到 DP 新增物品后旧 `ItemModule` 仍保持原版长度，核心邻接更新按新物品 ID 读取时越界崩服。热重载链路现会在注销前、加载后及短期守护期同步修复 `ItemModule.empty`、活跃建筑和 `tile.build` 中暂时离组建筑的物品/液体容量；地图24662加载真实 `仙古测试2.9.1.zip` 44秒及卸载回归均为 `bad=0`，核心邻接更新未崩溃，冷启动仍为155/151/146/0。
 - **2026-08-01**：新增数据库业务总开关及在线时长、成就、Wiki、MDC转账/红包、最近玩家、信任自动调整、资历自动调整、排行榜、玩家资料显示九个子开关。总开关为覆盖层，不关闭数据库连接，不影响账号/权限/封禁/禁言/IP风控/性能保护；子开关复用 `MdtSettings`，无DDL。命令 Socket 已逐项验证关闭/开启及跨重启落盘，最终正常冷启动为156/152/147/0且十项全部开启。
 - **2026-08-02**：生产 DP 卸载堆栈进一步定位为原版 `Unloader.allItems` 静态快照残留，而非 `ItemModule` 容量修复遗漏。运行态缓存刷新现覆盖属性 Patch、世界加载、外部 DP 正常应用与失败回滚，并清除旧卸载器筛选；真实 `仙古测试2.9.1.zip` 验证 `unloaderItems=22->27->22`，卸载后20秒无越界，冷启动156/152/147/0。
+- **2026-08-03**：放行以 .png 命名的 JPEG 伪装贴图。旧校验只认 PNG magic，`饱和火力4.0.4.2程序转换无平衡保证.zip` 的 `sprites/gked.png`（实为 JPEG）曾导致整包被拒；`externalCpHotReload.kts` 现按真实图片头校验（PNG 分支不变，非 PNG 走 JPEG 头/尾/SOF 尺寸解析），已提交 `ed576b0`。命令 Socket 实测该真实包加载成功（2141 张贴图全进资产表，`items=37`，无回滚）。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -237,6 +247,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 ## 12. 本文档更新记录
 
 - **2026-08-02**：同步 DP 卸载后原版卸载器静态物品缓存残留的根因、刷新/校验策略和真实包加载卸载验证。
+- **2026-08-03**：同步“以 .png 命名的 JPEG 伪装贴图”修复及其实测证据；在“启动与脚本加载日志优先级”补充本地服务器启动、命令 Socket 竞态规避、自动化测试与退出清理要点。
 - **2026-08-01**：同步 DP 动态物品导致旧 `ItemModule` 越界崩服的根因、容量修复/短期守护方案和地图24662长时加载卸载验证。
 - **2026-07-30**：同步 v159 动态 Content 卸载前运行态清理、DP附身全员掉线风险、可空载荷兼容修复与最终验证边界。
 - **2026-07-30**：同步默认信任/资历共同下限、五个拆分管理指令、H2磁盘预热管理、三级技能费用、洪水/Lord停用修复和最终验证证据。

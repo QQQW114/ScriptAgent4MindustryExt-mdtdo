@@ -55,7 +55,7 @@ private val hardExternalCpBytes by config.key(64_000_000L, "外部CP硬读取上
 private val worldSyncDelayMillis by config.key(350L, "外部CP变更后分批同步玩家间隔(ms)")
 private val largeWorldSyncDelayMillis by config.key(1500L, "大文件外部CP变更后分批同步玩家间隔(ms)")
 private val contentModuleGuardMillis by config.key(30_000L, "外部DP变更后持续修复旧建筑物品/液体模块容量的时长(ms)")
-private val maxZipEntries by config.key(2048, "v159 ZIP CP允许的最大文件数")
+private val maxZipEntries by config.key(16384, "v159 ZIP CP允许的最大文件数")
 private val maxZipEntryBytes by config.key(32_000_000L, "v159 ZIP CP单文件解压上限")
 private val maxZipExpandedBytes by config.key(128_000_000L, "v159 ZIP CP累计解压上限")
 private val maxZipCompressionRatio by config.key(200, "v159 ZIP CP最大压缩比，防止ZIP炸弹")
@@ -275,15 +275,52 @@ private fun readZipEntryBytes(zip: ZipFile, entry: ZipEntry, totalBefore: Long):
 private fun validatePngDimensions(path: String, bytes: ByteArray) {
     if (!path.endsWith(".png", true) || bytes.size < 24) return
     val png = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
-    require(bytes.copyOfRange(0, 8).contentEquals(png)) { "PNG文件头无效：$path" }
-    fun intAt(offset: Int): Int =
-        ((bytes[offset].toInt() and 0xff) shl 24) or
-            ((bytes[offset + 1].toInt() and 0xff) shl 16) or
-            ((bytes[offset + 2].toInt() and 0xff) shl 8) or
-            (bytes[offset + 3].toInt() and 0xff)
-    val width = intAt(16)
-    val height = intAt(20)
-    require(width in 1..2000 && height in 1..2000) { "PNG尺寸超限：$path = ${width}x${height}，v159上限2000x2000" }
+    if (bytes.copyOfRange(0, 8).contentEquals(png)) {
+        fun intAt(offset: Int): Int =
+            ((bytes[offset].toInt() and 0xff) shl 24) or
+                ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+                ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+                (bytes[offset + 3].toInt() and 0xff)
+        val width = intAt(16)
+        val height = intAt(20)
+        require(width in 1..2000 && height in 1..2000) { "PNG尺寸超限：$path = ${width}x${height}，v159上限2000x2000" }
+    } else {
+        // 部分模组/转换产物会把 JPEG 数据命名为 .png；Arc Pixmap 按文件头识别格式，
+        // 因此这里同样校验真实图片文件头与尺寸，而不是仅因扩展名不符就拒绝整个包。
+        val (width, height) = jpegDimensionsOrNull(bytes)
+            ?: throw IllegalArgumentException("PNG/JPEG文件头无效：$path")
+        require(width in 1..2000 && height in 1..2000) { "JPEG尺寸超限：$path = ${width}x${height}，v159上限2000x2000" }
+    }
+}
+
+private fun jpegDimensionsOrNull(bytes: ByteArray): Pair<Int, Int>? {
+    if (bytes.size < 4) return null
+    if (bytes[0] != 0xFF.toByte() || bytes[1] != 0xD8.toByte()) return null
+    if (bytes[bytes.lastIndex - 1] != 0xFF.toByte() || bytes[bytes.lastIndex] != 0xD9.toByte()) return null
+    var i = 2
+    while (i + 3 < bytes.size) {
+        if (bytes[i].toInt() and 0xff != 0xFF) { i++; continue }
+        val marker = bytes[i + 1].toInt() and 0xff
+        if (marker == 0xFF) { i++; continue }
+        when (marker) {
+            0xD8, 0xD9, 0x01 -> { i += 2; continue }
+            in 0xD0..0xD7 -> { i += 2; continue }
+        }
+        val len = ((bytes[i + 2].toInt() and 0xff) shl 8) or (bytes[i + 3].toInt() and 0xff)
+        if (len < 2 || i + 2 + len > bytes.size) return null
+        val sof = marker == 0xC0 || marker == 0xC1 || marker == 0xC2 || marker == 0xC3 ||
+            marker == 0xC5 || marker == 0xC6 || marker == 0xC7 ||
+            marker == 0xC9 || marker == 0xCA || marker == 0xCB ||
+            marker == 0xCD || marker == 0xCE || marker == 0xCF
+        if (sof) {
+            if (i + 9 > bytes.size) return null
+            val height = ((bytes[i + 5].toInt() and 0xff) shl 8) or (bytes[i + 6].toInt() and 0xff)
+            val width = ((bytes[i + 7].toInt() and 0xff) shl 8) or (bytes[i + 8].toInt() and 0xff)
+            return width to height
+        }
+        i += 2 + len
+    }
+    return null
 }
 
 private fun readStandaloneCp(cp: ExternalCpFile): ExternalCpReadResult {
