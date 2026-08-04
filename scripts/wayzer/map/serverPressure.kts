@@ -86,7 +86,6 @@ private var trafficRecoverSamples = 0
 private var throttleDowngradeCandidateLevel = -1
 private var throttleDowngradeSamples = 0
 private var throttleActiveSinceMillis = 0L
-private var lastBroadcastLevel = 0
 private var recoverSamples = 0
 private var downgradeCandidateLevel = -1
 private var downgradeSamples = 0
@@ -414,32 +413,10 @@ private fun updatePressureSnapshot() {
         reason = if (mode == "off") "性能优化关闭" else if (!sampled) "采样中" else buildReason(tpsLevel, trafficLevel),
     )
 
-    if (snapshot.level > lastBroadcastLevel) {
-        val broadcasted = safePressureBroadcast("升档") {
-            broadcast(
-                "[yellow][服务器压力] {reason}，性能等级升至 [white]{level}[yellow]；TPS均值 [white]{tps}[yellow]，同步上行 [white]{traffic} Mbps[yellow]。".with(
-                    "reason" to snapshot.reason,
-                    "level" to snapshot.level,
-                    "tps" to snapshot.averageTps.roundToInt(),
-                    "traffic" to "%.2f".format(snapshot.averageSyncTrafficMbps),
-                )
-            )
-        }
-        // 广播失败时不要消费本次升档状态；下一轮会重试，避免压力提示永久丢失。
-        if (broadcasted) lastBroadcastLevel = snapshot.level
+    // 玩家提示统一由 serverPressureActions 的"进入性能等级/恢复"广播负责，
+    // 本采样器只在等级发生变化时记日志，避免同一升档/恢复瞬间重复播报。
+    if (snapshot.level != previousLevel) {
         logger.info("[服务器压力] 性能等级 $previousLevel -> ${snapshot.level}：${snapshot.reason}，TPS=${snapshot.averageTps.roundToInt()}，同步上行=${"%.2f".format(snapshot.averageSyncTrafficMbps)}Mbps")
-    } else if (snapshot.level in 1 until lastBroadcastLevel) {
-        // 降级本身不刷屏，但要同步播报状态；否则 L4->L2->L3 时 L3 会因旧的 L4 记录而不再提示。
-        lastBroadcastLevel = snapshot.level
-        logger.info("[服务器压力] 性能等级 $previousLevel -> ${snapshot.level}：${snapshot.reason}")
-    } else if (snapshot.level == 0 && lastBroadcastLevel > 0) {
-        val recovered = snapshot.mode == "off" || safePressureBroadcast("恢复") {
-                broadcast("[green][服务器压力] TPS/游戏同步上行已恢复，退出自动性能等级。".with())
-        }
-        if (recovered) {
-            logger.info("[服务器压力] 性能等级 $previousLevel -> 0：${snapshot.reason}")
-            lastBroadcastLevel = 0
-        }
     }
 }
 
@@ -472,7 +449,7 @@ fun announceThrottleRestrictionOnce(level: Int, detail: String? = null): Boolean
     val suffix = detail?.takeIf { it.isNotBlank() }?.let { "；$it" } ?: ""
     val result = runCatching {
         broadcast(
-            "[yellow][上行优化] 服务器上行压力过高，同步限制系统将介入，会启用挂机检测与同步限制；当前同步限制等级 [white]L${level.coerceAtLeast(1)}[yellow]$suffix。"
+            "[yellow][服务器提示] 服务器上行压力较高，将启用挂机检测与同步限制以保障流畅；若暂时无法正常游戏或操作延迟明显，请稍后重试。$suffix"
                 .with()
         )
     }
@@ -518,7 +495,6 @@ listen<EventType.WorldLoadEvent> {
     tpsSamples.clear()
     snapshot = PressureSnapshot(mode = with(perfGuard) { performanceMode() })
     resetThrottleState()
-    lastBroadcastLevel = 0
     recoverSamples = 0
     resetDowngradeCandidate()
     localThrottleRestrictionAnnounced = false
@@ -529,7 +505,6 @@ listen<EventType.ResetEvent> {
     tpsSamples.clear()
     snapshot = PressureSnapshot(mode = with(perfGuard) { performanceMode() })
     resetThrottleState()
-    lastBroadcastLevel = 0
     recoverSamples = 0
     resetDowngradeCandidate()
     localThrottleRestrictionAnnounced = false

@@ -87,9 +87,13 @@ private var pendingBulletCleanupCount = 0
 private var pendingUnitCleanupCount = 0
 private var pendingProcessorDisableCount = 0
 private var pendingUnitCleanupLevel = 0
-private var lastCleanupBroadcastAt = 0L
+private var lastCleanupLogAt = 0L
 private var lastActionErrorLogMillis = 0L
 private var lastBroadcastErrorLogMillis = 0L
+private var roundRecoveryAnnounced = false
+private var ppsCleanupAnnounced = false
+private var severeTrafficCleanupAnnounced = false
+private var level4TopCleanupAnnounced = false
 
 /**
  * 广播属于提示链路，不能因为单次发送/格式化异常阻断规则恢复、单位清理或TPS措施循环。
@@ -348,11 +352,14 @@ private fun cleanupPpsOverload(now: Long, trafficMbps: Double, budgetMbps: Doubl
     }
     val turrets = removeScatheTurrets()
 
-    safePressureBroadcast("PPS清理") {
-        broadcast(
-            "[red][压力措施] 检测到异常超时，已击杀清理低阶压力单位 [white]$units[red] 个、scathe 炮台 [white]$turrets[red] 座；如继续出现，请主动减少过量单位。"
-                .with()
-        )
+    if (!ppsCleanupAnnounced) {
+        val announced = safePressureBroadcast("PPS清理") {
+            broadcast(
+                "[red][服务器提示] 服务器出现异常高负载，已自动清理部分单位以缓解卡顿；若持续出现，请适当减少单位数量。"
+                    .with()
+            )
+        }
+        if (announced) ppsCleanupAnnounced = true
     }
     logger.info("[压力措施] 疑似PPS顶满清理完成：单位 $units / scathe炮台 $turrets；估算上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
 }
@@ -364,8 +371,11 @@ private fun cleanupSevereTrafficIfNeeded(trafficMbps: Double, budgetMbps: Double
 
     lastSevereTrafficCleanupAt = now
     val units = killPressureUnitsWhere { unitTier(it.type()) <= 4 }
-    safePressureBroadcast("严重上行清理") {
-        broadcast("[red][压力措施] 上行需求量严重超量（>200%），已击杀清理 T4 及以下压力单位 [white]$units[red] 个。".with())
+    if (!severeTrafficCleanupAnnounced) {
+        val announced = safePressureBroadcast("严重上行清理") {
+            broadcast("[red][服务器提示] 服务器上行压力过高，已自动清理部分单位以保障流畅；如卡顿持续，请减少单位数量。".with())
+        }
+        if (announced) severeTrafficCleanupAnnounced = true
     }
     logger.info("[压力措施] 严重上行超预算清理完成：单位 $units；估算上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
 }
@@ -390,8 +400,11 @@ private fun cleanupTopUnitTypesIfNeeded(level: Int) {
         if (runCatching { unit.kill() }.isSuccess) removed++
     }
     val summary = topTypes.joinToString("、") { "${it.key.localizedName}(${it.value.size})" }
-    safePressureBroadcast("等级4前三单位清理") {
-        broadcast("[red][压力措施] 压力达到等级4，已击杀清理数量前三的压力单位共 [white]$removed[red] 个：[white]$summary[red]。".with())
+    if (!level4TopCleanupAnnounced) {
+        val announced = safePressureBroadcast("等级4前三单位清理") {
+            broadcast("[red][服务器提示] 服务器压力已到较高等级，已自动清理部分单位；如卡顿持续，请减少单位数量。".with())
+        }
+        if (announced) level4TopCleanupAnnounced = true
     }
     logger.info("[压力措施] 等级4数量前三单位清理完成：$summary；移除 $removed 个")
 }
@@ -437,7 +450,7 @@ private fun flushPendingCleanup(force: Boolean = false): Boolean {
     ) return true
     val now = System.currentTimeMillis()
     val cooldown = cleanupBroadcastCooldownMillis.coerceAtLeast(5_000L)
-    if (!force && lastCleanupBroadcastAt > 0L && now - lastCleanupBroadcastAt < cooldown) return false
+    if (!force && lastCleanupLogAt > 0L && now - lastCleanupLogAt < cooldown) return false
 
     val level = pendingUnitCleanupLevel.coerceIn(1, 4)
     val actions = mutableListOf<String>()
@@ -447,23 +460,14 @@ private fun flushPendingCleanup(force: Boolean = false): Boolean {
         actions += "击杀清理T${maxTierForLevel(level)}及以下压力单位${pendingUnitCleanupCount}个"
     }
     if (pendingProcessorDisableCount > 0) actions += "关闭逻辑处理器${pendingProcessorDisableCount}个"
-    val broadcasted = safePressureBroadcast("持续清理") {
-        broadcast(
-            "[yellow][压力措施] 性能等级 [white]L$level[yellow] 持续介入：${actions.joinToString("、")}。"
-                .with()
-        )
-    }
-    if (!broadcasted) return false
-    logger.info(
-        "[压力措施] 普通压力清理广播：level=$level fires=$pendingFireCleanupCount " +
-            "bullets=$pendingBulletCleanupCount units=$pendingUnitCleanupCount processors=$pendingProcessorDisableCount"
-    )
+    // 持续介入清理属于高频动作，不再反复向玩家广播，只保留日志，避免刷屏。
+    logger.info("[压力措施] 普通压力清理：level=$level ${actions.joinToString("、")}")
     pendingFireCleanupCount = 0
     pendingBulletCleanupCount = 0
     pendingUnitCleanupCount = 0
     pendingProcessorDisableCount = 0
     pendingUnitCleanupLevel = 0
-    lastCleanupBroadcastAt = now
+    lastCleanupLogAt = now
     return true
 }
 
@@ -485,33 +489,11 @@ private fun clearPendingCleanup() {
     pendingUnitCleanupLevel = 0
 }
 
-private fun levelActionText(
-    level: Int,
-    fireRuleChanged: Boolean,
-    fires: Int,
-    bullets: Int,
-    waveRulesChanged: Boolean,
-    unitCapChanged: Boolean,
-    worldProcessorsChanged: Boolean,
-    processors: Int,
-    units: Int,
-): String {
-    val actions = mutableListOf<String>()
-    if (level >= 1) {
-        actions += if (fireRuleChanged) "关闭火焰生成" else "维持火焰关闭"
-        actions += "清理火焰${fires}处"
-        actions += "清理子弹${bullets}发"
-    }
-    if (level >= 2) {
-        actions += if (waveRulesChanged) "暂停自动出波" else "维持自动出波暂停"
-        actions += if (unitCapChanged) "限制单位上限" else "维持单位上限限制"
-    }
-    if (level >= 3) {
-        actions += if (worldProcessorsChanged) "关闭世界处理器" else "维持世界处理器关闭"
-        actions += if (processors > 0) "关闭逻辑处理器${processors}个" else "维持已关闭逻辑处理器"
-    }
-    actions += "击杀清理T${maxTierForLevel(level)}及以下压力单位${units}个"
-    return actions.takeIf { it.isNotEmpty() }?.joinToString("、") ?: "维持该等级保护措施"
+private fun pressureLevelName(level: Int): String = when (level.coerceIn(1, 4)) {
+    1 -> "一"
+    2 -> "二"
+    3 -> "三"
+    else -> "四"
 }
 
 private fun applyLevel(level: Int, reason: String) {
@@ -524,24 +506,20 @@ private fun applyLevel(level: Int, reason: String) {
     var bullets = 0
     var units = 0
     var processors = 0
-    var fireRuleChanged = false
-    var waveRulesChanged = false
-    var unitCapChanged = false
-    var worldProcessorsChanged = false
 
     if (level >= 1) {
-        fireRuleChanged = setFireRule(false)
+        setFireRule(false)
         fires = clearFires()
         bullets = clearBullets()
     }
     if (level >= 2) {
-        waveRulesChanged = setWaveTimerRule(false) || waveRulesChanged
-        waveRulesChanged = setWaveSendingRule(false) || waveRulesChanged
+        setWaveTimerRule(false)
+        setWaveSendingRule(false)
         state.wavetime = maxOf(state.wavetime, 60f * 60f * 10f)
-        unitCapChanged = applyUnitCap()
+        applyUnitCap()
     }
     if (level >= 3) {
-        worldProcessorsChanged = setDisableWorldProcessorsRule(true)
+        setDisableWorldProcessorsRule(true)
         processors = disableLogicProcessors()
     }
     // 每轮只使用当前等级的总清理预算；高等级的maxTier本身已包含低阶单位，
@@ -554,26 +532,14 @@ private fun applyLevel(level: Int, reason: String) {
     }
 
     if (level > announcedLevel) {
-        // 先补发上一段冷却窗口中累计的清理，再报告本次升档措施，避免吞掉击杀数量。
+        // 本局首次进入该等级才向玩家播报一次；已播报过的等级重新进入不再重复提示。
+        // 播报前先补发上一段冷却窗口中累计的清理日志，避免吞掉清理数量。
         flushPendingCleanup(force = true)
-        val actions = levelActionText(
-            level,
-            fireRuleChanged,
-            fires,
-            bullets,
-            waveRulesChanged,
-            unitCapChanged,
-            worldProcessorsChanged,
-            processors,
-            units,
-        )
         val broadcasted = safePressureBroadcast("进入等级$level") {
             broadcast(
-                ("[yellow][压力措施] 进入性能等级 [white]{level}[yellow]（{reason}）。" +
-                        " 重要措施：[white]{actions}").with(
-                    "level" to level,
+                ("[yellow][服务器提示] 服务器负载过高（{reason}），已自动开启[white]{level}[yellow]级性能保护：临时暂停部分玩法并清理压力单位，以缓解卡顿。请适当减少单位数量，帮助服务器恢复流畅。").with(
+                    "level" to pressureLevelName(level),
                     "reason" to reason,
-                    "actions" to actions,
                 )
             )
         }
@@ -583,19 +549,15 @@ private fun applyLevel(level: Int, reason: String) {
             // 进入等级提示失败时保留本轮实际清理数量，下一轮重试时不会丢失事实。
             recordCleanup(level, fires, bullets, units, processors)
         }
-        if (broadcasted && (fires > 0 || bullets > 0 || units > 0 || processors > 0)) {
-            lastCleanupBroadcastAt = System.currentTimeMillis()
-        }
     } else {
         recordCleanup(level, fires, bullets, units, processors)
     }
 
     if (previousLevel > level) {
-        // 降档后同步已播报等级，保证 L4->L2->L3 时会重新报告 L3 的重要措施。
-        announcedLevel = level
+        // 已播报等级标记保持单调：本局内重新进入已播报过的等级不再重复提示。
         if (restoredProcessors > 0) {
             safePressureBroadcast("降档恢复处理器") {
-                broadcast("[green][压力措施] 性能等级降至 [white]L$level[green]，已恢复逻辑处理器 [white]$restoredProcessors[green] 个。".with())
+                broadcast("[green][服务器提示] 服务器压力有所缓解，已自动恢复部分处理器功能。".with())
             }
         } else {
             logger.info("[压力措施] 压力等级降至 $level")
@@ -608,9 +570,8 @@ private fun applyLevel(level: Int, reason: String) {
 private fun restorePressureRules(reason: String = "压力恢复", silent: Boolean = false) {
     if (silent) clearPendingCleanup() else flushPendingCleanup(force = true)
     if (snapshot == null && activeLevel <= 0 && !autoPaused && !mayHaveDisabledLogicPositions) return
-    val oldLevel = activeLevel
-    val restoredProcessors = restoreLogicProcessors()
     val hadAutoPause = autoPaused
+    restoreLogicProcessors()
     snapshot?.let {
         setFireRule(it.fire)
         setWaveTimerRule(it.waveTimer)
@@ -622,22 +583,21 @@ private fun restorePressureRules(reason: String = "压力恢复", silent: Boolea
     }
     snapshot = null
     activeLevel = 0
-    announcedLevel = 0
     level4Samples = 0
-    lastCleanupBroadcastAt = 0L
+    lastCleanupLogAt = 0L
     if (autoPaused && state.isPaused) {
         state.set(GameState.State.playing)
-        if (!silent) {
-            safePressureBroadcast("恢复游戏") {
-                broadcast("[green][游戏继续] 性能优化系统 已恢复当前游戏：{reason}".with("reason" to reason))
-            }
-        }
     }
     autoPaused = false
-    if (!silent && (oldLevel > 0 || restoredProcessors > 0 || hadAutoPause)) {
-        safePressureBroadcast("恢复玩法规则") {
-            broadcast("[green][压力措施] 已恢复玩法规则：{reason}".with("reason" to reason))
-        }
+    logger.info("[压力措施] 压力规则恢复：$reason")
+    // 每局只向玩家播报一次恢复，避免 L2↔0 抖动时反复刷屏；内容合并游戏恢复与玩法恢复。
+    if (!silent && !roundRecoveryAnnounced) {
+        val text = if (hadAutoPause)
+            "[green][服务器提示] 服务器压力已恢复正常，游戏已解除暂停，性能保护自动关闭。"
+        else
+            "[green][服务器提示] 服务器压力已恢复正常，性能保护已自动解除。"
+        val recovered = safePressureBroadcast("恢复") { broadcast(text.with()) }
+        if (recovered) roundRecoveryAnnounced = true
     }
 }
 
@@ -657,7 +617,7 @@ fun setGamePaused(paused: Boolean, reason: String = "手动操作", operator: St
         if (!state.isPaused) {
             state.set(GameState.State.paused)
             safePressureBroadcast("暂停游戏") {
-                broadcast("[yellow][游戏暂停] {operator} 已暂停当前游戏：{reason}".with("operator" to operator, "reason" to reason))
+                broadcast("[yellow][服务器提示] {operator} 已暂停当前游戏：{reason}".with("operator" to operator, "reason" to reason))
             }
         }
     } else {
@@ -665,7 +625,7 @@ fun setGamePaused(paused: Boolean, reason: String = "手动操作", operator: St
             state.set(GameState.State.playing)
             autoPaused = false
             safePressureBroadcast("手动恢复游戏") {
-                broadcast("[green][游戏继续] {operator} 已恢复当前游戏：{reason}".with("operator" to operator, "reason" to reason))
+                broadcast("[green][服务器提示] {operator} 已恢复当前游戏：{reason}".with("operator" to operator, "reason" to reason))
             }
         }
     }
@@ -679,12 +639,12 @@ private suspend fun forceChangeMapFallback(): Boolean {
         val next = maps.randomOrNull()
         if (next == null) {
             safePressureBroadcast("兜底换图无地图") {
-                broadcast("[red][压力措施] TPS已连续2分钟低于5，但没有找到可用地图。".with())
+                broadcast("[red][服务器提示] 服务器持续严重卡顿，但未找到可切换的地图。".with())
             }
             return false
         }
         safePressureBroadcast("开始兜底换图") {
-            broadcast("[red][压力措施] TPS连续2分钟低于5，执行最终兜底换图：[white]{map.name}[]([yellow]{map.id}[])".with("map" to next))
+            broadcast("[red][服务器提示] 服务器持续严重卡顿，已自动切换地图以恢复流畅：[white]{map.name}[]（[yellow]{map.id}[]）".with("map" to next))
         }
         MdtStorage.setSetting(FORCE_MAP_BYPASS_KEY, "true")
         val ok = try {
@@ -695,7 +655,7 @@ private suspend fun forceChangeMapFallback(): Boolean {
         if (ok) {
             restorePressureRules("兜底换图完成", silent = true)
             safePressureBroadcast("兜底换图完成") {
-                broadcast("[green][压力措施] 极端TPS兜底换图完成。".with())
+                broadcast("[green][服务器提示] 地图切换完成，服务器恢复正常。".with())
             }
         }
         return ok
@@ -732,7 +692,7 @@ private suspend fun tickActions() {
     checkExternalRestoreRequest()
     val modeNow = with(perfGuard) { performanceMode() }
     if (modeNow == "off") {
-        restorePressureRules("性能优化关闭")
+        restorePressureRules("性能优化关闭", silent = true)
         level4Samples = 0
         lowTpsSinceMillis = 0L
         return
@@ -741,13 +701,13 @@ private suspend fun tickActions() {
     val s = with(pressure) { currentPressure() }
     if (System.currentTimeMillis() - s.updatedAtMillis > stalePressureSnapshotMillis.coerceAtLeast(5_000L)) {
         // 判断脚本数据过期时宁可恢复可逆措施，也不能依据旧的高压快照继续清理单位。
-        restorePressureRules("压力判断快照已过期")
+        restorePressureRules("压力判断快照已过期", silent = true)
         level4Samples = 0
         lowTpsSinceMillis = 0L
         return
     }
     if (s.mode == "off") {
-        restorePressureRules("性能优化关闭")
+        restorePressureRules("性能优化关闭", silent = true)
         level4Samples = 0
         lowTpsSinceMillis = 0L
         return
@@ -820,6 +780,10 @@ listen<EventType.WorldLoadEvent> {
     snapshot = null
     activeLevel = 0
     announcedLevel = 0
+    roundRecoveryAnnounced = false
+    ppsCleanupAnnounced = false
+    severeTrafficCleanupAnnounced = false
+    level4TopCleanupAnnounced = false
     level4Samples = 0
     autoPaused = false
     recentLeaveTimes.clear()
@@ -827,7 +791,7 @@ listen<EventType.WorldLoadEvent> {
     lastLeaveAt = 0L
     lowTpsSinceMillis = 0L
     clearPendingCleanup()
-    lastCleanupBroadcastAt = 0L
+    lastCleanupLogAt = 0L
     saveDisabledLogicPositions(emptySet())
 }
 
@@ -835,6 +799,10 @@ listen<EventType.ResetEvent> {
     snapshot = null
     activeLevel = 0
     announcedLevel = 0
+    roundRecoveryAnnounced = false
+    ppsCleanupAnnounced = false
+    severeTrafficCleanupAnnounced = false
+    level4TopCleanupAnnounced = false
     level4Samples = 0
     autoPaused = false
     recentLeaveTimes.clear()
@@ -842,7 +810,7 @@ listen<EventType.ResetEvent> {
     lastLeaveAt = 0L
     lowTpsSinceMillis = 0L
     clearPendingCleanup()
-    lastCleanupBroadcastAt = 0L
+    lastCleanupLogAt = 0L
     saveDisabledLogicPositions(emptySet())
 }
 
