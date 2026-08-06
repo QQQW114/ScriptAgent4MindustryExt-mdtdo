@@ -72,7 +72,6 @@ private var activeLevel = 0
 private var announcedLevel = 0
 private var forceMapInProgress = false
 private var level4Samples = 0
-private var autoPaused = false
 private var mayHaveDisabledLogicPositions = false
 private var disabledLogicPositionsCache: MutableSet<Int>? = null
 private val recentLeaveTimes = ArrayDeque<Long>()
@@ -531,8 +530,9 @@ private fun applyLevel(level: Int, reason: String) {
         else -> removePressureUnits(level4RemovePerPass, includePlayerTeams = true, maxTier = level4MaxUnitTier)
     }
 
-    if (level > announcedLevel) {
-        // 本局首次进入该等级才向玩家播报一次；已播报过的等级重新进入不再重复提示。
+    // L1-L3 保持每局每等级仅首次广播的去重；L4 为紧急等级，每次重新进入都播报一次。
+    val reEnteringLevel4 = level >= 4 && previousLevel < 4
+    if (reEnteringLevel4 || level > announcedLevel) {
         // 播报前先补发上一段冷却窗口中累计的清理日志，避免吞掉清理数量。
         flushPendingCleanup(force = true)
         val broadcasted = safePressureBroadcast("进入等级$level") {
@@ -569,8 +569,7 @@ private fun applyLevel(level: Int, reason: String) {
 
 private fun restorePressureRules(reason: String = "压力恢复", silent: Boolean = false) {
     if (silent) clearPendingCleanup() else flushPendingCleanup(force = true)
-    if (snapshot == null && activeLevel <= 0 && !autoPaused && !mayHaveDisabledLogicPositions) return
-    val hadAutoPause = autoPaused
+    if (snapshot == null && activeLevel <= 0 && !mayHaveDisabledLogicPositions) return
     restoreLogicProcessors()
     snapshot?.let {
         setFireRule(it.fire)
@@ -585,18 +584,12 @@ private fun restorePressureRules(reason: String = "压力恢复", silent: Boolea
     activeLevel = 0
     level4Samples = 0
     lastCleanupLogAt = 0L
-    if (autoPaused && state.isPaused) {
-        state.set(GameState.State.playing)
-    }
-    autoPaused = false
     logger.info("[压力措施] 压力规则恢复：$reason")
-    // 每局只向玩家播报一次恢复，避免 L2↔0 抖动时反复刷屏；内容合并游戏恢复与玩法恢复。
+    // 每局只向玩家播报一次恢复，避免 L2↔0 抖动时反复刷屏。
     if (!silent && !roundRecoveryAnnounced) {
-        val text = if (hadAutoPause)
-            "[green][服务器提示] 服务器压力已恢复正常，游戏已解除暂停，性能保护自动关闭。"
-        else
-            "[green][服务器提示] 服务器压力已恢复正常，性能保护已自动解除。"
-        val recovered = safePressureBroadcast("恢复") { broadcast(text.with()) }
+        val recovered = safePressureBroadcast("恢复") {
+            broadcast("[green][服务器提示] 服务器压力已恢复正常，性能保护已自动解除。".with())
+        }
         if (recovered) roundRecoveryAnnounced = true
     }
 }
@@ -623,7 +616,6 @@ fun setGamePaused(paused: Boolean, reason: String = "手动操作", operator: St
     } else {
         if (state.isPaused) {
             state.set(GameState.State.playing)
-            autoPaused = false
             safePressureBroadcast("手动恢复游戏") {
                 broadcast("[green][服务器提示] {operator} 已恢复当前游戏：{reason}".with("operator" to operator, "reason" to reason))
             }
@@ -667,10 +659,6 @@ private suspend fun forceChangeMapFallback(): Boolean {
 private suspend fun handleLevel4() {
     level4Samples++
     if (lowTpsSinceMillis <= 0L || System.currentTimeMillis() - lowTpsSinceMillis < extremeLowTpsMillis.coerceAtLeast(60_000L)) {
-        if (level4Samples >= 3 && !state.isPaused) {
-            autoPaused = true
-            setGamePaused(true, "TPS持续过低，触发性能保护暂停", "性能优化系统")
-        }
         return
     }
     if (!forceMapInProgress) {
@@ -785,7 +773,6 @@ listen<EventType.WorldLoadEvent> {
     severeTrafficCleanupAnnounced = false
     level4TopCleanupAnnounced = false
     level4Samples = 0
-    autoPaused = false
     recentLeaveTimes.clear()
     continuousLeaveCount = 0
     lastLeaveAt = 0L
@@ -804,7 +791,6 @@ listen<EventType.ResetEvent> {
     severeTrafficCleanupAnnounced = false
     level4TopCleanupAnnounced = false
     level4Samples = 0
-    autoPaused = false
     recentLeaveTimes.clear()
     continuousLeaveCount = 0
     lastLeaveAt = 0L
