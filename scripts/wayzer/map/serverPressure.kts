@@ -449,7 +449,7 @@ fun announceThrottleRestrictionOnce(level: Int, detail: String? = null): Boolean
     val suffix = detail?.takeIf { it.isNotBlank() }?.let { "；$it" } ?: ""
     val result = runCatching {
         broadcast(
-            "[yellow][服务器提示] 服务器上行压力较高，将启用挂机检测与同步限制以保障流畅；若暂时无法正常游戏或操作延迟明显，请稍后重试。$suffix"
+            "[yellow]服务器上行压力较高，将启用挂机检测与同步限制以保障流畅；若暂时无法正常游戏或操作延迟明显，请稍后重试。$suffix"
                 .with()
         )
     }

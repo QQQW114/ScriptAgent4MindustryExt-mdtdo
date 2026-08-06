@@ -93,6 +93,8 @@ private var roundRecoveryAnnounced = false
 private var ppsCleanupAnnounced = false
 private var severeTrafficCleanupAnnounced = false
 private var level4TopCleanupAnnounced = false
+// 压力系统出波暂停开关：仅内存运行态，不落盘；默认开启，L2及以上自动暂停出波。
+private var wavePauseEnabled = true
 
 /**
  * 广播属于提示链路，不能因为单次发送/格式化异常阻断规则恢复、单位清理或TPS措施循环。
@@ -354,13 +356,13 @@ private fun cleanupPpsOverload(now: Long, trafficMbps: Double, budgetMbps: Doubl
     if (!ppsCleanupAnnounced) {
         val announced = safePressureBroadcast("PPS清理") {
             broadcast(
-                "[red][服务器提示] 服务器出现异常高负载，已自动清理部分单位以缓解卡顿；若持续出现，请适当减少单位数量。"
+                "[yellow]服务器发包高负载，清理部分单位以缓解卡顿；若持续出现玩家超时情况，请适当减少单位数量。"
                     .with()
             )
         }
         if (announced) ppsCleanupAnnounced = true
     }
-    logger.info("[压力措施] 疑似PPS顶满清理完成：单位 $units / scathe炮台 $turrets；估算上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
+    logger.info("[压力措施] 清理：单位 $units / scathe炮台 $turrets；上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
 }
 
 private fun cleanupSevereTrafficIfNeeded(trafficMbps: Double, budgetMbps: Double) {
@@ -372,11 +374,11 @@ private fun cleanupSevereTrafficIfNeeded(trafficMbps: Double, budgetMbps: Double
     val units = killPressureUnitsWhere { unitTier(it.type()) <= 4 }
     if (!severeTrafficCleanupAnnounced) {
         val announced = safePressureBroadcast("严重上行清理") {
-            broadcast("[red][服务器提示] 服务器上行压力过高，已自动清理部分单位以保障流畅；如卡顿持续，请减少单位数量。".with())
+            broadcast("[red]服务器上行压力过高，清理部分单位以保障流畅；如卡顿持续，请减少单位数量。".with())
         }
         if (announced) severeTrafficCleanupAnnounced = true
     }
-    logger.info("[压力措施] 严重上行超预算清理完成：单位 $units；估算上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
+    logger.info("[压力措施] 清理：单位 $units；上行 ${"%.2f".format(trafficMbps)} Mbps / 预算 ${"%.2f".format(budgetMbps)} Mbps")
 }
 
 private fun cleanupTopUnitTypesIfNeeded(level: Int) {
@@ -401,11 +403,11 @@ private fun cleanupTopUnitTypesIfNeeded(level: Int) {
     val summary = topTypes.joinToString("、") { "${it.key.localizedName}(${it.value.size})" }
     if (!level4TopCleanupAnnounced) {
         val announced = safePressureBroadcast("等级4前三单位清理") {
-            broadcast("[red][服务器提示] 服务器压力已到较高等级，已自动清理部分单位；如卡顿持续，请减少单位数量。".with())
+            broadcast("[yellow]已自动清理数量排名前三的单位；如卡顿持续，请减少单位数量。".with())
         }
         if (announced) level4TopCleanupAnnounced = true
     }
-    logger.info("[压力措施] 等级4数量前三单位清理完成：$summary；移除 $removed 个")
+    logger.info("[压力措施] 清理：$summary；移除 $removed 个")
 }
 
 private fun applyUnitCap(): Boolean {
@@ -489,10 +491,10 @@ private fun clearPendingCleanup() {
 }
 
 private fun pressureLevelName(level: Int): String = when (level.coerceIn(1, 4)) {
-    1 -> "一"
-    2 -> "二"
-    3 -> "三"
-    else -> "四"
+    1 -> "L1"
+    2 -> "L2"
+    3 -> "L3"
+    else -> "L4"
 }
 
 private fun applyLevel(level: Int, reason: String) {
@@ -512,9 +514,14 @@ private fun applyLevel(level: Int, reason: String) {
         bullets = clearBullets()
     }
     if (level >= 2) {
-        setWaveTimerRule(false)
-        setWaveSendingRule(false)
-        state.wavetime = maxOf(state.wavetime, 60f * 60f * 10f)
+        if (wavePauseEnabled) {
+            setWaveTimerRule(false)
+            setWaveSendingRule(false)
+            state.wavetime = maxOf(state.wavetime, 60f * 60f * 10f)
+        } else {
+            // 出波暂停被关闭时，恢复波次规则，避免压力期间一直卡住出波。
+            restoreWaveRules()
+        }
         applyUnitCap()
     }
     if (level >= 3) {
@@ -537,7 +544,7 @@ private fun applyLevel(level: Int, reason: String) {
         flushPendingCleanup(force = true)
         val broadcasted = safePressureBroadcast("进入等级$level") {
             broadcast(
-                ("[yellow][服务器提示] 服务器负载过高（{reason}），已自动开启[white]{level}[yellow]级性能保护：临时暂停部分玩法并清理压力单位，以缓解卡顿。请适当减少单位数量，帮助服务器恢复流畅。").with(
+                ("[yellow]服务器负载过高（{reason}），已自动开启[white]{level}[yellow]性能保护：临时暂停部分玩法并清理压力单位，以缓解卡顿。请适当减少单位数量，帮助服务器恢复流畅。").with(
                     "level" to pressureLevelName(level),
                     "reason" to reason,
                 )
@@ -557,7 +564,7 @@ private fun applyLevel(level: Int, reason: String) {
         // 已播报等级标记保持单调：本局内重新进入已播报过的等级不再重复提示。
         if (restoredProcessors > 0) {
             safePressureBroadcast("降档恢复处理器") {
-                broadcast("[green][服务器提示] 服务器压力有所缓解，已自动恢复部分处理器功能。".with())
+                broadcast("[green]服务器压力降低，恢复部分处理器功能。".with())
             }
         } else {
             logger.info("[压力措施] 压力等级降至 $level")
@@ -567,18 +574,24 @@ private fun applyLevel(level: Int, reason: String) {
     activeLevel = level
 }
 
+private fun restoreWaveRules() {
+    snapshot?.let {
+        setWaveTimerRule(it.waveTimer)
+        setWaveSendingRule(it.waveSending)
+        if (state.wavetime > it.wavetime && it.wavetime > 0f) state.wavetime = it.wavetime
+    }
+}
+
 private fun restorePressureRules(reason: String = "压力恢复", silent: Boolean = false) {
     if (silent) clearPendingCleanup() else flushPendingCleanup(force = true)
     if (snapshot == null && activeLevel <= 0 && !mayHaveDisabledLogicPositions) return
     restoreLogicProcessors()
     snapshot?.let {
         setFireRule(it.fire)
-        setWaveTimerRule(it.waveTimer)
-        setWaveSendingRule(it.waveSending)
+        restoreWaveRules()
         setUnitCapRule(it.unitCap)
         setDisableUnitCapRule(it.disableUnitCap)
         setDisableWorldProcessorsRule(it.disableWorldProcessors)
-        if (state.wavetime > it.wavetime && it.wavetime > 0f) state.wavetime = it.wavetime
     }
     snapshot = null
     activeLevel = 0
@@ -588,7 +601,7 @@ private fun restorePressureRules(reason: String = "压力恢复", silent: Boolea
     // 每局只向玩家播报一次恢复，避免 L2↔0 抖动时反复刷屏。
     if (!silent && !roundRecoveryAnnounced) {
         val recovered = safePressureBroadcast("恢复") {
-            broadcast("[green][服务器提示] 服务器压力已恢复正常，性能保护已自动解除。".with())
+            broadcast("[green]服务器压力已恢复正常，性能保护已自动解除。".with())
         }
         if (recovered) roundRecoveryAnnounced = true
     }
@@ -610,14 +623,14 @@ fun setGamePaused(paused: Boolean, reason: String = "手动操作", operator: St
         if (!state.isPaused) {
             state.set(GameState.State.paused)
             safePressureBroadcast("暂停游戏") {
-                broadcast("[yellow][服务器提示] {operator} 已暂停当前游戏：{reason}".with("operator" to operator, "reason" to reason))
+                broadcast("[yellow]{operator} 已暂停当前游戏：{reason}".with("operator" to operator, "reason" to reason))
             }
         }
     } else {
         if (state.isPaused) {
             state.set(GameState.State.playing)
             safePressureBroadcast("手动恢复游戏") {
-                broadcast("[green][服务器提示] {operator} 已恢复当前游戏：{reason}".with("operator" to operator, "reason" to reason))
+                broadcast("[green]{operator} 已恢复当前游戏：{reason}".with("operator" to operator, "reason" to reason))
             }
         }
     }
@@ -631,12 +644,12 @@ private suspend fun forceChangeMapFallback(): Boolean {
         val next = maps.randomOrNull()
         if (next == null) {
             safePressureBroadcast("兜底换图无地图") {
-                broadcast("[red][服务器提示] 服务器持续严重卡顿，但未找到可切换的地图。".with())
+                broadcast("[red]服务器持续严重卡顿，但未找到可切换的地图。".with())
             }
             return false
         }
         safePressureBroadcast("开始兜底换图") {
-            broadcast("[red][服务器提示] 服务器持续严重卡顿，已自动切换地图以恢复流畅：[white]{map.name}[]（[yellow]{map.id}[]）".with("map" to next))
+            broadcast("[red]服务器持续严重卡顿，疑似炸服图，将切换地图：[white]{map.name}[]（[yellow]{map.id}[]）".with("map" to next))
         }
         MdtStorage.setSetting(FORCE_MAP_BYPASS_KEY, "true")
         val ok = try {
@@ -647,7 +660,7 @@ private suspend fun forceChangeMapFallback(): Boolean {
         if (ok) {
             restorePressureRules("兜底换图完成", silent = true)
             safePressureBroadcast("兜底换图完成") {
-                broadcast("[green][服务器提示] 地图切换完成，服务器恢复正常。".with())
+                broadcast("[green]地图切换完成".with())
             }
         }
         return ok
@@ -735,6 +748,40 @@ private suspend fun startPauseVote(starter: Player, paused: Boolean): Boolean {
     )
     if (!event.awaitResult()) return false
     setGamePaused(paused, "投票通过", starter.name)
+    return true
+}
+
+private fun setWavePauseEnabled(enabled: Boolean, operator: String) {
+    if (wavePauseEnabled == enabled) {
+        safePressureBroadcast("出波暂停开关") {
+            broadcast("[yellow]压力出波暂停已处于${if (enabled) "开启" else "关闭"}状态，无需重复操作。".with())
+        }
+        return
+    }
+    wavePauseEnabled = enabled
+    if (!enabled) restoreWaveRules()
+    logger.info("[压力措施] 出波暂停被 $operator 切换为${if (enabled) "开启" else "关闭"}")
+    safePressureBroadcast("出波暂停开关") {
+        if (enabled)
+            broadcast("[green]压力出波暂停已开启：L2及以上将自动暂停出波。".with())
+        else
+            broadcast("[yellow]压力出波暂停已关闭：压力期间不再自动暂停出波。".with())
+    }
+}
+
+private suspend fun startWavePauseVote(starter: Player, enabled: Boolean): Boolean {
+    val event = VoteEvent(
+        thisScript,
+        starter,
+        voteDesc = (if (enabled) "[green]开启压力出波暂停" else "[yellow]关闭压力出波暂停").with(),
+        extDesc = if (enabled)
+            "[yellow]通过后压力系统在L2及以上将自动暂停出波。"
+        else
+            "[yellow]通过后压力系统不再因负载暂停出波，当前已暂停的波次会立即恢复。",
+        supportSingle = true,
+    )
+    if (!event.awaitResult()) return false
+    setWavePauseEnabled(enabled, "投票通过")
     return true
 }
 
@@ -841,6 +888,20 @@ onEnable {
             startPauseVote(player!!, false)
         }
     }
+    VoteEvent.VoteCommands += CommandInfo(script, "wavepauseoff", "[yellow]关闭压力出波暂停[gray]（需50%同意）") {
+        aliases = listOf("关出波暂停")
+        permission = "wayzer.vote.wavepause"
+        body {
+            startWavePauseVote(player!!, false)
+        }
+    }
+    VoteEvent.VoteCommands += CommandInfo(script, "wavepauseon", "[yellow]开启压力出波暂停[gray]（需50%同意）") {
+        aliases = listOf("开出波暂停")
+        permission = "wayzer.vote.wavepause"
+        body {
+            startWavePauseVote(player!!, true)
+        }
+    }
 }
 
 command("gamepause", "暂停/继续当前游戏") {
@@ -867,4 +928,28 @@ command("gamepause", "暂停/继续当前游戏") {
     }
 }
 
+command("wavepause", "启停压力系统出波暂停") {
+    usage = "<on|off|status>"
+    aliases = listOf("出波暂停")
+    body {
+        val op = arg.getOrNull(0)?.lowercase()
+        when (op) {
+            "status", "状态" -> reply(
+                (if (wavePauseEnabled) "[green]当前压力出波暂停：已开启（默认）" else "[yellow]当前压力出波暂停：已关闭")
+                    .with()
+            )
+            "on", "true", "1", "开", "开启" -> {
+                if (!canManagePause(player)) returnReply("[red]权限不足：只有 3+级、4级/admin 或控制台可以开启出波暂停。".with())
+                setWavePauseEnabled(true, player?.name ?: "控制台")
+            }
+            "off", "false", "0", "关", "关闭" -> {
+                if (!canManagePause(player)) returnReply("[red]权限不足：只有 3+级、4级/admin 或控制台可以关闭出波暂停。".with())
+                setWavePauseEnabled(false, player?.name ?: "控制台")
+            }
+            else -> replyUsage()
+        }
+    }
+}
+
 PermissionApi.registerDefault("wayzer.vote.gamepause")
+PermissionApi.registerDefault("wayzer.vote.wavepause")
