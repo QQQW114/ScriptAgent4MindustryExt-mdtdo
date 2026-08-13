@@ -2,11 +2,11 @@
 
 ## 参考项目状态
 
-- 官方 Mindustry：`参考项目/Mindustry-master`，定位 `v159.6`，提交 `167be4e4a545f62f700185e0934834906f74c1f1`。
-- MindustryX：`参考项目/MindustryX-main`，定位 `prerelease-2026.07.15.B477`，提交 `2e9198ab1478ed2270756f7d4a0d942592111ca1`，上游基线为官方 `v159.6`。
-- 旧 MindustryX X35 源码快照保留在 `参考项目/MindustryX-X35-archive`。
-- ScriptAgent 发布版：`参考项目/ScriptAgent4MindustryExt-3.4.0`，定位 `v3.4.0`，提交 `4a1af8f209a1a339acd38c70eafbe5f7367eff3b`。
-- ScriptAgent 开发分支：`参考项目/tmp_ScriptAgent4MindustryExt`，8.0 分支提交 `6f16791563b877656a92f766d5243f816dc80207`，包含 v3.4.0 发布后的 v159 控制台与积分板修复。
+- 官方 Mindustry：`../参考项目/Mindustry-master`，定位 `v159.6`，提交 `167be4e4a545f62f700185e0934834906f74c1f1`。
+- MindustryX：`../参考项目/MindustryX-main`，定位 `prerelease-2026.07.15.B477`，提交 `2e9198ab1478ed2270756f7d4a0d942592111ca1`，上游基线为官方 `v159.6`。
+- 旧 MindustryX X35 源码快照保留在 `../参考项目/MindustryX-X35-archive`。
+- ScriptAgent 发布版：`../参考项目/ScriptAgent4MindustryExt-3.4.0`，定位 `v3.4.0`，提交 `4a1af8f209a1a339acd38c70eafbe5f7367eff3b`。
+- ScriptAgent 开发分支：`../参考项目/tmp_ScriptAgent4MindustryExt`，8.0 分支提交 `6f16791563b877656a92f766d5243f816dc80207`，包含 v3.4.0 发布后的 v159 控制台与积分板修复。
 
 ## 官方 Mindustry v159.2 至 v159.6 中与本服相关的变化
 

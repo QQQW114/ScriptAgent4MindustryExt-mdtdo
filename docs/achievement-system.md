@@ -19,7 +19,7 @@
 
 ## 柠檬插件实现对比
 
-已检查 `柠檬的开源插件/open/scripts/lemon/user/achievement.kts`：
+已检查柠檬插件成就脚本（现位于 `mdtserver/config/scripts/lemon/user/achievement.kts`）：
 
 - Lemon 版核心是 `finishAchievement(account, name, exp, broadcast)`，由地图/脚本主动调用后在事务中记录成就并发放经验。
 - 该实现适合地图脚本直接“完成某个成就”，但没有通用的可配置条件菜单。

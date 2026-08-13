@@ -513,6 +513,7 @@ suspend fun openAccountMenu(player: Player) {
             option("登录账号") { loginFlow(player) }
             option("注册账号") { registerFlow(player) }
         } else {
+            option("退出登录") { logoutAccountFlow(player) }
             option("修改密码") { changePasswordFlow(player) }
             option("注销账号") { deleteOwnAccountFlow(player) }
         }
@@ -699,6 +700,27 @@ suspend fun deleteOwnAccountFlow(player: Player) {
     logoutDeletedAccount(account.id, account.qq, "注销")
 }
 
+suspend fun logoutAccountFlow(player: Player) {
+    val account = currentAccount(player)
+    if (!PlayerData[player].authed || account == null) {
+        player.sendMessage("[red]你尚未登录账号，无需退出")
+        return
+    }
+    val data = PlayerData[player]
+    val subjectUid = MdtStorage.accountSubjectUid(account.id)
+    val oldLevel = with(trustLevel) { getTrustLevelCode(data.id, player) }
+    data.removeId(subjectUid)
+    MdtStorage.logoutDevice(player.uuid())
+    val newLevel = with(trustLevel) { getTrustLevelCode(data.id, player) }
+    if (oldLevel != newLevel) {
+        with(trustLevel) { emitTrustLevelChanged(data.id, oldLevel, newLevel) }
+    }
+    with(trustPromotion) { checkTrustLevel(data.id) }
+    player.sendMessage(
+        "[green]已退出登录 QQ 账号 [white]${account.qq}[green]。\n[gray]本机已解除自动登录，下次进服需手动 [gold]/login[gray]。".with()
+    )
+}
+
 listenTo<ConnectAsyncEvent> {
     val data = PlayerData.forAuth(packet)
     if (data.authed) return@listenTo
@@ -822,6 +844,12 @@ command("deleteownaccount", "注销当前登录的MDT账号") {
     aliases = listOf("deleteaccountself", "cancelaccount", "注销账号", "账号注销")
     attr(ClientOnly)
     body { deleteOwnAccountFlow(player!!) }
+}
+
+command("logout", "退出登录当前账号") {
+    aliases = listOf("logoff", "signout", "退出登录", "登出")
+    attr(ClientOnly)
+    body { logoutAccountFlow(player!!) }
 }
 
 command("setpassword", "管理指令：重置玩家账号密码") {

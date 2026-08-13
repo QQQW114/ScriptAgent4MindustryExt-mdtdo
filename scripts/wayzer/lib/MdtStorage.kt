@@ -856,6 +856,10 @@ object MdtStorage {
         AutoLoginRecord(account, accountSubjectUid(accountId))
     }
 
+    fun logoutDevice(gameUuid: String): Boolean = transaction {
+        PlayerSubjects.deleteWhere { PlayerSubjects.id eq gameUuid } > 0
+    }
+
     fun getAccountForGameUuid(gameUuid: String): AccountRecord? = transaction {
         val accountId = PlayerSubjects.selectAll().where { PlayerSubjects.id eq gameUuid }
             .firstOrNull()?.get(PlayerSubjects.account)?.value ?: return@transaction null

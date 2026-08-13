@@ -1,6 +1,8 @@
-# 官方 Mindustry v159.x / MindustryX B480（v159.7）兼容层说明
+# 官方 Mindustry v159.x / MindustryX B485（v159.7）兼容层说明
 
-> 当前生产候选基线为 MindustryX `prerelease-2026.07.20.B480` / Mindustry v159.7，并继续保留官方端与旧 API 的反射降级。ScriptAgent 仍按项目当前版本独立维护，不与本轮网络补丁混合升级。
+> 当前生产候选基线为 MindustryX `prerelease-2026.08.12.B485` / Mindustry v159.7，并继续保留官方端与旧 API 的反射降级。ScriptAgent 仍按项目当前版本独立维护，不与本轮网络补丁混合升级。
+>
+> **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。本基线只是当前候选快照，跟进新版本由用户拍板后更新本文档与候选构建物。
 
 ## 总体原则
 
@@ -9,11 +11,19 @@
 - 不为官方端硬造高风险同步/网络 Hook；无法稳定兼容的实验功能直接 no-op，并打印明确警告。
 - 兼容层集中使用 `*Compat`、运行时 `Class.forName(...)`、`javaClass.getField/getDeclaredField(...)` 等方式，方便搜索和切除。
 
-## 2026-07-21：B480 / v159.7 自定义专服补丁
+## 2026-08-14：跟进 B485 发行版（原 B480 自定义专服补丁已废弃）
 
-- 参考源码已更新到官方 Mindustry `v159.7` 与 MindustryX `prerelease-2026.07.20.B480`。上游的 “Fixed large world sending” 与连接修复位于 Steam `desktop/.../SNet.java`，不覆盖 headless 专服的 `ArcNetProvider`、`NetServer.sendWorldAndAssets`、`connectConfirm`、批量 `Net.send` 或核心机恢复链路。
-- `SendPacketEvent` 增加 `connections`、`targetCount`、`reliable`，并在批量 `Net.send(Object, Iterable<NetConnection>, boolean)` 发出事件，解决过去流量统计只覆盖单连接/广播入口而漏算批量快照的问题。
-- B480 JAR 仍包含 `NetServer.writeCustomEntitySnapshot(Player, Iterable<Syncc>, boolean)`，但生产脚本已禁止使用其可靠模式。TCP 与 UDP 没有跨通道顺序；上行拥塞时，可靠旧快照可能晚于新 UDP 状态到达，把玩家拉回旧核心机或旧附身位置。
+- 改用 GitHub 发行版 `server-2026.08.12.B485.jar`（官方构建，SHA-256 `4C9C8F89251B351C885267C1E2D5BC51DCF3CEC702363AC6A774C390F39009A5`），**不再自建、不再打 MDT 自定义补丁**。
+- B480 时代的两处自定义补丁所针对的 API 已被 B485 上游移除/重构，因此无需再补：
+  - `0075-H.API-emit-SendPacketEvent-for-bulk-sends.patch`（批量 `Net.send` 的 `SendPacketEvent` 带 `connections/targetCount/reliable`）→ B485 `SendPacketEvent` 已退化为 `con/except/packet`，且上行统计已改为 Windows 网卡计数器，不再依赖该事件；
+  - `0076-H.API-allow-reliable-custom-entity-snapshots.patch`（`writeCustomEntitySnapshot`）→ B485 已删除该 API，`coreUnitRespawnCompat` 改为 `checkSpawn()` + 原版快照。
+- 冷启动验证：`共找到156脚本,加载成功152,启用成功147,出错0`。
+
+### 历史（2026-07-21，B480 / v159.7 自定义专服补丁）
+
+以下为 B480 时期的记录，现已由上方 B485 决策替代：
+
+- 上游的 “Fixed large world sending” 与连接修复位于 Steam `desktop/.../SNet.java`，不覆盖 headless 专服的 `ArcNetProvider`、`NetServer.sendWorldAndAssets`、`connectConfirm`、批量 `Net.send` 或核心机恢复链路。
 - 补丁文件为 `patches/client/0075-H.API-emit-SendPacketEvent-for-bulk-sends.patch` 与 `0076-H.API-allow-reliable-custom-entity-snapshots.patch`。
 - 构建命令：`gradle --no-daemon server:dist -x tools:doPack`。普通 `server:dist` 会被无关的 `tools:doPack` ClassNotFound 阻断。
 - 部署候选：`mdtserver/server-2026.07.20.B480-mdtdo.jar`；SHA-256：`8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。
@@ -25,10 +35,10 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\cmds\effect.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skills.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\cmds\effect.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skills.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
 
 原因：官方 v159 的 `mindustry.gen.Unit` 没有公开 `statuses()` 方法，但具体单位类仍有 protected `statuses` 字段；旧脚本直接 `unit.statuses()` 会编译失败。
 
@@ -45,8 +55,8 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\map\autoSave.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\cmds\voteSave.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\map\autoSave.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\cmds\voteSave.kts`
 
 原因：官方 v159 移除了/不再暴露旧签名 `SaveIO.write(Fi, StringMap)`，改用 `mindustry.io.SaveOptions.extraTags`。
 
@@ -61,32 +71,25 @@
 - 如果只支持 v159+，可直接使用 `SaveOptions`；
 - 如果只支持旧 X 端，可改回 `SaveIO.write(tmp, extTag)` 并删除兼容函数。
 
-### 3. MindustryX `SendPacketEvent` 缺失
+### 3. MindustryX `SendPacketEvent`（已不再用于上行流量统计）
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\reGrief\trafficMonitor.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\reGrief\limitLogicPacket.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\reGrief\trafficMonitor.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\reGrief\limitLogicPacket.kts`
 
-原因：官方端没有 `mindustryX.events.SendPacketEvent`，直接 import 会导致脚本加载失败，并连带 `securityGuard`、`serverPressure` 等依赖失败。
+历史（已替代，2026-08-13 起不再采用）：`trafficMonitor` 曾依次经历“`Class.forName` 反射检测 + 官方端禁用精确统计”与“直接 import 强类型监听”两版，均依赖 `mindustryX.events.SendPacketEvent` 统计包字节。该事件字段随版本漂移（B480 有 `targetCount/connections/reliable`，B485 已删除），属于“每个版本都要兼容”的负担。
 
-兼容方式：
+当前决策（2026-08-13 按用户要求）：
 
-- 移除直接 import，改为 `Class.forName("mindustryX.events.SendPacketEvent")` 运行时检测。
-- 检测到 X 端事件时，通过 `listen<Any>(sendPacketEventClass)` 继续统计/拦截。
-- 官方端检测不到时：
-  - `trafficMonitor` 保留预算配置与命令，但精确上行估算为 0/空数据，并打印一次警告；
-  - `limitLogicPacket` 禁用“世界处理器发包速率”统计，仅保留其他不依赖 X 事件的保护。
-
-切除方式：
-
-- 等 X v159 可用后，可恢复直接 import `SendPacketEvent` 与强类型监听；或保留反射版本以继续兼容官方端。
+- `trafficMonitor.kts` 已**彻底移除 SendPacketEvent 依赖**，改为读取 Windows 网卡累计 Sent 字节（`netstat -e`）作为服务器总上行（仅支持 Windows，不支持 Linux）；总上行/同步上行/世界流三口径同源，性能优化系统按该总上行触发网络保护与清理。
+- `limitLogicPacket.kts` 仍保留反射检测与官方端回退（世界处理器发包速率统计，非上行压力检测）；是否一并移除由用户后续决定。
 
 ### 4. v159/B480 快照频率保护替代 X35 单连接接管
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\reGrief\syncThrottle.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\reGrief\syncThrottle.kts`
 
 原因：官方 v159 与 MindustryX B480 均已移除或变更 X35 时代以下接口或签名：
 
@@ -113,8 +116,8 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skillsGodAdmin.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\skillShop.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skillsGodAdmin.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\skillShop.kts`
 
 原因：X35 的 `Rules.hiddenBuildItems` 在官方 v159 不存在，直接访问会编译失败。
 
@@ -131,7 +134,7 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skillsLevel2.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skillsLevel2.kts`
 
 原因：部分版本的单位/建筑没有公开 `healthChanged()`，范围治疗直接调用会在官方端编译失败。
 
@@ -148,11 +151,11 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\coreMindustry\contentsTweaker.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\map\worldProcessorAdmin.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\map\externalCpHotReload.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\coreMindustry\contentsTweaker.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\map\worldProcessorAdmin.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\map\externalCpHotReload.kts`
 
 原因：官方 v159 将旧 CP 流程从 `state.patcher` / `ContentPatchLoadEvent` 迁移到 `state.data` / `DataPatchLoadEvent` / `mindustry.mod.data.PatchAsset`。原脚本如果继续直接访问 `state.patcher`，会在官方端编译或运行失败；同时 X35/旧端仍需要旧 patcher 路径。
 
@@ -177,9 +180,9 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\mapScript\module.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\maps.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\mapScript\lib\ScriptMapGenerator.kt`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\mapScript\module.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\maps.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\mapScript\lib\ScriptMapGenerator.kt`
 
 原因：地图特色脚本与脚本生成地图原本依赖旧版 `ContentPatchLoadEvent` 把地图/脚本 CP 注入旧 patcher；官方 v159 使用 `DataPatchLoadEvent` 收集服务器/地图 Data Asset。
 
@@ -200,12 +203,12 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\map\externalCpHotReload.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\map\worldProcessorAdmin.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\ext\soundEffectMenu.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\ext\musicJukebox.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\user\ext\skillsHybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\mapScript\tags\hybrid.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\map\externalCpHotReload.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\map\worldProcessorAdmin.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\ext\soundEffectMenu.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\ext\musicJukebox.kts`
 
 原因：官方 v159 增加服务器 Data Asset，同步补丁、音效、音乐时只发送旧 `sendWorldData(Player)` 无法让客户端补收新资产；但 `sendWorldAndAssets(Player)` 也不是轻量的“补发单个资产”接口，而是完整的资产确认与重新进入世界握手。
 
@@ -233,9 +236,9 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\start-server.ps1`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\start-server.sh`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\assets\`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\start-server.ps1`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\start-server.sh`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\assets\`
 
 原因：官方 v159 把服务器 Data Asset 放在数据目录 `assets/` 下，并会把旧 `patches/` 迁移到 `assets/patches/`。如果启动脚本每次都重新创建旧 `patches/`，会导致官方端反复出现迁移警告。
 
@@ -259,10 +262,10 @@
 
 涉及文件：
 
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\ext\soundEffectMenu.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\wayzer\ext\musicJukebox.kts`
-- `C:\Users\qw114\Desktop\other\mdt保留\docs\help-menu.md`
-- `C:\Users\qw114\Desktop\other\mdt保留\mdtserver\config\scripts\coreMindustry\menu.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\ext\soundEffectMenu.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\wayzer\ext\musicJukebox.kts`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\docs\help-menu.md`
+- `C:\Users\qw114\Desktop\other\mdt保留\mdtdo\mdtserver\config\scripts\coreMindustry\menu.kts`
 
 原因：小音效与点歌依赖 v159 Data Asset 让客户端自动下载服务器音频。它们不是单纯的“官方端降级兼容”，但属于为了官方 v159 新资产系统增加的脚本，后续若切回旧端或 X 端未跟进该 API，需要能快速定位。
 

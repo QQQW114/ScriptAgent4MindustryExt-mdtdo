@@ -31,7 +31,7 @@ fun shortStr(str: String): String {
 fun Player.shortID() = shortStr(uuid())
 
 val shortIDs: Cache<String, String> = CacheBuilder.newBuilder()
-    .expireAfterWrite(Duration.ofMinutes(60)).build()
+    .expireAfterWrite(Duration.ofDays(1)).build()
 listen<EventType.PlayerLeave> {
     val uuid = it.player.uuid()
     val new = it.player.shortID()

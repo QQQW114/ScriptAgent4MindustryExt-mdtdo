@@ -11,6 +11,61 @@
 - 后续维护建议
 
 > 维护规则：后续只要新增、重命名、拆分、删除或明显修改脚本职责，都应同步更新本文档。
+>
+> 测试边界（2026-08-13 用户明确）：除特殊情况与用户另行要求外，验证以服务端冷启动、脚本正确加载为准；运行中可验证的功能性改动在启动后的服务器上用控制台/命令 Socket 实测；不尝试真实客户端测试，也不为服务器手动添加压力；菜单、技能玩法等无法通过控制台测试的改动无需测试，如实记录为未覆盖边界即可。
+>
+> 推送规则（2026-08-13 用户明确）：mdtdo 服务器仓库不直接推送；每次推送前先把 **docs 与 scripts 的改动**同步到 `ScriptAgent4MindustryExt-mdtdo`，再从该仓库提交并推送；**推送默认包含 scripts 与 Agent 开发文档**。
+>
+> 版本口径（2026-08-13 用户明确）：**跟进新的稳定版本**；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本；文档中的版本号只是当前候选快照，Agent 不自行锁定或自动升级基线。
+>
+> 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
+
+## 2026-08-14：账号退出登录指令 + 三位ID离线解析延长至1天
+
+- `wayzer/lib/MdtStorage.kt` 新增 `logoutDevice(gameUuid)`：删除 `MdtPlayerSubjects` 中该游戏 UUID 的设备绑定行。
+- `wayzer/user/accountAuth.kts` 新增 `/logout`（别名 `logoff`/`signout`/`退出登录`/`登出`）与账号菜单「退出登录」选项：结束当前会话登录态（`data.removeId(subjectUid)`）、解除本机自动登录、刷新信任等级，账号数据不受影响。
+- `wayzer/user/shortID.kts`：三位ID→UUID 缓存从 60 分钟延长到 1 天，与 `PlayerData.history`（1 天）对齐；`findByShortId` 现可经三位ID打到 1 天内的离线玩家（`/pay`、`/accountqq` 等已用该解析器的指令随之受益）。
+
+## 2026-08-14：跟进 B485 官方发行版 JAR + 修复 trafficMonitor `const val` 编译错误
+
+- 放弃自建/打补丁，直接使用 GitHub 发行版 `server-2026.08.12.B485.jar`（SHA-256 `4C9C8F89251B351C885267C1E2D5BC51DCF3CEC702363AC6A774C390F39009A5`）。B480 的 MDT 自定义补丁 `0075`/`0076` 所针对 API 已被 B485 上游移除，无需再补。
+- 修复 `trafficMonitor.kts` 顶部 `private const val NIC_COUNTER_COMMAND` 在 ScriptAgent 脚本上下文不被允许（`Const 'val' is only allowed on top level...`）导致的编译失败，级联 21 个依赖脚本加载失败；改为 `private val`。
+- 冷启动验证：`共找到156脚本,加载成功152,启用成功147,出错0`；`trafficMonitor` 网卡统计启用，上行检测实测触发（`性能等级 0 -> 3`，同步上行 30.86Mbps，快照间隔 320ms）；`coreUnitRespawnCompat` B485 兼容加载成功。
+
+## 2026-08-13：上行流量统计改为 Windows 网卡计数器（彻底移除 SendPacketEvent 依赖）
+
+- 按用户要求，`wayzer/reGrief/trafficMonitor.kts` 的上行口径改为**服务器总上行**，数据源改为 **Windows 网卡累计 Sent 字节**（`netstat -e`，按“标签 + 两个整数”结构解析以规避中文标签），每次采样在 `Dispatchers.IO` 读计数器并求增量速率。
+- 三口径（总上行/同步上行/世界流）**同源**：均返回网卡速率；`lastTrafficPackets()`/`topTrafficPackets()` 返回 0/空（网卡聚合无法区分包类型），仅为兼容旧调用方保留。
+- 彻底移除 `mindustryX.events.SendPacketEvent` 依赖及包级分类（`packetRate`、`handleSendPacketEvent`、`isGameplaySyncPacket`、`trackStream`、流进度统计等）。
+- 保留：预算配置/命令、公告去重、resync 协调状态、TCP 待发/待加入连接/拥塞统计（`getTcpWriteBufferSize` 反射）。
+- 后果：性能优化系统的网络保护与清单位分支均改由网卡总上行驱动（用户明确要求“总上行与游戏同步都改用网卡”）；**本系统仅支持 Windows，不支持 Linux**（已写入 README）。
+- 未验证：按用户要求本轮不冷启动，待跟进 B485 时统一验证。
+
+## 2026-08-13：上行压力检测移除官方端回退（trafficMonitor 强类型依赖 MindustryX）
+
+- 按用户要求，`wayzer/reGrief/trafficMonitor.kts` 的上行流量统计不再兼容官方端：改为直接 `import mindustryX.events.SendPacketEvent` 强类型 `listen<SendPacketEvent>`。
+- 移除每版本需维护的兼容逻辑：`Class.forName` 运行时检测、反射字段读取 `eventMember`、`packetRate` 反射版、`hasBatchTargetCount` 字段探测、旧 MDX 双事件去重（`lastPacket`/`lastPacketAtNanos`）、无调用方的 `recordRoutedPacket` 兼容函数。
+- `packetRate` 强类型化后语义不变：B480 单发 `emit()` 置 `targetCount=-1`，批量 `emitBatch()` 置为实际连接数；`targetCount>=0` 用批量数，否则按 `con`/`except` 退化为 1/广播数/广播数-1。
+- 后果：官方端运行该脚本会加载失败并连带依赖脚本失败（官方端不受支持，符合单端 MindustryX 口径）。
+- 冷启动验证（2026-08-14）：`共找到156脚本,加载成功152,启用成功147,出错0`，`trafficMonitor` 编译 7.15s 成功，日志输出“上行流量统计已启用：依赖 MindustryX SendPacketEvent 强类型监听（官方端不支持）”，`Server loaded`、6567 端口打开；测试进程已清理、6567/6859/10099 端口释放。
+
+## 2026-08-06：压力等级 L1-L4 命名、移除性能自动暂停、新增出波暂停投票与管理开关
+
+- 提交 `21d23b6`（08-06 13:54）与 `2688554`（08-06 14:51），涉及 `wayzer/map/serverPressureActions.kts` 与 `wayzer/map/serverPressure.kts`（同步限制介入提示去前缀）。
+- 移除 L4 性能自动暂停：删除 `autoPaused` 状态与“`level4Samples>=3` 时 `setGamePaused(true, "TPS持续过低…")`”链路，恢复路径不再合并“游戏已解除暂停”播报。`/gamepause`、`/vote pause|resume` 的手动暂停保持不变。极端情况仍走“TPS 连续 2 分钟均低于 5 才兜底随机换图”，且换图前不再先尝试暂停。
+- 等级播报改为 L1-L4 命名：L1-L3 保持本局每等级仅首次广播；L4 为紧急等级，每次重新进入（由更低等级升入）都播报一次。
+- 广播文案统一自然化：全部去掉 `[服务器提示]` 前缀；PPS/严重上行/L4 前三清理提示改为按局一次；恢复播报每局一次。
+- 新增出波暂停开关 `wavePauseEnabled`：**仅内存运行态、不落盘，默认开启**。L2 及以上只在开关开启时暂停出波并推迟 `wavetime`；关闭时立即按快照恢复波次规则，压力期间不再卡住出波。换图/Reset 后回到默认开启。
+- 管理指令 `command("wavepause", "启停压力系统出波暂停")`（别名 `出波暂停`），子指令 `status|on|off`，仅 3+级、4级/admin 或控制台（`canManagePause`）。
+- 投票指令 `/vote wavepauseon`、`/vote wavepauseoff`（别名 `开出波暂停`/`关出波暂停`），需 50% 同意，权限 `wayzer.vote.wavepause`（已 `PermissionApi.registerDefault`）。
+- 验证证据（08-06 14:45–14:47 控制台实测，见 `config/logs/log-0.txt` 与 `script-load/current.log`）：冷启动 `共找到156脚本,加载成功152,启用成功147,出错0`、`ScriptAgent c2823c1`，6567 端口打开；控制台自定义阈值 `L1<200/L2<150/L3<50/L4<40` 下 TPS=61 正确触发 L2 并播报，随后恢复默认阈值 `L1<45/L2<35/L3<30/L4<25/恢复≥55`；`wavepause` 关闭/开启往返与压力期间关闭时出波恢复均按预期，日志正常。测试进程已清理、端口释放，`server.properties` 已还原 `socketInput=false`。
+- 未覆盖边界：出波暂停投票与广播文案仍需真实玩家客户端受控复核（本轮仅控制台实测）。
+
+## 2026-08-04：性能优化系统广播自然化并按局去重（提交 `9c4b63e`）
+
+- `serverPressure.kts` 删除自有的 `lastBroadcastLevel` 升档/降档/恢复播报链路：采样器只在性能等级变化时记日志，玩家侧提示统一由 `serverPressureActions` 的“进入性能等级/恢复”广播负责，消除升档/恢复瞬间双重播报。
+- `serverPressureActions.kts`：PPS 顶满、严重上行、L4 数量前三清理的玩家广播改为每局一次的自然文案；普通持续清理不再向玩家广播，只按默认 30 秒聚合写日志（`lastCleanupLogAt`），消除高频刷屏；新增 `roundRecoveryAnnounced` 保证恢复播报每局一次；升档广播失败不消费状态、下一轮会重试。
+- `announceThrottleRestrictionOnce` 的同步限制介入提示改为自然语句（其 `[服务器提示]` 前缀随后在 08-06 提交中一并去掉）。
 
 ## 2026-08-03：放行以 .png 命名的 JPEG 伪装贴图，并沉淀本地服务器运行/调试方法
 
@@ -822,7 +877,7 @@
 
 - `mdtserver/server-2026.05.X35.jar`
 - `mdtserver/server-2026.05.X35.jar.bak-headless-20260613-020640`
-- `参考项目/MindustryX-2026.05.X35/patches/client/0046-UI-ARC-logic-Support.patch`
+- `../参考项目/MindustryX-2026.05.X35/patches/client/0046-UI-ARC-logic-Support.patch`
 
 问题：
 
