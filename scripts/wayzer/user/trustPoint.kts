@@ -4,6 +4,7 @@
 package wayzer.user
 
 import wayzer.lib.DatabaseFeature
+import wayzer.lib.MdcGrantedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.TrustPointChangedEvent
@@ -42,6 +43,16 @@ private fun emitTrustPointChanged(uid: String) {
 
 private fun emitTrustPointChanged(uids: Set<String>) {
     if (uids.isNotEmpty()) launch { TrustPointChangedEvent(uids).emitAsync() }
+}
+
+/**
+ * MDC“发放”统计事件：只统计新发放给已登录账号主体的正向金额。
+ * 转账（transferTrustPoints）、红包领取/退回（MdtStorage 内流转）、面对面读博结算
+ * （addCurrentTrustPoints，本金回流）都不经过这里，避免把存量流转算成新发放。
+ */
+private fun emitMdcGranted(uid: String, amount: Int, desc: String) {
+    if (amount <= 0 || !uid.startsWith("account:")) return
+    launch { MdcGrantedEvent(uid, amount, desc).emitAsync() }
 }
 
 private fun onlinePlayerByUid(uid: String): Player? =
@@ -88,6 +99,7 @@ fun addTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
     val newPoints = MdtStorage.addTrustPoints(uid, amount)
     setCachedTrustPoints(uid, newPoints)
     notifyMdcChanged(uid, newPoints - oldPoints, desc, newPoints)
+    emitMdcGranted(uid, amount, desc)
     emitTrustPointChanged(uid)
     return newPoints
 }
@@ -99,6 +111,7 @@ fun addTrustPointsBatch(rewards: Map<String, Int>, desc: String = ""): Map<Strin
     newPoints.forEach { (uid, newValue) ->
         setCachedTrustPoints(uid, newValue)
         notifyMdcChanged(uid, fixed[uid] ?: 0, desc, newValue)
+        emitMdcGranted(uid, fixed[uid] ?: 0, desc)
     }
     emitTrustPointChanged(newPoints.keys)
     return newPoints
@@ -150,7 +163,9 @@ fun setTrustPoints(uid: String, value: Int): Int {
     val oldPoints = getCachedTrustPoints(uid)
     val newValue = MdtStorage.setTrustPoints(uid, value)
     setCachedTrustPoints(uid, newValue)
-    notifyMdcChanged(uid, newValue - oldPoints, "admin", newValue)
+    val delta = newValue - oldPoints
+    if (delta > 0) emitMdcGranted(uid, delta, "admin")
+    notifyMdcChanged(uid, delta, "admin", newValue)
     emitTrustPointChanged(uid)
     return newValue
 }

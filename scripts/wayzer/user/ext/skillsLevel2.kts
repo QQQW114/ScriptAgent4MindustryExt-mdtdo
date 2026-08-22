@@ -591,6 +591,31 @@ command("hammerSquad", "2级技能：铁锤小队".with(), commands = SkillComma
     }
 }
 
+command("randompermbuff", "2级技能：随机永久buff".with(), commands = SkillCommands) {
+    aliases = listOf("随机永久buff", "永久buff", "随机buff", "randomBuff")
+    attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
+    skillBody {
+        levelError(player, "2")?.let { returnReply("[red]$it".with()) }
+        if (!spendSkillCost(player, 10, "randompermbuff")) returnReply("[red]MDC不足：随机永久buff需要 10 MDC".with())
+        val unit = player.unit() ?: returnReply("[red]无法获取当前单位".with())
+        // 随机永久buff：与 docs/hybrid-system-design.md 的“可识别 Buff”正向/常用一致
+        //（加速/超频/超速/护盾/Boss/潮湿），不含无敌与动态；按项目口径以无限时间（Float.POSITIVE_INFINITY）附加。
+        val picked = listOf(
+            StatusEffects.fast,
+            StatusEffects.overclock,
+            StatusEffects.overdrive,
+            StatusEffects.shielded,
+            StatusEffects.boss,
+            StatusEffects.wet,
+        ).random()
+        applyStackedStatus(unit, picked, Float.POSITIVE_INFINITY)
+        player.sendMessage(
+            "[green]你的[white]${unit.type.localizedName}[green]获得了随机永久buff：[cyan]${picked.localizedName}[green]！"
+        )
+        broadcastSkill("随机永久buff")
+    }
+}
+
 onEnable {
     launch(Dispatchers.game) {
         while (true) {

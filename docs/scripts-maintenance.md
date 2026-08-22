@@ -20,6 +20,22 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-08-22：服务器状态统计与独立 Web（统计/服务器状态网页）
+
+- `wayzer/ext/serverStats.kts`（新增）：服务器状态统计。事件钩子（`PlayerJoin`/`TrustLevelChangedEvent`/`MdcGrantedEvent`）只往 `ConcurrentLinkedQueue` 投递；统计内存状态、DB 读写与 JSON 文件输出全部在 `Dispatchers.IO` 独立协程；`Dispatchers.game` 协程每 5 秒刷新服务器快照（地图/模式/波次/TPS/在线与在线等级分布）到 `@Volatile`。`/serverstats status|on|off`（别名 `统计`/`状态统计`/`statusstats`），on/off 仅 4级/admin 或控制台，状态持久化到 `MdtSettings serverStats.enabled`（默认开启）。
+- `wayzer/lib/MdtStorage.kt`：新增表 `MdtStatsPlayers`（主键 `subject_uid` + `cur_level`/`last_join_date`/`first_seen_date`，只做主键查询/插入判断新主体/今日去重/等级迁移，**不做全库 COUNT**）；新增 `ServerStatsRecord` 与 `loadServerStats`/`saveServerStats`/`markStatsPlayerSeen`/`moveStatsPlayerLevel`；`MdtSettings` 新增 `serverStats.*` 计数键（总量/今日/等级分布）。
+- `wayzer/lib/TrustSystemEvents.kt`：新增 `MdcGrantedEvent(uid, amount, reason)`；`wayzer/user/trustPoint.kts` 在 `addTrustPoints`/`addTrustPointsBatch`/`setTrustPoints`（正向）触发，只对 `account:<id>` 主体（排除游客）；转账、红包、面对面读博结算等存量流转不触发（不算新发放）。
+- `stats-web/`（新增，位于 `mdtdo/`，不进插件仓库）：`index.html`（单文件、30秒自动刷新）+ `start-web.ps1`（HttpListener，默认 `127.0.0.1:8081`，`/server-status.json` 默认映射 `..\mdtserver\config\stats\server-status.json`）+ README。与服务器统计开关完全解耦。
+- 口径：今日/总游玩人数（主体去重）、今日/总人流量（PlayerJoin 次数）、今日/总发放 MDC（新发放、排除游客与存量流转）、0/1/2/3/3+ 累计等级分布（3+ 桶含 3+/3++/4）；跨天只重置今日三项；统计从启用时刻累计，不回溯补计。
+- 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`；`MdtStatsPlayers` 建表成功；JSON 文件即时生成且字段正确；`/serverstats status`、`off`→JSON `enabled:false`、`on`→JSON `enabled:true` 实测通过；Web 页面 `/` 与 `/server-status.json` 访问正常。未覆盖边界：真实客户端加入/等级变化/MDC 发放引起的计数递增（事件均为脚本触发，已按现有事件机制同款实现记录为逻辑覆盖，未经真实联机实测）。
+
+## 2026-08-22：鱼鱼技能纯净模式修复、随机永久buff二级技能、logout 入玩家指令
+
+- `wayzer/user/skillShop.kts`：`fishonlyyou`（此生只属鱼你/鱼鱼）改为 `useCost = 2`（释放一次消耗2 MDC）、`ignoreNoSkills = true → false`（修复纯净模式未禁用该技能；纯净模式通过 `@noSkills` 禁用普通技能）。
+- `wayzer/user/ext/skillsLevel2.kts` + `wayzer/user/ext/skills.kts`：新增二级技能 `/skill randompermbuff`（**随机永久buff**）：当前附身单位随机获得一个可识别 Buff（与 `docs/hybrid-system-design.md` “可识别 Buff”**正向/常用**一致：加速/超频/超速/护盾/Boss/潮湿，**不含无敌**），并按项目口径以**无限时间**（`applyStackedStatus(..., Float.POSITIVE_INFINITY)`）附加；消耗10 MDC，冷却120秒，PVP与noskill禁用（`SkillPrecheck` + `SkillNoPvp` + `SkillCooldown(120_000)`）。
+- `coreMindustry/menu.kts` + `docs/help-menu.md`：`/logout` 加入玩家指令列表（账号系统分区）。
+- 冷启动验证：`156/152/147/0`。
+
 ## 2026-08-14：账号退出登录指令 + 三位ID离线解析延长至1天
 
 - `wayzer/lib/MdtStorage.kt` 新增 `logoutDevice(gameUuid)`：删除 `MdtPlayerSubjects` 中该游戏 UUID 的设备绑定行。

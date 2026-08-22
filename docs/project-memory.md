@@ -106,6 +106,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - 测试边界（2026-08-13 明确）：除特殊情况与用户另行要求外，验证以服务端冷启动、脚本正确加载为准；运行中可验证的功能性改动在启动后的服务器上用控制台/命令 Socket 实测；不尝试真实客户端测试，也不为服务器手动添加压力；菜单、技能玩法等无法通过控制台测试的改动无需测试，按未覆盖边界记录即可。
 - 远程推送流程（2026-08-13 明确）：mdtdo 服务器仓库只做本地维护、不直接推送；每次推送前，**先同步 docs 与 scripts 的改动**到 `ScriptAgent4MindustryExt-mdtdo` 仓库，再从该仓库提交并推送；**推送默认包含 scripts 与 Agent 开发文档（docs）**。
 - 版本跟进总体原则（2026-08-13 明确）：**跟进新的稳定版本**；无论 JAR 文件还是 SA 插件，**均由用户决定跟进哪个版本，并跟进用户所要求的对应版本**。文档中的版本号只是“当前时点状态”，Agent 不自行锁定基线、也不因上游更新自动改基线；需要升级时由用户提出并按新版本重新核对。
+- 文档跟进规则（2026-08-22 明确）：**每次更新内容都要跟进文档**——凡是代码/脚本行为、配置、指令、版本或功能变化，都需要在对应专项文档与维护记录中同步，不留未记录的变化。
 - 汇报以中文、结构化、简洁、可追溯为宜；信息不足的会话如实记录，不为凑篇幅臆测扩写。
 
 “直接做”和“重大改动先确认”并不矛盾：按风险、影响范围和授权范围判断。用户对当前任务的新要求优先于这里的默认偏好。
@@ -253,6 +254,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - [统一性能与网络保护](performance-guard.md)：压力分层、可逆措施和诊断。
 - [Data Assets / 外部 CP](v159-data-assets-hot-reload.md)：资产格式、校验、热加载和回滚边界。
 - [数据库说明](database-system.md)：持久化、服务注册和类加载器隔离。
+- [服务器状态统计与 Web](server-status-stats.md)：统计口径、存储、线程/缓存设计、开关与独立 Web。
 - [地图脚本清单](map-scripts.md)：当前重点地图、兼容范围和恢复门槛。
 - [上游复核](upstream-review-2026-07-16.md)：历史版本比较；当前结论以更新的 B480/v159.7 文档为准。
 - [ScriptAgent 竞态 Issue 与修复验证](issue-scriptagent-load-race.md)：记录原始问题、本地 workaround、维护者修复与未发行构建的验证证据。
@@ -261,6 +263,8 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-08-22**：新增“服务器状态统计与独立 Web”：服务器侧统计脚本 `wayzer/ext/serverStats.kts`（事件投递 + IO 协程单写者内存计数 + `MdtSettings`/`MdtStatsPlayers` 增量存储，不做全库 COUNT，默认开启，`/serverstats status|on|off`），新事件 `MdcGrantedEvent`（只统计向已登录账号的新发放MDC，排除游客与转账/红包/读博等存量流转），独立 Web `stats-web/`（`index.html` + `start-web.ps1`，默认 127.0.0.1:8081，与服务器统计开关解耦）。冷启动 157/153/148/0，JSON 生成与开关、Web 访问实测通过。详见 `docs/server-status-stats.md`、`database-system.md` 与 `scripts-maintenance.md`。
+- **2026-08-22**：技能/纯净模式/玩家指令更新：鱼鱼技能改为消耗2 MDC且被纯净模式禁用；新增二级技能“随机永久buff”（可识别Buff正向池不含无敌、无限时间、10 MDC、120秒冷却、PVP与noskill禁用）；`/logout` 纳入玩家指令列表。帖子系统“关注+通知”按用户要求**放弃**。用户明确“每次更新内容都要跟进文档”，已作为长期规则写入 §3。
 - **2026-08-14**：新增账号退出登录指令 `/logout`（结束会话+解除本机自动登录，不影响账号数据）并纳入账号菜单；三位ID→UUID 缓存延长至 1 天，`/pay`、`/accountqq` 等指向玩家指令可经三位ID打到 1 天内离线玩家。
 - **2026-08-14**：跟进 B485 官方发行版 JAR（`server-2026.08.12.B485.jar`，SHA-256 `4C9C...09A5`，不再打 MDT 自定义补丁）；修复 `trafficMonitor` `const val` 编译错误并冷启动验证 156/152/147/0，上行网卡统计实测生效。同步 README、official-v159-compat、v159-network-sync、scripts-maintenance（B480 补丁记录转为历史）。
 - **2026-08-13**：按用户要求将上行流量统计改为 **Windows 网卡计数器**（`netstat -e`，仅支持 Windows、不支持 Linux）：`trafficMonitor` 彻底移除 `SendPacketEvent` 依赖与包级分类，总上行/同步上行/世界流三口径同源，性能优化系统按网卡总上行驱动网络保护与清理。同步 README（声明不支持 Linux）、`performance-guard.md` 流量口径、`official-v159-compat.md` §3 与 `scripts-maintenance.md`；未验证，待跟进 B485 时统一验证。

@@ -50,7 +50,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 
 - `/points`、`/pay`、`/redpacket`、`/grab`：MDC查询、转账与红包；单个红包最多 500 MDC；MDC变动时会私聊提示本人。
 - `/seniority`、`/资历`、`/playtime`：查看资历等级、累计在线时长与下一资历等级条件。
-- `/captcha`、`/register`、`/login`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、改密与注销；登录不需要验证码。
+- `/captcha`、`/register`、`/login`、`/logout`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、退出登录（结束会话并解除本机自动登录）、改密与注销；登录不需要验证码。
 - `/msg`、`/r`：私聊与回复最近私聊对象。
 - `/rank`：排行榜入口，查看MDC、帖子、赞踩、认可排行。
 - `/tips`：玩家随机 Tips。
@@ -111,5 +111,6 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/unloadmapscript`、`/mapscripts`：管理员手动关闭指定地图脚本/模式，或列出当前启用的地图脚本。关闭时会显式创建 ScriptAgent 事务、检查最终状态，且不额外扫描磁盘；已实测 `tags/flood` 与 `14668` 可加载后再正常停用。
 - `/posts`、`/posts trash`：帖子管理/回收站快捷入口；保护锁在帖子详情页内设置或解除。
 - `/wikiadmin`、`/wikiadmin trash`：Wiki 管理/回收站快捷入口；保护锁在 Wiki 页面或管理页内设置或解除。
+- `/serverstats [status|on|off]`：服务器状态统计；`status` 所有人可查看；`on`/`off`（别名 `统计`/`状态统计`）仅4级/admin或控制台。统计 Web 见 `docs/server-status-stats.md`。
 
 没有加入固定分区但当前玩家可见的指令，会在玩家点击“其他指令”后动态出现在该列表中。

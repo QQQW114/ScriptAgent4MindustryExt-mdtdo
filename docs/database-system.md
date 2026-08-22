@@ -252,6 +252,20 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 
 红包抢完结算时会广播领取者列表与手气王排行；未登录游客不能抢红包，需要先登录或注册。
 
+### 服务器状态统计
+
+- `MdtStatsPlayers`
+  - 服务器状态统计的“去重玩家登记表”：主键 = 统计主体（登录玩家 `account:<id>`，游客为设备 UUID）。
+  - `cur_level`：主体最后一次进入时的等级（用于累计等级分布增量维护与自愈）。
+  - `last_join_date` / `first_seen_date`：最后一次进入日期 / 首次进入日期。
+  - 只做**主键查询/插入**判断“新主体/今日已计数/等级变化”，**绝不做全表 COUNT**。
+- `MdtSettings` 键（全部为增量累计，见 `docs/server-status-stats.md`）：
+  - `serverStats.enabled`：统计开关；
+  - `serverStats.date`：当前统计日期（跨天重置今日三项）；
+  - `serverStats.totalPlayers` / `serverStats.totalFlow` / `serverStats.totalMdcGranted`；
+  - `serverStats.todayPlayers` / `serverStats.todayFlow` / `serverStats.todayMdcGranted`；
+  - `serverStats.rank0` / `serverStats.rank1` / `serverStats.rank2` / `serverStats.rank3` / `serverStats.rank3plus`。
+
 ### 性能优化
 
 常驻/实验性性能优化系统使用 `MdtSettings` 保存小型全局状态：

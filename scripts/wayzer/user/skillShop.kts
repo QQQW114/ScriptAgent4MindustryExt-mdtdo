@@ -89,7 +89,7 @@ private val skillDefinitions = listOf(
     SkillShopDefinition("14", "randomunit", "随机单位", "从所有可召唤单位中抽一个", buyPrice = 60, useCost = 10, oncePerGame = true),
     SkillShopDefinition("15", "ultirandom", "[purple]终极随机", "谁知道会出现什么呢？", buyPrice = 200, useCost = 66, cooldownMillis = 20_000),
     SkillShopDefinition("16", "missilestorm", "导弹风暴", "5秒内持续召唤随机创伤导弹", buyPrice = 100, useCost = 20, cooldownMillis = 300_000),
-    SkillShopDefinition("17", "fishonlyyou", "此生只属鱼你", "召唤一只只属于你的飞行 risso 鱼鱼，会试图跟随你", buyPrice = 10, useCost = 0, requiredLevelCode = "2", ignoreNoSkills = true),
+    SkillShopDefinition("17", "fishonlyyou", "此生只属鱼你", "召唤一只只属于你的飞行 risso 鱼鱼，会试图跟随你（释放消耗2 MDC）", buyPrice = 10, useCost = 2, requiredLevelCode = "2"),
     SkillShopDefinition("18", "missileburst", "导弹连射", "从当前单位朝向连续发射40个合金创伤分裂小导弹", buyPrice = 100, useCost = 10),
     SkillShopDefinition("19", "facephd", "[gold]对面对面读博", "双方下注猜胜负；PVP赌胜队，非PVP赌本局正常完成或失败/换图；发起者额外支付10%手续费", buyPrice = 200, useCost = 0, oncePerGame = true, ignoreNoSkills = true, pvpDisabled = false),
 )

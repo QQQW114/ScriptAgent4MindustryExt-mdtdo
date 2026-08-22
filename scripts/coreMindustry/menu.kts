@@ -106,6 +106,7 @@ private val playerHelpEntries = listOf(
     HelpEntryDef("login", "[cyan]登录账号", "登录MDT DO账号"),
     HelpEntryDef("changepassword", "[cyan]修改密码", "修改当前登录账号密码"),
     HelpEntryDef("deleteownaccount", "[red]注销账号", "注销当前登录账号"),
+    HelpEntryDef("logout", "[cyan]退出登录", "退出当前登录账号并解除本机自动登录"),
     HelpEntryDef("playerinfo", "[cyan]玩家信息面板", "打开玩家信息与交互菜单"),
     HelpEntryDef("msg", "[pink]私聊", "给在线玩家发送私聊，/r 可回复最近对象"),
     HelpEntryDef("r", "[pink]回复私聊", "回复最近私聊对象"),

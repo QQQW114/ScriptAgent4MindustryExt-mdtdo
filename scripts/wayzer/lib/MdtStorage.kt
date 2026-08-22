@@ -546,6 +546,21 @@ object MdtStorage {
         val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp)
     }
 
+    /**
+     * 服务器状态统计的“去重玩家登记表”：
+     * - 每行 = 一个统计主体（登录玩家为 account:<id>，游客为设备UUID）；
+     * - 主键查找即可判断是否新玩家/今日是否已计数，避免全库 COUNT 暴力统计；
+     * - curLevel 记录主体最后一次进入时的等级，用于等级分布的增量维护与自愈。
+     */
+    object StatsPlayers : IdTable<String>("MdtStatsPlayers") {
+        override val id: Column<EntityID<String>> = varchar("subject_uid", UID_LENGTH).entityId()
+        override val primaryKey: PrimaryKey = PrimaryKey(id)
+        val curLevel = varchar("cur_level", 8).default("0")
+        val lastJoinDate = varchar("last_join_date", 10).nullable()
+        val firstSeenDate = varchar("first_seen_date", 10).nullable()
+        val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp)
+    }
+
     fun tables(): Array<Table> = arrayOf(
         Accounts,
         AccountBindings,
@@ -575,6 +590,7 @@ object MdtStorage {
         RedPacketClaims,
         IpAccountBindings,
         Settings,
+        StatsPlayers,
     )
 
     private fun now(): Instant = Instant.now()
@@ -933,6 +949,152 @@ object MdtStorage {
     fun setSettings(values: Map<String, String?>) = transaction {
         values.forEach { (key, value) -> setSettingInTx(key, value) }
         Unit
+    }
+
+    // ---------- 服务器状态统计 ----------
+    // 计数全部增量维护（事件驱动 + 每日滚动），只依赖 MdtSettings 键值（PK 读写）
+    // 与 StatsPlayers 主键注册表，绝不通过全表 COUNT 统计所有玩家。
+
+    const val SERVER_STATS_ENABLED_KEY = "serverStats.enabled"
+    private const val SERVER_STATS_DATE_KEY = "serverStats.date"
+    private const val SERVER_STATS_TOTAL_PLAYERS_KEY = "serverStats.totalPlayers"
+    private const val SERVER_STATS_TOTAL_FLOW_KEY = "serverStats.totalFlow"
+    private const val SERVER_STATS_TOTAL_MDC_KEY = "serverStats.totalMdcGranted"
+    private const val SERVER_STATS_TODAY_PLAYERS_KEY = "serverStats.todayPlayers"
+    private const val SERVER_STATS_TODAY_FLOW_KEY = "serverStats.todayFlow"
+    private const val SERVER_STATS_TODAY_MDC_KEY = "serverStats.todayMdcGranted"
+    private const val SERVER_STATS_RANK_0_KEY = "serverStats.rank0"
+    private const val SERVER_STATS_RANK_1_KEY = "serverStats.rank1"
+    private const val SERVER_STATS_RANK_2_KEY = "serverStats.rank2"
+    private const val SERVER_STATS_RANK_3_KEY = "serverStats.rank3"
+    private const val SERVER_STATS_RANK_3PLUS_KEY = "serverStats.rank3plus"
+
+    /** 服务器状态统计的持久化计数快照（启用开关单独存 SERVER_STATS_ENABLED_KEY）。 */
+    data class ServerStatsRecord(
+        val date: String = "",
+        val totalPlayers: Long = 0L,
+        val totalFlow: Long = 0L,
+        val totalMdcGranted: Long = 0L,
+        val todayPlayers: Long = 0L,
+        val todayFlow: Long = 0L,
+        val todayMdcGranted: Long = 0L,
+        val rank0: Long = 0L,
+        val rank1: Long = 0L,
+        val rank2: Long = 0L,
+        val rank3: Long = 0L,
+        val rank3plus: Long = 0L,
+    )
+
+    /** markStatsPlayerSeen 结果：告知调用方应如何更新内存计数。 */
+    data class StatsPlayerSeenResult(
+        val isNew: Boolean = false,
+        val countedToday: Boolean = false,
+        val prevLevel: String? = null,
+        val currentLevel: String? = null,
+    )
+
+    private val SERVER_STATS_KEYS = listOf(
+        SERVER_STATS_DATE_KEY,
+        SERVER_STATS_TOTAL_PLAYERS_KEY,
+        SERVER_STATS_TOTAL_FLOW_KEY,
+        SERVER_STATS_TOTAL_MDC_KEY,
+        SERVER_STATS_TODAY_PLAYERS_KEY,
+        SERVER_STATS_TODAY_FLOW_KEY,
+        SERVER_STATS_TODAY_MDC_KEY,
+        SERVER_STATS_RANK_0_KEY,
+        SERVER_STATS_RANK_1_KEY,
+        SERVER_STATS_RANK_2_KEY,
+        SERVER_STATS_RANK_3_KEY,
+        SERVER_STATS_RANK_3PLUS_KEY,
+    )
+
+    fun loadServerStats(): ServerStatsRecord = transaction {
+        val raw = Settings.selectAll().where { Settings.id inList SERVER_STATS_KEYS }
+            .associate { it[Settings.id].value to it[Settings.value] }
+        fun longValue(key: String): Long = raw[key]?.toLongOrNull() ?: 0L
+        ServerStatsRecord(
+            date = raw[SERVER_STATS_DATE_KEY] ?: "",
+            totalPlayers = longValue(SERVER_STATS_TOTAL_PLAYERS_KEY),
+            totalFlow = longValue(SERVER_STATS_TOTAL_FLOW_KEY),
+            totalMdcGranted = longValue(SERVER_STATS_TOTAL_MDC_KEY),
+            todayPlayers = longValue(SERVER_STATS_TODAY_PLAYERS_KEY),
+            todayFlow = longValue(SERVER_STATS_TODAY_FLOW_KEY),
+            todayMdcGranted = longValue(SERVER_STATS_TODAY_MDC_KEY),
+            rank0 = longValue(SERVER_STATS_RANK_0_KEY),
+            rank1 = longValue(SERVER_STATS_RANK_1_KEY),
+            rank2 = longValue(SERVER_STATS_RANK_2_KEY),
+            rank3 = longValue(SERVER_STATS_RANK_3_KEY),
+            rank3plus = longValue(SERVER_STATS_RANK_3PLUS_KEY),
+        )
+    }
+
+    fun saveServerStats(record: ServerStatsRecord) = transaction {
+        setSettingInTx(SERVER_STATS_DATE_KEY, record.date)
+        setSettingInTx(SERVER_STATS_TOTAL_PLAYERS_KEY, record.totalPlayers.toString())
+        setSettingInTx(SERVER_STATS_TOTAL_FLOW_KEY, record.totalFlow.toString())
+        setSettingInTx(SERVER_STATS_TOTAL_MDC_KEY, record.totalMdcGranted.toString())
+        setSettingInTx(SERVER_STATS_TODAY_PLAYERS_KEY, record.todayPlayers.toString())
+        setSettingInTx(SERVER_STATS_TODAY_FLOW_KEY, record.todayFlow.toString())
+        setSettingInTx(SERVER_STATS_TODAY_MDC_KEY, record.todayMdcGranted.toString())
+        setSettingInTx(SERVER_STATS_RANK_0_KEY, record.rank0.toString())
+        setSettingInTx(SERVER_STATS_RANK_1_KEY, record.rank1.toString())
+        setSettingInTx(SERVER_STATS_RANK_2_KEY, record.rank2.toString())
+        setSettingInTx(SERVER_STATS_RANK_3_KEY, record.rank3.toString())
+        setSettingInTx(SERVER_STATS_RANK_3PLUS_KEY, record.rank3plus.toString())
+        Unit
+    }
+
+    /**
+     * 玩家人数去重登记（主键操作，绝不扫描全表）：
+     * - 首次出现：插入行，isNew=true 且 countedToday=true（总人数 +1、今日人数 +1）；
+     * - 已有行且 lastJoinDate != date：今日首次出现，countedToday=true；
+     * - curLevel 与当前等级不同：返回 prevLevel/currentLevel 供等级分布桶迁移。
+     */
+    fun markStatsPlayerSeen(uid: String, date: String, levelCode: String): StatsPlayerSeenResult = transaction {
+        val existing = StatsPlayers.selectAll().where { StatsPlayers.id eq uid }.firstOrNull()
+        if (existing == null) {
+            StatsPlayers.insert {
+                it[id] = uid
+                it[StatsPlayers.curLevel] = levelCode
+                it[StatsPlayers.lastJoinDate] = date
+                it[StatsPlayers.firstSeenDate] = date
+            }
+            return@transaction StatsPlayerSeenResult(isNew = true, countedToday = true)
+        }
+        val prevLevel = existing[StatsPlayers.curLevel]
+        val countedToday = existing[StatsPlayers.lastJoinDate] != date
+        val levelChanged = prevLevel != levelCode
+        if (countedToday || levelChanged) {
+            StatsPlayers.update({ StatsPlayers.id eq uid }) {
+                it[StatsPlayers.lastJoinDate] = date
+                if (levelChanged) {
+                    it[StatsPlayers.curLevel] = levelCode
+                    it[updatedAt] = now()
+                }
+            }
+        }
+        StatsPlayerSeenResult(
+            isNew = false,
+            countedToday = countedToday,
+            prevLevel = if (levelChanged) prevLevel else null,
+            currentLevel = if (levelChanged) levelCode else null,
+        )
+    }
+
+    /**
+     * 等级变化时迁移登记行的 curLevel；从未登记过的玩家返回 null（调用方忽略，
+     * 该玩家会在下次进入时按当时等级计入，端到端自愈）。
+     */
+    fun moveStatsPlayerLevel(uid: String, levelCode: String): Pair<String, String>? = transaction {
+        val existing = StatsPlayers.selectAll().where { StatsPlayers.id eq uid }.firstOrNull()
+            ?: return@transaction null
+        val prev = existing[StatsPlayers.curLevel]
+        if (prev == levelCode) return@transaction null
+        StatsPlayers.update({ StatsPlayers.id eq uid }) {
+            it[curLevel] = levelCode
+            it[updatedAt] = now()
+        }
+        prev to levelCode
     }
 
     private fun ensureTrustProfile(uid: String) {
