@@ -255,6 +255,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - [Data Assets / 外部 CP](v159-data-assets-hot-reload.md)：资产格式、校验、热加载和回滚边界。
 - [数据库说明](database-system.md)：持久化、服务注册和类加载器隔离。
 - [服务器状态统计与 Web](server-status-stats.md)：统计口径、存储、线程/缓存设计、开关与独立 Web。
+- [Agent 调试经验与常见坑](agent-debug-experience.md)：服务器冷启动/启动器、编码、ScriptAgent 编译、H2/Exposed、验证与提交惯例——**新会话先读**。
 - [地图脚本清单](map-scripts.md)：当前重点地图、兼容范围和恢复门槛。
 - [上游复核](upstream-review-2026-07-16.md)：历史版本比较；当前结论以更新的 B480/v159.7 文档为准。
 - [ScriptAgent 竞态 Issue 与修复验证](issue-scriptagent-load-race.md)：记录原始问题、本地 workaround、维护者修复与未发行构建的验证证据。
@@ -263,6 +264,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-08-22**：按用户要求新增 [Agent 调试经验与常见坑](agent-debug-experience.md)（服务器冷启动启动器陷阱：.NET Task 读 stdout 管道会静默死锁、.cmd/.ps1 编码、jstack 定位卡死、H2/Exposed 查询、命令 Socket 协议、提交推送惯例等），并在 §11 索引。
 - **2026-08-22**：移除普通风控模式的聊天限制（增强风控与强制游客观战的风控保留输入限制）；一票否决 `/veto` 提升到 3++；`/team` 自换队提升到 3++，新增 3+ 仅PVP换队指令 `/pvpteam`（参考原版 SA betterTeam）；世界处理器编辑权限防护：换图自动锁定 `allowEditWorldProcessors`（可配置）+ 权限链路复查结论（指令权限与菜单快速跳转均无越权；上游 LogicBlock 编辑只按“队伍 + privileged/allowEditWorldProcessors 全局规则”，无按玩家等级的管理员校验）。详见 `scripts-maintenance.md` 同轮条目与 `trust-system.md`。
 - **2026-08-22**：新增“服务器状态统计与独立 Web”：服务器侧统计脚本 `wayzer/ext/serverStats.kts`（事件投递 + IO 协程单写者内存计数 + `MdtSettings`/`MdtStatsPlayers` 增量存储，不做全库 COUNT，默认开启，`/serverstats status|on|off`），新事件 `MdcGrantedEvent`（只统计向已登录账号的新发放MDC，排除游客与转账/红包/读博等存量流转），独立 Web `stats-web/`（`index.html` + `start-web.ps1`，默认 127.0.0.1:8081，与服务器统计开关解耦）。冷启动 157/153/148/0，JSON 生成与开关、Web 访问实测通过。详见 `docs/server-status-stats.md`、`database-system.md` 与 `scripts-maintenance.md`。
 - **2026-08-22**：技能/纯净模式/玩家指令更新：鱼鱼技能改为消耗2 MDC且被纯净模式禁用；新增二级技能“随机永久buff”（可识别Buff正向池不含无敌、无限时间、10 MDC、120秒冷却、PVP与noskill禁用）；`/logout` 纳入玩家指令列表。帖子系统“关注+通知”按用户要求**放弃**。用户明确“每次更新内容都要跟进文档”，已作为长期规则写入 §3。
