@@ -144,7 +144,8 @@ private val playerHelpEntries = listOf(
     HelpEntryDef("status", "[green]服务器状态", "查看当前服务器信息"),
     HelpEntryDef("traffic", "[green]估算上行", "查看服务器上行需求"),
     HelpEntryDef("pressure", "[green]服务器压力", "查看TPS/上行压力"),
-    HelpEntryDef("team", "[yellow]队伍管理(3+)", "3+级/4级可调整自己的队伍；指定他人需管理员权限", "/team"),
+    HelpEntryDef("team", "[yellow]队伍管理(3++)", "3++级/4级可调整自己的队伍；3+级可用 /pvpteam 在PVP图切换自己；指定他人需管理员权限", "/team"),
+    HelpEntryDef("pvpteam", "[yellow]PVP换队(3+)", "3+级/4级仅PVP模式切换自己队伍（活跃且有核心、未被@banTeam禁用）", "/pvpteam"),
 )
 
 private val voteHelpEntries = listOf(
@@ -183,7 +184,7 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "反应堆爆炸", "投票开启/关闭反应堆爆炸", "/vote reactor"),
     HelpEntryDef("vote", "本局纯净模式", "投票立即开启当前这局纯净模式，禁用普通技能与3级技能", "/vote pure"),
     HelpEntryDef("vote", "关闭本局纯净模式", "投票关闭当前局纯净模式，不影响地图原有技能限制", "/vote pureoff"),
-    HelpEntryDef("veto", "一票否决", "3+级/4级一键否决当前投票", "/veto"),
+    HelpEntryDef("veto", "一票否决", "3++级/4级一键否决当前投票", "/veto"),
 )
 
 private val adminHelpEntries = listOf(

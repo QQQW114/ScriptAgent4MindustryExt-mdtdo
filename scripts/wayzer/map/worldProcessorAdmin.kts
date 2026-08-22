@@ -2,6 +2,7 @@
 @file:Depends("coreMindustry/menu", "CP管理菜单")
 @file:Depends("wayzer/reGrief/worldResyncCoordinator", "世界重同步串行协调")
 @file:Depends("wayzer/map/externalCpHotReload", "服务器CP快速加载")
+@file:Depends("wayzer/user/trustLevel", "MDT信任等级")
 
 package wayzer.map
 
@@ -11,16 +12,20 @@ import coreMindustry.PagedMenuBuilder
 import coreLibrary.lib.PermissionApi
 import mindustry.Vars
 import mindustry.content.Blocks
+import mindustry.game.EventType
+import mindustry.gen.Groups
 import mindustry.world.blocks.defense.turrets.ContinuousTurret
 import mindustry.world.blocks.defense.turrets.ItemTurret
 import mindustry.world.blocks.defense.turrets.LiquidTurret
 import mindustry.world.blocks.defense.turrets.PowerTurret
 import mindustry.world.blocks.defense.turrets.Turret
+import wayzer.user.TrustLevel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 
 name = "世界处理器与CP管理"
 
+private val trustLevel = contextScript<TrustLevel>()
 private val contentsTweaker = contextScript<coreMindustry.ContentsTweaker>()
 private val worldResync = contextScript<wayzer.reGrief.WorldResyncCoordinator>()
 private val externalCp = contextScript<ExternalCpHotReload>()
@@ -507,6 +512,47 @@ private fun worldProcessorStatus(): String =
 private fun worldProcessorEditStatus(): String =
     if (state.rules.allowEditWorldProcessors) "[yellow]允许所有玩家编辑" else "[green]仅编辑器/地图测试环境可编辑"
 
+/**
+ * 世界处理器编辑权限防护（用户反馈：不满4级的玩家也能编辑世界处理器）。
+ *
+ * 定位结果：
+ * - 原生限制层：LogicBlock 的编辑门槛只有两个——(1) 服务器侧 tileConfig 按队伍校验
+ *   （tile.interactable(player.team())），无任何“信任等级/管理员”校验；(2) privileged
+ *   世界处理器还需要 accessible()（编辑器/测试图/allowEditWorldProcessors 全局规则）。
+ *   vanilla 规则本身没有“管理员才能编辑”的概念，allowEditWorldProcessors 一旦为真，
+ *   所有玩家（同队伍）都能编辑世界处理器，这是上游刻意为之的全局开关（见 /worldprocessor status 提示）。
+ * - 权限链路：/worldprocessor /worldprocessorquiet /cp 均为 wayzer.admin.worldProcessor（@admin），
+ *   菜单/帮助快速跳转通过 RootCommands.handleInput -> Commands.Root.handle，先执行 Permission
+ *   attr 再执行 body，不存在越权路径。
+ * - 因此服务端能做的防护：地图加载时若规则被作者/存档设定为 allowEditWorldProcessors=true，
+ *   立即自动锁定（可配置），并把原值与处置记录到状态/日志，防止“全服可编辑世界处理器”。
+ * - 边界：开启后（/worldprocessor edit on）仍按原生语义允许所有玩家编辑；此开关是管理员显式授权。
+ */
+private val worldProcessorEditAutoLock by config.key(true, "换图时若地图规则允许所有玩家编辑世界处理器，自动锁定为关闭")
+private var worldProcessorLoadedEditValue: Boolean? = null
+
+private fun applyWorldProcessorEditAutoLock(source: String) {
+    val loaded = state.rules.allowEditWorldProcessors
+    worldProcessorLoadedEditValue = loaded
+    if (!worldProcessorEditAutoLock || !loaded) return
+    state.rules.allowEditWorldProcessors = false
+    Call.setRules(state.rules)
+    logger.warning(
+        "[世界处理器编辑] $source 检测到地图规则 allowEditWorldProcessors=true（原值=允许所有玩家编辑），" +
+                "已自动锁定为关闭；如需开启请由4级/admin使用 /worldprocessor edit on（开启后所有玩家可编辑）。"
+    )
+    Groups.player.forEach { p ->
+        if (with(trustLevel) { isTrustAdmin(p) }) {
+            p.sendMessage(
+                "[yellow][世界处理器编辑] 当前地图规则允许所有玩家编辑世界处理器，系统已自动关闭该权限。" +
+                        "[gray]如确需开放请使用 /worldprocessor edit on（注意：开启后所有玩家均可编辑）。"
+            )
+        }
+    }
+}
+
+listen<EventType.WorldLoadEvent> { applyWorldProcessorEditAutoLock("WorldLoad") }
+
 private fun setWorldProcessorEnabled(enabled: Boolean, operator: String?, announce: Boolean = true): String {
     val disabled = !enabled
     val changed = state.rules.disableWorldProcessors != disabled
@@ -609,8 +655,14 @@ command("worldprocessor", "管理指令：控制世界处理器并查看CP") {
                 """
                     |[cyan]世界处理器运行状态：[white]{status}
                     |[cyan]世界处理器编辑权限：[white]{editStatus}
+                    |[gray]自动锁定：[white]{autoLock}[gray]（换图时若地图规则开放编辑会自动关闭；原值=[white]{loadedValue}[gray]）
                     |[gray]提示：原版规则 allowEditWorldProcessors 是全局开关，开启后不是只允许管理员，而是允许所有玩家编辑世界处理器。
-                """.trimMargin().with("status" to worldProcessorStatus(), "editStatus" to worldProcessorEditStatus())
+                """.trimMargin().with(
+                    "status" to worldProcessorStatus(),
+                    "editStatus" to worldProcessorEditStatus(),
+                    "autoLock" to if (worldProcessorEditAutoLock) "开启" else "关闭",
+                    "loadedValue" to (worldProcessorLoadedEditValue?.let { if (it) "允许所有玩家编辑" else "仅编辑器/测试环境" } ?: "未知"),
+                )
             )
             "on", "enable", "open", "开启", "启用", "开" -> setWorldProcessorEnabled(true, player?.name ?: "控制台")
             "off", "disable", "close", "关闭", "禁用", "关" -> setWorldProcessorEnabled(false, player?.name ?: "控制台")

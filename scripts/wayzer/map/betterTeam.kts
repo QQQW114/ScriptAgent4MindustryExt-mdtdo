@@ -101,6 +101,11 @@ private val trustLevel = contextScript<TrustLevel>()
 
 private fun hasTeamCommandTrust(player: Player?): Boolean {
     if (player == null) return true
+    return with(trustLevel) { hasTrustLevel(player, "3++") }
+}
+
+private fun hasPvpTeamCommandTrust(player: Player?): Boolean {
+    if (player == null) return true
     return with(trustLevel) { hasTrustLevel(player, "3+") }
 }
 
@@ -108,6 +113,13 @@ private val teamCommandAccess = object : Commands.Hidden {
     override suspend fun CommandContext.visible(): Boolean {
         val p = player ?: return true
         return hasPermission("wayzer.ext.team.change") || hasTeamCommandTrust(p)
+    }
+}
+
+private val pvpTeamCommandAccess = object : Commands.Hidden {
+    override suspend fun CommandContext.visible(): Boolean {
+        val p = player ?: return true
+        return hasPermission("wayzer.ext.team.change") || hasPvpTeamCommandTrust(p)
     }
 }
 
@@ -180,7 +192,7 @@ command("team", "队伍管理：切换队伍") {
         val targetArg = arg.getOrNull(1)
         val target = targetArg?.let {
             if (!hasPermission("wayzer.ext.team.change")) {
-                returnReply("[red]只有管理员可以修改他人队伍。3+级玩家可直接使用 /team <队伍ID> 切换自己。".with())
+                returnReply("[red]只有管理员可以修改他人队伍。3++级玩家可直接使用 /team <队伍ID> 切换自己；3+级玩家可使用 /pvpteam 在PVP地图切换自己。".with())
             }
             PlayerData.findByShortId(it)?.player
                 ?: returnReply("[red]找不到玩家,请使用/list查询正确的3位id".with())
@@ -204,6 +216,42 @@ command("team", "队伍管理：切换队伍") {
                 )
             )
         }
+    }
+}
+
+/**
+ * 3+级玩家的 PVP 专用换队指令（参考原版 SA betterTeam 的 /team）：
+ * 仅 PVP 模式、只能切换自己、队伍取 allTeam（活跃且有核心、未被 @banTeam 禁用）。
+ */
+command("pvpteam", "PVP换队指令：3+级玩家仅PVP模式切换自己队伍") {
+    aliases = listOf("换队", "pvp换队")
+    usage = "[队伍ID,不填列出]"
+    attr(pvpTeamCommandAccess)
+    body {
+        if (!isPvpLike()) {
+            returnReply("[red]仅PVP模式可用。".with())
+        }
+        val teams = allTeam
+        if (teams.isEmpty()) returnReply("[yellow]当前没有可用队伍。".with())
+        val team = arg.getOrNull(0)?.toIntOrNull()?.let { Team.get(it) }
+            ?: returnReply(
+                "[yellow]可用队伍: []{list}".with(
+                    "list" to teams.map { t -> "{id}({team.colorizeName}[])".with("id" to t.id, "team" to t) }
+                )
+            )
+        if (team !in teams) {
+            returnReply("[red]该队伍不可用（不在活跃/有核心/未被@banTeam禁用的队伍列表中）。".with())
+        }
+        val target = player ?: returnReply("[red]请输入玩家ID".with())
+        val oldTeam = target.team()
+        changeTeam(target, team)
+        broadcast(
+            "[yellow]{player.name}[green] 将自己的队伍从 {oldTeam.colorizeName}[green] 调整为 {team.colorizeName}[green]。".with(
+                "player" to target,
+                "oldTeam" to oldTeam,
+                "team" to team,
+            )
+        )
     }
 }
 

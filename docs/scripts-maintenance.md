@@ -20,6 +20,15 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-08-22：移除风控模式聊天限制、一票否决/换队权限调整、世界处理器编辑权限防护
+
+- `wayzer/security/securityGuard.kts`：**移除普通风控(GUARD)模式的聊天限制**——对风控期间新进入并被转观战的游客不再丢弃聊天/指令输入（聊天/指令限速照常生效）；增强风控(ENHANCED)与“强制所有游客观战”的普通风控保留原输入丢弃限制；`tipGuest` 文案按模式区分（普通风控提示“聊天不受限制”），风控菜单说明同步更新。
+- `wayzer/user/trustVoteVeto.kts`：一票否决 `/veto` 从 `3+` 提升到 **3++**（与4级），提示文案与帮助入口同步。
+- `wayzer/map/betterTeam.kts`：`/team`（自换队）从 `3+` 提升到 **3++**；新增 **`/pvpteam`**（别名 `换队`/`pvp换队`）：3+级及以上**仅PVP模式**切换自己队伍，参考原版 SA betterTeam 的 `/team` 实现（仅PVP、队伍取 `allTeam`：活跃且有核心、未被 `@banTeam` 禁用），仅能切换自己，切队全服广播。
+- `wayzer/map/worldProcessorAdmin.kts`：**世界处理器编辑权限防护**——新增换图自动锁定（`worldProcessorEditAutoLock` 默认开）：WorldLoad/换图时若地图规则 `allowEditWorldProcessors=true` 则自动关闭、记录原值并通知在线4级/admin；`/worldprocessor status` 显示自动锁定与原值。权限链路复查结论：`/worldprocessor`、`/worldprocessorquiet`、`/cp` 均为 `wayzer.admin.worldProcessor`（@admin）；帮助/菜单“快速跳转”经 `RootCommands.handleInput` → `Commands.Root.handle` 先执行 Permission attr 再执行 body，不存在越权路径。原生限制层定位：LogicBlock 编辑门槛仅“按队伍 interactable + privileged 的 accessible()（编辑器/测试图/全局 allowEditWorldProcessors）”，上游没有“管理员才能编辑”的校验；`allowEditWorldProcessors` 为真时所有玩家（同队伍）可编辑世界处理器，属上游全局开关语义（已写入状态提示与文档）。
+- `coreMindustry/menu.kts` + `docs/help-menu.md` + `docs/trust-system.md`：帮助条目（team 3++、pvpteam 3+、veto 3++）与信任系统说明同步。
+- 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`；`/worldprocessor status` 实测显示“自动锁定：开启（原值=未知，首次换图后记录）”与“编辑权限：仅编辑器/地图测试环境可编辑”；`/pvpteam 1` 在非PVP图实测回复“仅PVP模式可用。”。未覆盖边界：PVP图上的 3+ 实际换队、风控模式下游客聊天放行、世界处理器自动锁定的实际触发（需真实联机/带规则的PVP图与地图规则样本）。
+
 ## 2026-08-22：服务器状态统计与独立 Web（统计/服务器状态网页）
 
 - `wayzer/ext/serverStats.kts`（新增）：服务器状态统计。事件钩子（`PlayerJoin`/`TrustLevelChangedEvent`/`MdcGrantedEvent`）只往 `ConcurrentLinkedQueue` 投递；统计内存状态、DB 读写与 JSON 文件输出全部在 `Dispatchers.IO` 独立协程；`Dispatchers.game` 协程每 5 秒刷新服务器快照（地图/模式/波次/TPS/在线与在线等级分布）到 `@Volatile`。`/serverstats status|on|off`（别名 `统计`/`状态统计`/`statusstats`），on/off 仅 4级/admin 或控制台，状态持久化到 `MdtSettings serverStats.enabled`（默认开启）。

@@ -618,10 +618,18 @@ private fun tipGuest(player: Player, force: Boolean = false) {
     if (!force && (lastGuestTips[key] ?: 0L) + guestTipIntervalMillis > now) return
     lastGuestTips[key] = now
     val state = modeState
+    val mode = activeMode()
+    val text = if (shouldForceGuestSpectate(mode)) {
+        // 增强风控/强制所有游客观战：聊天与部分指令仍被限制。
+        "[yellow]服务器当前处于${modeDisplay(mode)}模式，未登录玩家的聊天/部分操作已被限制。" +
+                "请使用 [gold]/login[] 登录已有账号。"
+    } else {
+        // 普通风控：仅限制新进入游客观战，聊天不受限制。
+        "[yellow]服务器当前处于${modeDisplay(mode)}模式，您已被转为观战；聊天不受限制。" +
+                "请使用 [gold]/login[] 登录已有账号。"
+    }
     player.sendMessage(
-        "[yellow]服务器当前处于${modeDisplay(activeMode())}模式，未登录玩家的聊天/部分操作已被限制。" +
-                "请使用 [gold]/login[] 登录已有账号。" +
-                state.reason.takeIf { it.isNotBlank() }?.let { "[gray]原因：$it" }.orEmpty()
+        text + state.reason.takeIf { it.isNotBlank() }?.let { "[gray]原因：$it" }.orEmpty()
     )
 }
 
@@ -939,7 +947,7 @@ private fun MenuBuilder<Unit>.securityMenuRow() {
 private suspend fun openSecurityMenu(player: Player) {
     val mode = activeMode()
     MenuBuilder<Unit>("MDT安全风控") {
-        msg = securityStatusText() + "\n[gray]普通风控：只限制风控后新进入的游客；增强风控：限制未登录连接并强制游客观战。"
+        msg = securityStatusText() + "\n[gray]普通风控：只限制风控后新进入的游客（观战限制，聊天不受限制）；增强风控：限制未登录连接并强制游客观战。"
         option("刷新") { openSecurityMenu(player) }
         option("查看文字状态") { player.sendMessage(securityStatusText()) }
         securityMenuRow()
@@ -1113,12 +1121,11 @@ listenTo<OnChat>(Event.Priority.Intercept) {
         return@listenTo
     }
 
-    if (isSecurityRestrictedGuest(player) && shouldDropGuestInput(text)) {
+    // 风控(GUARD)模式：对限制新进入游客只做观战限制，不再丢弃其聊天/指令输入（聊天限速仍生效）；
+    // 增强风控(ENHANCED)与“强制所有游客观战”的普通风控保持原有的输入丢弃限制。
+    if (shouldForceGuestSpectate(activeMode()) && isSecurityRestrictedGuest(player) && shouldDropGuestInput(text)) {
         received = true
-        launch(Dispatchers.game) {
-            if (shouldForceGuestSpectate(activeMode())) forceGuestToSpectate(player)
-            else tipGuest(player, force = true)
-        }
+        launch(Dispatchers.game) { forceGuestToSpectate(player) }
     }
 }
 

@@ -8,7 +8,7 @@ import wayzer.VoteEvent
 private val trustLevel = contextScript<TrustLevel>()
 
 private fun canVetoVote(player: Player): Boolean {
-    return with(trustLevel) { hasTrustLevel(player, "3+") }
+    return with(trustLevel) { hasTrustLevel(player, "3++") }
 }
 
 command("veto", "信任等级指令：一票否决当前投票") {
@@ -18,7 +18,7 @@ command("veto", "信任等级指令：一票否决当前投票") {
     body {
         val operator = player!!
         if (!canVetoVote(operator)) {
-            returnReply("[red]权限不足：只有 3+级 和 4级 玩家可以一票否决当前投票".with())
+            returnReply("[red]权限不足：只有 3++级 和 4级 玩家可以一票否决当前投票".with())
         }
         if (VoteEvent.current() == null) {
             returnReply("[yellow]当前没有正在进行的投票".with())
