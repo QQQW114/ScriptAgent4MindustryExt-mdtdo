@@ -105,9 +105,15 @@ JSON 文件；独立 Web（`stats-web/`）只读该文件做展示。两者**可
   显示服务器信息、今日/累计指标、在线等级分布、累计等级分布；
   顶部状态标签区分“统计已启用 / 已关闭（展示停止前数据）”。
 - `start-web.ps1`：PowerShell HttpListener 静态服务；`/` 提供页面，`/server-status.json`
-  映射到 JSON 文件（默认 `..\mdtserver\config\stats\server-status.json`，可 `-StatsJson` 覆盖）；
-  默认 `127.0.0.1:8081`；公网访问需管理员运行 `-Bind 0.0.0.0`（或 SSH 隧道）。
-- 点击 `Ctrl+C` 停止；与服务器统计开关互不依赖。
+  映射到 JSON 文件；**默认存储位置：`mdtserver\config\stats\server-status.json`**
+  （即服务器 `config/` 下的 `stats/server-status.json`，脚本 config key `statsOutputPath` 可改）。
+- `web-config.ps1`：常用配置（`$WebBind`/`$WebPort`/`$WebStatsJson`），改完重启即生效；
+  命令行参数（`-Bind`/`-Port`/`-StatsJson`）优先级更高。
+- `start-web.bat`：双击启动入口，参数透传（如 `start-web.bat -Bind 0.0.0.0 -Port 8081`）。
+- 公网访问：`-InstallAcl`（管理员执行一次，注册 URL 保留）→ `-Bind 0.0.0.0` → 防火墙放行端口；
+  默认 `127.0.0.1:8081`。点击 `Ctrl+C` 停止；与服务器统计开关互不依赖。
+- 分发复制：保持 `index.html`/`start-web.ps1`/`start-web.bat`/`web-config.ps1` 四件套同目录
+  （`复制插件用\stats-web\` 为准）。
 
 ## 已知边界与后续注意
 

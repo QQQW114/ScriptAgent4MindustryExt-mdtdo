@@ -55,6 +55,14 @@
   （项目惯例见 `start-server.ps1`——它带 BOM，5.1 可运行）。
 - **`.cmd` 文件只能写 ASCII**：`cmd.exe` 按 ANSI 读取 .cmd，中文路径会乱码。
   对策：用环境变量传路径（`cd /d "%MDT_WORKDIR%"`），.cmd 本身保持纯 ASCII。
+  `.bat` 同理：UTF-8 的 bat 里放中文注释，cmd 会把中文行按 GBK 拆成"命令"，
+  出现 `'xx' is not recognized as an internal or external command` 且命令被拦腰截断——
+  **启动器 .bat/.cmd 一律纯 ASCII**（中文提示放被调用的 .ps1 里，配合 `chcp 65001`）。
+- **PowerShell 会把全角弯引号 `“ ”`（U+201C/U+201D）当作字符串引号**：`.ps1` 里写
+  `Write-Host "...“提升(管理员权限)”..."` 会在弯引号处截断字符串，运行时报
+  `The term '管理员权限' is not recognized as a name of a cmdlet`，
+  但 `ParseFile` 却显示"PARSE OK"、错误行号常显示 1——**极易误判为别的问题**。
+  对策：**.ps1 内不要使用全角弯引号**（用「」、（）或去除）。
 - **PowerShell 里直接 `git commit -m "多行中文..."`**：git 会把消息尾部解析成 pathspec 报错；
   `-F <文件>` 最稳，但**消息文件不要带 BOM**（BOM 会混进 commit subject 首字符，表面看不出来，
   用 `git log --format=%s` 才发现）。追加参数用 `-q` 并用 `git log -1` 复核。

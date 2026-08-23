@@ -618,18 +618,10 @@ private fun tipGuest(player: Player, force: Boolean = false) {
     if (!force && (lastGuestTips[key] ?: 0L) + guestTipIntervalMillis > now) return
     lastGuestTips[key] = now
     val state = modeState
-    val mode = activeMode()
-    val text = if (shouldForceGuestSpectate(mode)) {
-        // 增强风控/强制所有游客观战：聊天与部分指令仍被限制。
-        "[yellow]服务器当前处于${modeDisplay(mode)}模式，未登录玩家的聊天/部分操作已被限制。" +
-                "请使用 [gold]/login[] 登录已有账号。"
-    } else {
-        // 普通风控：仅限制新进入游客观战，聊天不受限制。
-        "[yellow]服务器当前处于${modeDisplay(mode)}模式，您已被转为观战；聊天不受限制。" +
-                "请使用 [gold]/login[] 登录已有账号。"
-    }
     player.sendMessage(
-        text + state.reason.takeIf { it.isNotBlank() }?.let { "[gray]原因：$it" }.orEmpty()
+        "[yellow]服务器当前处于${modeDisplay(activeMode())}模式，未登录玩家的聊天/部分操作已被限制。" +
+                "请使用 [gold]/login[] 登录已有账号。" +
+                state.reason.takeIf { it.isNotBlank() }?.let { "[gray]原因：$it" }.orEmpty()
     )
 }
 
@@ -637,7 +629,7 @@ private fun pruneDeque(times: ArrayDeque<Long>, now: Long, windowMillis: Long) {
     while (times.isNotEmpty() && now - times.first() > windowMillis) times.removeFirst()
 }
 
-private fun registerStrike(ip: String, reason: String, player: Player? = null): PenaltyAction {
+private fun registerStrike(ip: String, reason: String, player: Player? = null, addScore: Boolean = true): PenaltyAction {
     if (shouldIgnoreIp(ip)) return PenaltyAction.NONE
     val now = System.currentTimeMillis()
     val strike = synchronized(lock) {
@@ -650,7 +642,7 @@ private fun registerStrike(ip: String, reason: String, player: Player? = null): 
         s.lastAt = now
         s.strikes
     }
-    addAnomaly(2, "IP $ip $reason")
+    if (addScore) addAnomaly(2, "IP $ip $reason")
     return when (strike) {
         1 -> {
             player?.sendMessage("[yellow]操作过快/行为异常，已记录一次安全提示；继续触发将被踢出。")
@@ -669,6 +661,11 @@ private fun registerStrike(ip: String, reason: String, player: Player? = null): 
     }
 }
 
+/**
+ * 聊天/指令限速器（仅用于 OnChat 输入路径）：
+ * 超限只做“警告→踢出→IP封禁”的本地降级（registerStrike addScore=false），
+ * 不再增加风控异常分——聊天过快不再推动服务器进入自动风控模式。
+ */
 private fun hitLimiter(
     ip: String,
     counters: MutableMap<String, WindowCounter>,
@@ -696,7 +693,7 @@ private fun hitLimiter(
         }
     }
     return when {
-        exceeded -> registerStrike(ip, reason, player)
+        exceeded -> registerStrike(ip, reason, player, addScore = false)
         cooling -> PenaltyAction.WARN
         else -> PenaltyAction.NONE
     }
@@ -947,7 +944,7 @@ private fun MenuBuilder<Unit>.securityMenuRow() {
 private suspend fun openSecurityMenu(player: Player) {
     val mode = activeMode()
     MenuBuilder<Unit>("MDT安全风控") {
-        msg = securityStatusText() + "\n[gray]普通风控：只限制风控后新进入的游客（观战限制，聊天不受限制）；增强风控：限制未登录连接并强制游客观战。"
+        msg = securityStatusText() + "\n[gray]普通风控：只限制风控后新进入的游客；增强风控：限制未登录连接并强制游客观战。"
         option("刷新") { openSecurityMenu(player) }
         option("查看文字状态") { player.sendMessage(securityStatusText()) }
         securityMenuRow()
@@ -1121,11 +1118,13 @@ listenTo<OnChat>(Event.Priority.Intercept) {
         return@listenTo
     }
 
-    // 风控(GUARD)模式：对限制新进入游客只做观战限制，不再丢弃其聊天/指令输入（聊天限速仍生效）；
-    // 增强风控(ENHANCED)与“强制所有游客观战”的普通风控保持原有的输入丢弃限制。
-    if (shouldForceGuestSpectate(activeMode()) && isSecurityRestrictedGuest(player) && shouldDropGuestInput(text)) {
+    // 风控模式（GUARD/ENHANCED）下，被安全限制的游客丢弃聊天与未授权指令输入（保留少量允许指令）。
+    if (isSecurityRestrictedGuest(player) && shouldDropGuestInput(text)) {
         received = true
-        launch(Dispatchers.game) { forceGuestToSpectate(player) }
+        launch(Dispatchers.game) {
+            if (shouldForceGuestSpectate(activeMode())) forceGuestToSpectate(player)
+            else tipGuest(player, force = true)
+        }
     }
 }
 
