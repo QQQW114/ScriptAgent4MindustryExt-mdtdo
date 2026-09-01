@@ -189,8 +189,8 @@
 ### 3++ 协管白名单
 
 - 地图/对局：`/host`、`/gameover`、`/gamepause`；`/host` 与 `/gameover` 需在15秒内重复输入确认，成功后共享5分钟冷却并记录日志。
-- 处罚：`/banX`、`/unbanX`、`/banlist`、`/banip`、`/unbanip`、`/banips`、`/forceOB`、`/recentplayers`；只能处理低于3++的玩家，单次账号/IP封禁默认最长7天，只能解除自己施加的账号/IP封禁。
-- 安全/内容：`/logicdraw`、`/blockban`、`/blockunban`、`/forceobclean status|run`；3++不能修改强制观战自动清理的长期开关。
+- 处罚：`/banX`、`/unbanX`、`/banlist`、`/banip`、`/unbanip`、`/banips`、`/forceOB`、`/recentplayers`；**只能处理低于3++的玩家**（目标分层边界），封禁时长不受限，可解除任意操作人（4级/协管/系统）施加的账号与IP封禁。
+- 安全/内容：`/security`（**完全开放**：普通/增强风控、重置、手动封禁/解封IP、今日游客观战开关等与4级相同）、`/logicdraw`、`/blockban`、`/blockunban`、`/forceobclean status|run`；3++不能修改强制观战自动清理的长期开关。
 - 点歌应急：`/music stopall`、`/music cancel`；不能修改单曲大小/时长/缓存限制。
 - 3++得到与4级相同的管理图标，但不获得 `suffix.admin`，因此不能使用 `/suffixmark` 修改或隐藏后缀。
 - “不可踢出/强制观战”指普通投票、3+或同级协管操作；不阻止4级手动处理、安全风控、同步超时、重启等系统级踢出。

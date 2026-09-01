@@ -545,9 +545,8 @@ private suspend fun quickCommand(viewer: Player, command: String) {
 private fun canStaffBanTarget(viewer: Player, data: PlayerData): Boolean =
     with(trustLevel) { canModerateTrustTarget(viewer, data.id, data.player) }
 
-private fun staffBanMaxMinutes(viewer: Player): Int? = with(trustLevel) {
-    pluginAdminMaxBanMinutes().takeIf { isPluginAdmin(viewer) }
-}
+// 3++协管已开放“全部ban权限”：封禁时长不设上限（目标分层边界仍由 canModerateTrustTarget 控制）。
+private fun staffBanMaxMinutes(viewer: Player): Int? = null
 
 private suspend fun banAccountFlow(viewer: Player, targetName: String, data: PlayerData) {
     if (!canStaffBanTarget(viewer, data)) {

@@ -62,7 +62,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/vote pause`、`/vote resume`：投票暂停/继续当前游戏。
 - `/vote gameOver`、`/vote rollback`、`/vote skipWave`、`/vote clear`、`/vote text`：常用基础投票入口。
 - `/vote map <地图ID>`：需51%同意；发起立即换图投票，5赞/5反不再通过，需6赞/5反这类超过半数的赞成票。
-- `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
+- `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次（70%同意）、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
 - `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON/JSON5 CP 或 v159 Data Assets ZIP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
 - `/vote reactor <on|off|status>`：投票开启/关闭反应堆爆炸或查看当前状态。
 - `/vote pure`、`/vote pureoff`：投票立即开启/关闭当前这局纯净模式，不再排队未来局数；关闭会恢复开启前的技能限制标签。
@@ -70,7 +70,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/perf`、`/xperf`：3+级/管理员管理性能优化。
 - `/traffic`、`/pressure`、`/tickwatchdog`、`/gamepause`：查看上行/压力、主线程卡顿诊断、设置 TPS 压力阈值与管理暂停状态。
 - `/ipguard`、`/ipregion`：IP防熊管理与玩家地区查询。
-- `/security`：安全风控管理，查看/设置风控模式、IP封禁、聊天/菜单/连接限速状态。
+- `/security`：安全风控管理，查看/设置风控模式、IP封禁、聊天/菜单/连接限速状态；3++协管与4级/admin完全相同（完全开放：普通/增强风控、重置、手动封禁/解封IP、今日游客观战开关等全部可用）。
 - `/serverfeatures`、`/features`、`/serverconfig`：仅4级/admin或控制台可查看服务器功能总览/打开菜单；菜单内已加入数据库业务功能子菜单，旧子指令仍兼容。
 - `/mdcmultiplier`、`/forumtoggle`、`/registerrequirement`、`/socialactions`、`/defaultboundlevel`：拆分后的五个服务器功能管理根指令；分别管理结算MDC倍率、帖子、注册一小时要求、赞踩认可和已绑定玩家默认信任/资历下限。它们会自动被“搜索指令”索引。
 - `/databasefeatures`：查看、打开菜单或统一暂停数据库业务功能；只覆盖可选玩家业务，不关闭数据库连接，也不影响账号、权限、封禁、禁言、IP风控与性能保护。
@@ -80,8 +80,8 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/blockban ban <方块ID>`、`/blockban unban <方块ID>`、`/blockunban <方块ID>`：管理员本局单独禁用/解禁某个建筑方块。
 - `/vote save`：投票创建当前游戏存档；投票存档槽为 `106-110`，可在 `/slots` 查看。
 - `/vote killunits`：投票击杀所有单位。
-- `/vote infinitefire`：投票开启120秒标准无限火力。
-- `/vote infinitefirepromax`：信任2级及以上可投票开启120秒无限火力promax。
+- `/vote infinitefire`：投票开启120秒标准无限火力（80%同意）。
+- `/vote infinitefirepromax`：信任2级及以上可投票开启120秒无限火力promax（80%同意）。
 - `/achat`、`/ac`：4级/admin 管理员频道，仅4级/admin可见。
 - `/descadmin`：管理服务器列表介绍轮播，可新增/修改/启停文案并立即切换。
 - `/skill godmenu`：信任4级/已登录原生admin的神权菜单；在 `/skill` 主菜单中与各技能分类并列，用于调整当前地图倍率、太阳能/拆除返还倍率、当前星球/全部科技限制、编辑器模式与无限火力promax；`/skill infinitefire off` 可手动关闭脚本开启的无限火力promax。
@@ -96,9 +96,9 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/team [队伍ID] [玩家ID]`：3++级/4级可调整自己的队伍，指定他人仍需管理员权限；自换队也会全服广播，列队伍/切队伍不再受地图 `@banTeam` 标签限制。
 - `/pvpteam [队伍ID]`（别名 `换队`/`pvp换队`）：3+级及以上仅PVP模式切换自己的队伍；队伍取活跃且有核心、且未被 `@banTeam` 禁用的队伍（参考原版 SA betterTeam 换队指令）。
 - `/host [地图ID]`、`/gameover [队伍]`：3++/4级/admin强制换图或结束对局；3++需在15秒内重复输入确认，成功后共享5分钟冷却。
-- `/banX <3位ID> <分钟> <原因>`、`/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`：3++/4级封禁/解封玩家账号主体；3++只能处理低于3++的玩家、最长7天，且只能解除自己的封禁。
-- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：3++/4级按在线玩家封禁其当前 IP；3++目标/时长边界与 `/banX` 相同。
-- `/banips`、`/unbanip <ip>`：查看当前 IP 封禁列表（含 UUID/玩家名）并解除 IP 封禁；3++只能解除自己施加的记录。
+- `/banX <3位ID> <分钟> <原因>`、`/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`：3++/4级封禁/解封玩家账号主体；3++只能处理低于3++的玩家（目标分层边界），可解除任意操作人的封禁，封禁时长不受限。
+- `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：3++/4级按在线玩家封禁其当前 IP；3++目标边界与 `/banX` 相同，时长不受限。
+- `/banips`、`/unbanip <ip>`：查看当前 IP 封禁列表（含 UUID/玩家名）并解除 IP 封禁；3++可解除任意操作人的IP封禁。
 - `/banlist`、`/bans`、`/封禁列表`：统一分页查看未到期的玩家/账号封禁与 IP 封禁，显示原因、剩余时长、关联ID/UUID与操作人；点开条目可立即解封。
 - `/recentplayers`：3++/4级/admin 查看最近80名玩家，离线玩家也可打开面板并在自身层级边界内封禁账号或最近 IP。
 - `/buildban <玩家id/3位id/#游戏id> [理由]`、`/buildunban <玩家id/3位id/#游戏id>`：禁止/解除在线玩家建造与拆除；玩家信息面板执行时可输入分钟数作为临时禁建，留空为永久。

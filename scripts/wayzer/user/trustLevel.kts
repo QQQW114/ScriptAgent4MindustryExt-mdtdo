@@ -273,6 +273,7 @@ PermissionApi.registerDefault(
     "wayzer.admin.unban",
     "wayzer.admin.banList",
     "wayzer.admin.banIp",
+    "wayzer.admin.security",
     "wayzer.admin.forceOb",
     "wayzer.admin.recentPlayers",
     "wayzer.admin.forceObClean",

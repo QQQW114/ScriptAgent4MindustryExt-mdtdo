@@ -170,7 +170,8 @@ fun VoteService.register() {
                 |[yellow]通过后会临时暂停当前地图的波次计时/出波约 [white]${seconds}秒[yellow]。
                 |[gray]此操作不清理已生成敌人，结束后恢复暂停前波次规则。
             """.trimMargin(),
-            supportSingle = true
+            supportSingle = true,
+            requireNum = { ceil(it * 0.7).toInt() }
         ) {
             pauseWaves(seconds * 1000L, player!!.plainName())
         }

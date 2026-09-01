@@ -442,7 +442,8 @@ fun activeIpBanInfos(): List<IpBanInfo> = activeBans().map { record ->
 fun unbanIpForAdmin(ip: String): Boolean = unbanIp(ip)
 
 private fun canUnbanIpRecord(operator: Player, record: IpBanRecord): Boolean = with(trustLevel) {
-    isTrustAdmin(operator) || (isPluginAdmin(operator) && record.operatorUid == PlayerData[operator].id)
+    // 3++协管拥有全部解/ban权限：不再限制只能解除自己施加的IP封禁。
+    isTrustAdmin(operator) || isPluginAdmin(operator)
 }
 
 fun unbanIpForOperator(ip: String, operator: Player): Boolean {
@@ -846,9 +847,12 @@ private fun checkTrafficPressure() {
     }
 }
 
+/**
+ * 安全风控能力：控制台/4级/admin/3++协管均可完全管理（用户明确：菜单完全开放、不做隐藏/分层）。
+ */
 private fun canManageSecurity(operator: Player?): Boolean {
     if (operator == null) return true
-    return with(trustLevel) { isTrustAdmin(operator) }
+    return with(trustLevel) { isTrustAdmin(operator) || isPluginAdmin(operator) }
 }
 
 private fun notifySecurityManagers(message: String) {
@@ -1226,7 +1230,7 @@ command("security", "管理指令：MDT安全风控") {
     requirePermission("wayzer.admin.security")
     body {
         if (!canManageSecurity(player)) {
-            returnReply("[red]权限不足：只有4级/admin或控制台可以管理安全风控。".with())
+            returnReply("[red]权限不足：需要3++协管/4级/admin或控制台。".with())
         }
         when (arg.getOrNull(0)?.lowercase() ?: if (player != null) "menu" else "status") {
             "menu", "菜单", "panel", "面板" -> {
@@ -1320,15 +1324,6 @@ command("banip", "管理指令：根据在线玩家封禁其IP") {
             if (!with(trustLevel) { canModerateTrustTarget(operator, target) }) {
                 returnReply("[red]你不能封禁同级或更高等级玩家的IP。".with())
             }
-            val maxMinutes = with(trustLevel) { pluginAdminMaxBanMinutes() }
-            if (with(trustLevel) { isPluginAdmin(operator) }) {
-                if (minutes != null && minutes!! > maxMinutes) {
-                    returnReply("[red]3++协管单次IP封禁最长 [white]$maxMinutes[red] 分钟。".with())
-                }
-                if (minutes == null) {
-                    minutes = (ipBanMillis / 60_000L).coerceAtLeast(1L).coerceAtMost(maxMinutes.toLong())
-                }
-            }
         }
         val reasonStart = if (minutes == null) 1 else 2
         val reason = arg.drop(reasonStart).joinToString(" ").ifBlank { "管理员根据玩家封禁IP: ${target.plainName()}" }
@@ -1348,7 +1343,7 @@ command("unbanip", "管理指令：解除IP封禁") {
         val operator = player
         val success = if (operator == null) unbanIp(ip) else unbanIpForOperator(ip, operator)
         if (success) reply("[green]已解除IP封禁：[white]$ip".with())
-        else reply("[yellow]未找到该IP封禁，或你只能解除自己施加的记录：[white]$ip".with())
+        else reply("[yellow]未找到该IP封禁：[white]$ip".with())
     }
 }
 

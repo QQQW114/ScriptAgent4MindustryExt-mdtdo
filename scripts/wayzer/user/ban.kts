@@ -146,7 +146,8 @@ private fun banMenuEntryDetail(entry: BanMenuEntry): String = """
 """.trimMargin()
 
 private fun canUnbanEntry(player: Player, entry: BanMenuEntry): Boolean = with(trustLevel) {
-    isTrustAdmin(player) || (isPluginAdmin(player) && entry.operatorUid == PlayerData[player].id)
+    // 3++协管拥有全部解/ban权限：可解除任意操作人的封禁（目标分层边界仍由封禁规则控制）。
+    isTrustAdmin(player) || isPluginAdmin(player)
 }
 
 private suspend fun openBanDetailMenu(player: Player, entry: BanMenuEntry) {
@@ -264,9 +265,6 @@ command("banX", "管理指令: 禁封") {
             if (!with(trustLevel) { canModerateTrustTarget(operator, target.id, target.player) }) {
                 returnReply("[red]你不能封禁同级或更高等级的玩家。".with())
             }
-            if (with(trustLevel) { isPluginAdmin(operator) } && time > with(trustLevel) { pluginAdminMaxBanMinutes() }) {
-                returnReply("[red]3++协管单次最多封禁 [white]${with(trustLevel) { pluginAdminMaxBanMinutes() }}[red] 分钟。".with())
-            }
         }
 
         ban(target, time, reason, player)
@@ -296,11 +294,6 @@ command("unbanX", "管理指令: 解禁") {
         val selectedBan = activeBan ?: input.toIntOrNull()?.let { recordId ->
             withContext(Dispatchers.IO) { store.listActive().firstOrNull { it.recordId == recordId } }
         } ?: returnReply("[red]找不到目标账号的未过期封禁记录，检查玩家3位ID/UUID/账号UID是否正确".with())
-        player?.let { operator ->
-            if (with(trustLevel) { isPluginAdmin(operator) } && selectedBan.operator != PlayerData[operator].id) {
-                returnReply("[red]3++协管只能解除自己施加的账号封禁。".with())
-            }
-        }
         val ban = withContext(Dispatchers.IO) { store.delete(selectedBan.recordId) }
             ?: returnReply("[yellow]该封禁记录已不存在或已过期。".with())
         logger.info("unban ${ban.ids} ${ban.endTime} ${ban.reason}")

@@ -6,6 +6,7 @@ package wayzer.cmds
 
 import coreMindustry.lib.broadcast
 import wayzer.VoteService
+import kotlin.math.ceil
 
 name = "投票临时玩法规则"
 
@@ -28,7 +29,8 @@ fun VoteService.registerFunRuleVotes() {
         VoteService.start(
             player!!,
             "开启标准无限火力".with(),
-            extDesc = "[yellow]该投票只临时补足炮塔开火所需弹药/液体/供电，不开启无限资源/核心资源填充/伤害翻倍。"
+            extDesc = "[yellow]该投票只临时补足炮塔开火所需弹药/液体/供电，不开启无限资源/核心资源填充/伤害翻倍。",
+            requireNum = { ceil(it * 0.8).toInt() }
         ) {
             with(funRules) { enableStandardInfiniteFire(120_000L, "投票") }
         }
@@ -41,7 +43,8 @@ fun VoteService.registerFunRuleVotes() {
         VoteService.start(
             player!!,
             "开启无限火力promax".with(),
-            extDesc = "[yellow]该投票会让当前地图临时进入120秒无限火力promax：补足建筑输入、开启无限资源并提高伤害。"
+            extDesc = "[yellow]该投票会让当前地图临时进入120秒无限火力promax：补足建筑输入、开启无限资源并提高伤害。",
+            requireNum = { ceil(it * 0.8).toInt() }
         ) {
             with(funRules) { enableInfiniteFire(120_000L, "投票") }
         }

@@ -264,6 +264,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-09-01**：投票比例调整（`/vote infinitefire` 与 `/vote infinitefirepromax` → 80%，`/vote pauseWave` → 70%）；3++ 开放风控菜单（用户明确**完全开放、不做隐藏/分层**：与4级相同，含增强风控/重置/IP封禁解封/今日游客观战开关）与**全部解/ban权限**（移除“只能解除自己施加的封禁”与3++单次7天上限，保留“只能处理低于3++目标”的分层边界）。详见 `scripts-maintenance.md` 同轮条目、`trust-system.md`、`security-guard.md`、`help-menu.md`。
 - **2026-08-22**：按用户要求新增 [Agent 调试经验与常见坑](agent-debug-experience.md)（服务器冷启动启动器陷阱：.NET Task 读 stdout 管道会静默死锁、.cmd/.ps1 编码、jstack 定位卡死、H2/Exposed 查询、命令 Socket 协议、提交推送惯例等），并在 §11 索引。
 - **2026-08-22**：移除普通风控模式的聊天限制（增强风控与强制游客观战的风控保留输入限制）；一票否决 `/veto` 提升到 3++；`/team` 自换队提升到 3++，新增 3+ 仅PVP换队指令 `/pvpteam`（参考原版 SA betterTeam）；世界处理器编辑权限防护：换图自动锁定 `allowEditWorldProcessors`（可配置）+ 权限链路复查结论（指令权限与菜单快速跳转均无越权；上游 LogicBlock 编辑只按“队伍 + privileged/allowEditWorldProcessors 全局规则”，无按玩家等级的管理员校验）。详见 `scripts-maintenance.md` 同轮条目与 `trust-system.md`。
 - **2026-08-22**：新增“服务器状态统计与独立 Web”：服务器侧统计脚本 `wayzer/ext/serverStats.kts`（事件投递 + IO 协程单写者内存计数 + `MdtSettings`/`MdtStatsPlayers` 增量存储，不做全库 COUNT，默认开启，`/serverstats status|on|off`），新事件 `MdcGrantedEvent`（只统计向已登录账号的新发放MDC，排除游客与转账/红包/读博等存量流转），独立 Web `stats-web/`（`index.html` + `start-web.ps1`，默认 127.0.0.1:8081，与服务器统计开关解耦）。冷启动 157/153/148/0，JSON 生成与开关、Web 访问实测通过。详见 `docs/server-status-stats.md`、`database-system.md` 与 `scripts-maintenance.md`。

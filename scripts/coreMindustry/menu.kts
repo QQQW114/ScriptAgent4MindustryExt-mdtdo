@@ -889,6 +889,7 @@ onEnable {
                       hasPermission("wayzer.admin.logicDraw") ||
                       hasPermission("wayzer.admin.blockBan") ||
                       hasPermission("wayzer.admin.banList") ||
+                      hasPermission("wayzer.admin.security") ||
                       hasPermission("wayzer.ext.team.change") ||
                       hasPermission("wayzer.map.adaptivePlayerLimit") ||
                       hasPermission("wayzer.map.resourceProxy") ||

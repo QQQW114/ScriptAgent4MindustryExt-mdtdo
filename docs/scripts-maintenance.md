@@ -22,6 +22,19 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-01：投票比例调整（无限火力80%/暂停波次70%）+ 3++ 开放风控菜单与全部解/ban权限
+
+- `wayzer/cmds/voteFunRules.kts`：`/vote infinitefire`（标准无限火力）与 `/vote infinitefirepromax` 通过比例从默认50%调整到 **80%**（`requireNum = ceil(it*0.8)`，导入 kotlin.math.ceil）。
+- `wayzer/cmds/vote.kts`：`/vote pauseWave`（暂停波次）通过比例调整到 **70%**。
+- `wayzer/security/securityGuard.kts`：安全风控权限**完全开放**——`canManageSecurity` 现在包含 3++ 协管（用户明确：菜单完全开放、不需要隐藏/分层）；风控菜单无 `full` 视图区分（普通/增强风控、重置异常分、今日游客观战开关、手动封禁/解封IP、reset 全部可用）；`/security` 子指令不再分层。
+- `wayzer/user/trustLevel.kts`：3++ 白名单新增 `wayzer.admin.security`；`coreMindustry/menu.kts` 管理分区可见性同步加入该权限。
+- ban 权限放开（3++“全部解/ban权限”）：
+  - `wayzer/user/ban.kts`：`/banX` 移除3++单次7天上限（保留 `canModerateTrustTarget` 目标分层边界）；`/unbanX` 移除“只能解除自己施加的账号封禁”限制；封禁菜单 `canUnbanEntry` 允许3++解除任意操作人的封禁。
+  - `wayzer/security/securityGuard.kts`：`canUnbanIpRecord` 移除“只能解除自己施加的IP封禁”限制；`/banip` 移除3++时长上限与默认钳制（保留目标边界）；`/unbanip` 文案同步。
+  - `wayzer/ext/playerInfoTripleTap.kts`：最近玩家面板封禁流程的 `staffBanMaxMinutes` 对3++不再设上限。
+- 文档：`help-menu.md`（投票比例/security/ban 描述）、`trust-system.md`（3++白名单与简述）、`security-guard.md`（权限与指令说明）同步。
+- 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`（voteFunRules/vote/securityGuard/ban/trustLevel/playerInfoTripleTap/menu 等全部编译加载成功）。未覆盖边界：投票实际比例结算、3++ 风控菜单与解/ban 真实客户端操作（权限链路与既有命令一致，逻辑覆盖）。
+
 ## 2026-08-22：恢复风控模式聊天限制；聊天/指令过快不再增加风控异常分
 
 - `wayzer/security/securityGuard.kts`：
