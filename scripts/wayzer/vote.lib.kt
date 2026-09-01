@@ -398,6 +398,8 @@ object VoteService {
         "gameover" -> "[gray]（默认50%；PVP同队80%）"
         "clear" -> "[gray]（同队40%）"
         "sc" -> "[gray]（直接发送）"
+        "infinitefire", "infinitefirepromax" -> "[gray]（需80%同意）"
+        "pausewave" -> "[gray]（需70%同意）"
         else -> "[gray]（需50%同意）"
     }
 
