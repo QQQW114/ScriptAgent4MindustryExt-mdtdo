@@ -22,6 +22,91 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-11：服务器状态统计改版 schema 2（移除 MDC、新增 14 天/24 小时曲线与社区互动）
+
+类型：统计系统改版（数据口径变更 + 新增明细表 + Web 重做）
+
+涉及文件：
+
+- `mdtserver/config/scripts/wayzer/ext/serverStats.kts`
+- `mdtserver/config/scripts/wayzer/lib/MdtStorage.kt`
+- `mdtserver/config/scripts/wayzer/lib/TrustSystemEvents.kt`（`MdcGrantedEvent` 定义保留，不再被统计脚本使用）
+- `stats-web/index.html`（mdtdo 本地资产，不进插件仓库）
+- `docs/server-status-stats.md`、`docs/scripts-maintenance.md`、`docs/project-memory.md`、`stats-web/README.md`
+
+改动：
+
+- **移除 MDC 发放统计**：`serverStats.kts` 不再 `@file:Depends("wayzer/user/trustPoint")`、不再
+  `import wayzer.lib.MdcGrantedEvent`、删除 `StatsMdcEvent` 与 `todayMdcGranted`/`totalMdcGranted`
+  内存计数与 JSON 字段；`MdtStorage.ServerStatsRecord` 同步删除这两个字段与对应的
+  `Settings` 键读写。**历史遗留键 `serverStats.todayMdcGranted`/`totalMdcGranted` 保留原值不再更新**
+  （不做破坏性删库）；`MdcGrantedEvent` 事件定义本身保留（其他脚本可能扩展使用，删除属破坏性改动）。
+- **新增每日/每小时明细表**：`MdtStatsDaily`（`date` 主键，人流量/聊天条数/游玩时长/峰值在线）、
+  `MdtStatsHourly`（`date + hour` 复合主键，每小时人流量/峰值在线）、
+  `MdtStatsActivePlayers`（`date + subject_uid` 复合主键，每主体每天最多一行）。
+- **近 14 天人数曲线**：以 `MdtStatsActivePlayers` 的日期区间行数得出（有界、非全表 COUNT），
+  缺失日期在 JSON 中补 0；**新增 24 小时曲线**：以 `MdtStatsHourly` 的当天 0~23 桶得出。
+- **新增聊天条数统计**：监听 `EventType.PlayerChatEvent`（游戏线程只投递），累计值落
+  `MdtSettings serverStats.totalChatMessages`，今日/逐日值落 `MdtStatsDaily.chatMessages`。
+- **新增游玩时长统计**：`PlayerJoin` 记进入时刻、`PlayerLeave` 结算会话时长（统计启用期间才计），
+  累计值落 `serverStats.totalPlayMillis`，今日/逐日值落 `MdtStatsDaily.playMillis`；
+  不汇总 `SeniorityProfiles.playMillis`（资历系统的独立口径）。
+- **新增峰值在线**：复用已有的 5 秒游戏线程快照，只在更高时写库（`MdtStatsDaily.peakOnline` +
+  `MdtStatsHourly.peakOnline` + `serverStats.peakOnline` 历史峰值）。
+- **新增社区互动统计**（帖子/评论/点赞/认可）：**不在业务写入点插桩**，而是直接按日期区间聚合现有
+  业务表——`MdtReputationDaily`/`MdtRecognitionDaily` 按 `date` 筛选，`MdtForumPosts`/`MdtForumComments`
+  用数据库侧 `COUNT + GROUP BY` 按创建时间聚合（`MdtStorage.loadStatsCommunityDaily`）；
+  累计值由 `MdtStorage.backfillStatsLifetime()` 在**首次启用时一次性回填**（写入
+  `serverStats.lifetimeBackfilled` 标记，永不重复）。这样既拿到全部历史总量，也避免改动
+  `forumPosts.kts`/`playerReputation.kts`/`playerRecognition.kts` 引入跨脚本依赖。
+- **写入压力优化**：原实现每 60 秒无条件写 12 个 `Settings` 键（每键一次 SELECT + UPDATE）；
+  改为**只有计数变化才落盘**，且逐日/每小时增量 + 累计总量 + 主体登记在同一周期内批量写入；
+  社区聚合默认每 5 分钟才刷新一次（`communityIntervalMillis`），并缓存在内存供 JSON 输出。
+- **行数有界**：每日汇总保留 400 天（`dailyKeepDays`）、每小时明细保留 14 天
+  （`MdtStorage.STATS_HOURLY_KEEP_DAYS`）、活跃主体登记与每日汇总一致；启动与跨天各裁剪一次，
+  删除条件是日期前缀区间而非全表扫描。
+- **跨天安全**：逐日字段用「日期 → 值」保存而不是单一 today 字段，跨天瞬间仍在队列里的事件
+  按各自携带的日期归入正确的那一天；`onDisable` 补一次收尾落盘。
+- **Web 重做**（`stats-web/index.html`，仍为单文件、无外部依赖、原生 SVG 折线图）：
+  新增「履历视图」（运营总览 KPI、近 14 天活跃曲线、今日 24 小时曲线、近 14 天社区互动、
+  等级构成、"可直接引用的服务器数据"摘要块）与「运维视图」（原仪表盘 + 近 14 天每日明细表）切换；
+  不再显示任何 MDC 发放项；按用户要求在页脚与引用块下方固定展示
+  **"统计信息不代表全部准确数据，受限于插件的更新，会出现数值少于实际总信息的情况"**。
+- **回填自愈**：`MdtStorage.needsStatsLifetimeBackfill()` 在"标记已存在但社区总量为 0"时判定需要重做
+  回填，避免早期版本写过标记的老库让社区累计永久停留在 0；回填按表全量重算后覆盖，幂等可重入。
+
+验证状态（2026-09-11 本地冷启动 + 命令 Socket 实测，日志见 `mdtserver/config/logs/log-0.txt`）：
+
+- 冷启动 `共找到157脚本,加载成功153,启用成功148,出错0`，`Server loaded`，无编译失败；
+- 全新库自动建表：`MdtStatsActivePlayers`、`MdtStatsDaily`、`MdtStatsHourly` 三张新表由 Exposed
+  自动创建（`Do Database upgrade ... 0 -> 1`，创建语句耗时 1~2ms）；
+- 一次性历史回填实测生效：`服务器状态统计已回填历史总量: 帖子=77 评论=37 赞=2 认可=104 在线时长=1996小时`；
+- JSON 输出确认 `schema: 2`、顶层键为 `schema/enabled/updatedAt/serverInfo/today/total/last14Days/daily/hourly/totalByRank/notes`，
+  **全文不含 `mdc` 字段**（`JSON-MDC-ABSENT=true`）；`daily` 固定 14 点、`hourly` 固定 24 点；
+- `/serverstats status`、`off`、`on` 命令 Socket 往返实测通过（关闭后 JSON `enabled:false`、开启后 `enabled:true`）；
+- 修复并复测两个实测暴露的缺陷：① `Table`（非 `IdTable`）列在 `insert/update` 块中必须写全限定名，
+  否则 `Unresolved reference`；② `today` 一度取自持久化的 `serverStats.date`（上次运行停在 8-22），
+  导致 14 天/24 小时窗口整体错位——现改为一律以实时系统日期为准，并复测 `today.date=2026-09-11`、
+  窗口 `2026-08-29 ~ 2026-09-11`；
+- 自愈逻辑实测：把社区总量键的旧值移除（模拟早期版本只写过回填标记的老库）后重启，脚本自动重做回填并恢复
+  `帖子=77 评论=37 赞=2 认可=104`（`MdtStorage.needsStatsLifetimeBackfill`）；
+- Web 实测：临时启动 `start-web.ps1`（127.0.0.1:8081）后用浏览器打开，
+  履历视图 8 个 KPI、2 张 SVG 折线图（28 + 48 数据点）、等级条 5 行、摘要块 8 行均正常渲染，
+  无错误提示；运维视图 14 行每日明细表、服务器信息（地图/TPS/运行时间）正常；
+  免责说明同时出现在页脚与引用块下方；页面全文无 MDC 字样；`/server-status.json` 返回
+  `200 application/json; charset=utf-8`、未知路径返回 404；
+- 清理：测试进程已结束、6567/6859/10099/8081 端口全部释放、`server.properties` 保持 `socketInput=false`、
+  测试控制台日志已删除；测试前数据库快照保存在 `mdtserver/sa-cache-backups/`（gitignore，未入库）。
+
+未覆盖边界：真实玩家进服/聊天/退出触发的计数递增（需真实客户端），跨天滚动与 14 天曲线填满
+（需连续运行），生产库上的一次性历史回填耗时（本地库为小库），生产实际部署与验证。
+
+Git 状态（2026-09-11，以现场 `git log` 为准，避免文档随提交自身变化而循环失效）：
+mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护、不推送；插件仓库已完成同步提交
+（含 scripts + docs），**领先 origin/main 1 个提交、未推送**，待用户确认后再推送。
+两仓 scripts/docs 逐文件核对完全一致，两个工作树均干净。测试用数据库快照位于
+`mdtserver/sa-cache-backups/h2DB.db.mv.db.pre-stats-v2-20260911-223353`（gitignore，未入库）。
+
 ## 2026-09-01：投票比例调整（无限火力80%/暂停波次70%）+ 3++ 开放风控菜单与全部解/ban权限
 
 - `wayzer/cmds/voteFunRules.kts`：`/vote infinitefire`（标准无限火力）与 `/vote infinitefirepromax` 通过比例从默认50%调整到 **80%**（`requireNum = ceil(it*0.8)`，导入 kotlin.math.ceil）。

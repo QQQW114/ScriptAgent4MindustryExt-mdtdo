@@ -17,6 +17,7 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.neq
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.count
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.insertAndGetId
@@ -28,6 +29,7 @@ import org.jetbrains.exposed.sql.transactions.transaction as exposedTransaction
 import org.jetbrains.exposed.sql.update
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.logging.Logger
 import kotlin.random.Random
 
@@ -561,6 +563,48 @@ object MdtStorage {
         val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp)
     }
 
+    /**
+     * 每日活跃主体登记：(日期 + 主体) 复合主键。
+     *
+     * 每个主体每天最多一行，因此“某日游玩人数”= 该日行数（有界：单日行数 = 当日活跃人数），
+     * 近 N 天人数曲线 = 日期区间扫描（14 天 ≈ 14 天 × 日均活跃人数），**不需要全表 COUNT**。
+     * 行数随日期推进线性增长，由 pruneServerStats 按保留窗口裁剪。
+     */
+    object StatsActivePlayers : Table("MdtStatsActivePlayers") {
+        val date = varchar("date", 10)
+        val uid = varchar("subject_uid", UID_LENGTH)
+        val hour = integer("hour").default(0)
+        override val primaryKey: PrimaryKey = PrimaryKey(date, uid)
+    }
+
+    /**
+     * 每日汇总：逐日累计的“履历数据”中**无法从现有表推导**的部分。
+     *
+     * 只保留事件驱动增量（聊天/人流量/游玩时长/峰值在线）；帖子、评论、点赞、认可直接
+     * 从各自业务表按日期区间聚合（见 loadStatsForumDaily），因此这里不重复存一份。
+     * 只有当天行会被更新；近 N 天汇总 = 日期区间内几十行求和。
+     */
+    object StatsDaily : Table("MdtStatsDaily") {
+        val date = varchar("date", 10)
+        val joins = long("joins").default(0L)
+        val chatMessages = long("chat_messages").default(0L)
+        val playMillis = long("play_millis").default(0L)
+        val peakOnline = integer("peak_online").default(0)
+        override val primaryKey: PrimaryKey = PrimaryKey(date)
+    }
+
+    /**
+     * 每小时明细：(日期 + 小时) 复合主键，只保留最近 STATS_HOURLY_KEEP_DAYS 天。
+     * 支撑“一天内 24 小时人数/人流量折线图”与跨天的近 24 小时走势。
+     */
+    object StatsHourly : Table("MdtStatsHourly") {
+        val date = varchar("date", 10)
+        val hour = integer("hour")
+        val joins = long("joins").default(0L)
+        val peakOnline = integer("peak_online").default(0)
+        override val primaryKey: PrimaryKey = PrimaryKey(date, hour)
+    }
+
     fun tables(): Array<Table> = arrayOf(
         Accounts,
         AccountBindings,
@@ -591,6 +635,9 @@ object MdtStorage {
         IpAccountBindings,
         Settings,
         StatsPlayers,
+        StatsActivePlayers,
+        StatsDaily,
+        StatsHourly,
     )
 
     private fun now(): Instant = Instant.now()
@@ -959,10 +1006,8 @@ object MdtStorage {
     private const val SERVER_STATS_DATE_KEY = "serverStats.date"
     private const val SERVER_STATS_TOTAL_PLAYERS_KEY = "serverStats.totalPlayers"
     private const val SERVER_STATS_TOTAL_FLOW_KEY = "serverStats.totalFlow"
-    private const val SERVER_STATS_TOTAL_MDC_KEY = "serverStats.totalMdcGranted"
     private const val SERVER_STATS_TODAY_PLAYERS_KEY = "serverStats.todayPlayers"
     private const val SERVER_STATS_TODAY_FLOW_KEY = "serverStats.todayFlow"
-    private const val SERVER_STATS_TODAY_MDC_KEY = "serverStats.todayMdcGranted"
     private const val SERVER_STATS_RANK_0_KEY = "serverStats.rank0"
     private const val SERVER_STATS_RANK_1_KEY = "serverStats.rank1"
     private const val SERVER_STATS_RANK_2_KEY = "serverStats.rank2"
@@ -974,10 +1019,8 @@ object MdtStorage {
         val date: String = "",
         val totalPlayers: Long = 0L,
         val totalFlow: Long = 0L,
-        val totalMdcGranted: Long = 0L,
         val todayPlayers: Long = 0L,
         val todayFlow: Long = 0L,
-        val todayMdcGranted: Long = 0L,
         val rank0: Long = 0L,
         val rank1: Long = 0L,
         val rank2: Long = 0L,
@@ -997,10 +1040,8 @@ object MdtStorage {
         SERVER_STATS_DATE_KEY,
         SERVER_STATS_TOTAL_PLAYERS_KEY,
         SERVER_STATS_TOTAL_FLOW_KEY,
-        SERVER_STATS_TOTAL_MDC_KEY,
         SERVER_STATS_TODAY_PLAYERS_KEY,
         SERVER_STATS_TODAY_FLOW_KEY,
-        SERVER_STATS_TODAY_MDC_KEY,
         SERVER_STATS_RANK_0_KEY,
         SERVER_STATS_RANK_1_KEY,
         SERVER_STATS_RANK_2_KEY,
@@ -1016,10 +1057,8 @@ object MdtStorage {
             date = raw[SERVER_STATS_DATE_KEY] ?: "",
             totalPlayers = longValue(SERVER_STATS_TOTAL_PLAYERS_KEY),
             totalFlow = longValue(SERVER_STATS_TOTAL_FLOW_KEY),
-            totalMdcGranted = longValue(SERVER_STATS_TOTAL_MDC_KEY),
             todayPlayers = longValue(SERVER_STATS_TODAY_PLAYERS_KEY),
             todayFlow = longValue(SERVER_STATS_TODAY_FLOW_KEY),
-            todayMdcGranted = longValue(SERVER_STATS_TODAY_MDC_KEY),
             rank0 = longValue(SERVER_STATS_RANK_0_KEY),
             rank1 = longValue(SERVER_STATS_RANK_1_KEY),
             rank2 = longValue(SERVER_STATS_RANK_2_KEY),
@@ -1032,10 +1071,8 @@ object MdtStorage {
         setSettingInTx(SERVER_STATS_DATE_KEY, record.date)
         setSettingInTx(SERVER_STATS_TOTAL_PLAYERS_KEY, record.totalPlayers.toString())
         setSettingInTx(SERVER_STATS_TOTAL_FLOW_KEY, record.totalFlow.toString())
-        setSettingInTx(SERVER_STATS_TOTAL_MDC_KEY, record.totalMdcGranted.toString())
         setSettingInTx(SERVER_STATS_TODAY_PLAYERS_KEY, record.todayPlayers.toString())
         setSettingInTx(SERVER_STATS_TODAY_FLOW_KEY, record.todayFlow.toString())
-        setSettingInTx(SERVER_STATS_TODAY_MDC_KEY, record.todayMdcGranted.toString())
         setSettingInTx(SERVER_STATS_RANK_0_KEY, record.rank0.toString())
         setSettingInTx(SERVER_STATS_RANK_1_KEY, record.rank1.toString())
         setSettingInTx(SERVER_STATS_RANK_2_KEY, record.rank2.toString())
@@ -1095,6 +1132,407 @@ object MdtStorage {
             it[updatedAt] = now()
         }
         prev to levelCode
+    }
+
+    // ---------- 服务器状态统计：每日 / 每小时履历数据 ----------
+    // 设计约束（与上层脚本一致）：
+    // - 全部由事件驱动增量累加，**不做任何全表 COUNT / SUM**；
+    // - 每次落盘只写“本周期真正变化过的行”（逐行主键定位），条数与在线人数同阶；
+    // - 时间维度只有两级：每天 1 行汇总 + 每天最多 24 行小时明细，行数完全有界；
+    // - 只会被统计 IO 协程单写者调用，游戏线程不接触这些函数。
+
+    /** 每小时明细保留天数（与上层脚本配置一致）。 */
+    const val STATS_HOURLY_KEEP_DAYS = 14L
+
+    private const val STATS_LIFETIME_BACKFILL_KEY = "serverStats.lifetimeBackfilled"
+    private const val SERVER_STATS_TOTAL_CHAT_KEY = "serverStats.totalChatMessages"
+    private const val SERVER_STATS_PEAK_ONLINE_KEY = "serverStats.peakOnline"
+    private const val STATS_TOTAL_POSTS_KEY = "serverStats.totalForumPosts"
+    private const val STATS_TOTAL_COMMENTS_KEY = "serverStats.totalForumComments"
+    private const val STATS_TOTAL_LIKES_KEY = "serverStats.totalLikes"
+    private const val STATS_TOTAL_DISLIKES_KEY = "serverStats.totalDislikes"
+    private const val STATS_TOTAL_RECOGNITIONS_KEY = "serverStats.totalRecognitions"
+    private const val STATS_TOTAL_PLAY_MILLIS_KEY = "serverStats.totalPlayMillis"
+
+    private val STATS_LIFETIME_VALUE_KEYS = listOf(
+        SERVER_STATS_TOTAL_CHAT_KEY,
+        STATS_TOTAL_PLAY_MILLIS_KEY,
+        STATS_TOTAL_POSTS_KEY,
+        STATS_TOTAL_COMMENTS_KEY,
+        STATS_TOTAL_LIKES_KEY,
+        STATS_TOTAL_DISLIKES_KEY,
+        STATS_TOTAL_RECOGNITIONS_KEY,
+    )
+
+    /** 每日汇总行（近 N 天曲线与“近 N 天合计”都只在这张表上做区间查询）。 */
+    data class StatsDailyRecord(
+        val date: String = "",
+        val joins: Long = 0L,
+        val chatMessages: Long = 0L,
+        val playMillis: Long = 0L,
+        val peakOnline: Int = 0,
+    )
+
+    /** 当日某小时的人流量与峰值在线。 */
+    data class StatsHourlyFlow(val joins: Long = 0L, val peakOnline: Int = 0)
+
+    /** 论坛/社区互动按日聚合结果（不是增量计数，而是从业务表按日期区间直接聚合）。 */
+    data class StatsCommunityDay(
+        val posts: Long = 0L,
+        val comments: Long = 0L,
+        val likes: Long = 0L,
+        val dislikes: Long = 0L,
+        val recognitions: Long = 0L,
+    )
+
+    /** 跨重启累计总量（只增不减的历史总计，由脚本内存计数落盘）。 */
+    data class StatsTotalsRecord(
+        val chatMessages: Long = 0L,
+        val playMillis: Long = 0L,
+        val forumPosts: Long = 0L,
+        val forumComments: Long = 0L,
+        val likes: Long = 0L,
+        val dislikes: Long = 0L,
+        val recognitions: Long = 0L,
+        val peakOnline: Int = 0,
+    )
+
+    /** 每日行增量（只带本周期变化过的字段）。 */
+    data class StatsDailyDelta(
+        val joins: Long = 0L,
+        val chatMessages: Long = 0L,
+        val playMillis: Long = 0L,
+    )
+
+    /** 每日人流量 +1（不存在则建行）。 */
+    fun addStatsDailyJoins(date: String) = transaction {
+        val row = StatsDaily.selectAll().where { StatsDaily.date eq date }.firstOrNull()
+        if (row == null) {
+            StatsDaily.insert {
+                it[StatsDaily.date] = date
+                it[StatsDaily.joins] = 1L
+            }
+        } else {
+            StatsDaily.update({ StatsDaily.date eq date }) { it[StatsDaily.joins] = row[StatsDaily.joins] + 1L }
+        }
+        Unit
+    }
+
+    /** 每日累计字段写入（本周期累计的增量，一次事务内一次 UPDATE）。 */
+    fun addStatsDailyValues(date: String, delta: StatsDailyDelta) = transaction {
+        if (delta == StatsDailyDelta()) return@transaction
+        val row = StatsDaily.selectAll().where { StatsDaily.date eq date }.firstOrNull()
+        if (row == null) {
+            StatsDaily.insert {
+                it[StatsDaily.date] = date
+                it[StatsDaily.joins] = delta.joins
+                it[StatsDaily.chatMessages] = delta.chatMessages
+                it[StatsDaily.playMillis] = delta.playMillis
+            }
+        } else {
+            StatsDaily.update({ StatsDaily.date eq date }) {
+                it[StatsDaily.joins] = row[StatsDaily.joins] + delta.joins
+                it[StatsDaily.chatMessages] = row[StatsDaily.chatMessages] + delta.chatMessages
+                it[StatsDaily.playMillis] = row[StatsDaily.playMillis] + delta.playMillis
+            }
+        }
+        Unit
+    }
+
+    /**
+     * 每日峰值在线取历史最大值（只在当前峰值高于行内记录时更新）。
+     * 返回新的历史峰值（调用方用于内存态同步）。
+     */
+    fun raiseStatsDailyPeak(date: String, online: Int, historyPeak: Int): Int = transaction {
+        if (online <= 0) return@transaction historyPeak
+        val row = StatsDaily.selectAll().where { StatsDaily.date eq date }.firstOrNull()
+        val dayPeak = row?.get(StatsDaily.peakOnline) ?: 0
+        if (row == null) {
+            StatsDaily.insert {
+                it[StatsDaily.date] = date
+                it[StatsDaily.peakOnline] = online
+            }
+        } else if (online > dayPeak) {
+            StatsDaily.update({ StatsDaily.date eq date }) { it[StatsDaily.peakOnline] = online }
+        }
+        maxOf(historyPeak, online)
+    }
+
+    /** 每小时人流量累加（一次事务、一次 UPDATE；[joins] 为本周期累计增量）。 */
+    fun addStatsHourlyJoins(date: String, hour: Int, joins: Long) = transaction {
+        if (joins <= 0L) return@transaction
+        val row = StatsHourly.selectAll()
+            .where { (StatsHourly.date eq date) and (StatsHourly.hour eq hour) }.firstOrNull()
+        if (row == null) {
+            StatsHourly.insert {
+                it[StatsHourly.date] = date
+                it[StatsHourly.hour] = hour
+                it[StatsHourly.joins] = joins
+            }
+        } else {
+            StatsHourly.update({ (StatsHourly.date eq date) and (StatsHourly.hour eq hour) }) {
+                it[StatsHourly.joins] = row[StatsHourly.joins] + joins
+            }
+        }
+        Unit
+    }
+
+    /** 每小时峰值在线取历史最大值（只在更高时更新）。 */
+    fun raiseStatsHourlyPeak(date: String, hour: Int, online: Int) = transaction {
+        if (online <= 0) return@transaction
+        val row = StatsHourly.selectAll()
+            .where { (StatsHourly.date eq date) and (StatsHourly.hour eq hour) }.firstOrNull()
+        if (row == null) {
+            StatsHourly.insert {
+                it[StatsHourly.date] = date
+                it[StatsHourly.hour] = hour
+                it[StatsHourly.peakOnline] = online
+            }
+        } else if (online > row[StatsHourly.peakOnline]) {
+            StatsHourly.update({ (StatsHourly.date eq date) and (StatsHourly.hour eq hour) }) {
+                it[StatsHourly.peakOnline] = online
+            }
+        }
+        Unit
+    }
+
+    /** 登记“某主体在某日活跃”（复合主键：已存在则跳过）。返回 true 表示当天首次登记。 */
+    fun markStatsPlayerActive(date: String, uid: String, hour: Int): Boolean = transaction {
+        val exists = StatsActivePlayers.selectAll()
+            .where { (StatsActivePlayers.date eq date) and (StatsActivePlayers.uid eq uid) }
+            .empty()
+        if (!exists) return@transaction false
+        StatsActivePlayers.insert {
+            it[StatsActivePlayers.date] = date
+            it[StatsActivePlayers.uid] = uid
+            it[StatsActivePlayers.hour] = hour
+        }
+        true
+    }
+
+    /**
+     * 某日已登记的活跃主体（重启后回填内存去重集合，避免同一玩家当天被重复计数）。
+     * 只按日期扫描 `StatsActivePlayers`，规模 = 当日活跃人数，不是全库扫描。
+     */
+    fun loadStatsActiveUids(date: String): Set<String> = transaction {
+        StatsActivePlayers.selectAll().where { StatsActivePlayers.date eq date }
+            .map { it[StatsActivePlayers.uid] }
+            .toSet()
+    }
+
+    /** 某日游玩人数（活跃主体登记行数；行数与当日活跃人数同阶，非全表 COUNT）。 */
+    fun countStatsActivePlayers(date: String): Long = transaction {
+        StatsActivePlayers.selectAll().where { StatsActivePlayers.date eq date }.count()
+    }
+
+    /** 最早有每日明细的日期（只取 1 行，用于声明统计起始日）。 */
+    fun loadStatsFirstDate(): String? = transaction {
+        StatsDaily.selectAll().orderBy(StatsDaily.date to SortOrder.ASC).limit(1)
+            .firstOrNull()?.get(StatsDaily.date)
+    }
+
+    /** 最近 [days] 天的每日汇总（默认只取有数据的日期，按日期升序）。 */
+    fun loadStatsDaily(days: Long): List<StatsDailyRecord> = transaction {
+        val cutoff = LocalDate.now().minusDays(days.coerceAtLeast(1L) - 1L).toString()
+        StatsDaily.selectAll().where { StatsDaily.date greaterEq cutoff }
+            .orderBy(StatsDaily.date to SortOrder.ASC)
+            .map { row ->
+                StatsDailyRecord(
+                    date = row[StatsDaily.date],
+                    joins = row[StatsDaily.joins],
+                    chatMessages = row[StatsDaily.chatMessages],
+                    playMillis = row[StatsDaily.playMillis],
+                    peakOnline = row[StatsDaily.peakOnline],
+                )
+            }
+    }
+
+    /** 某日的每小时明细（默认全 0 → 脚本按 24 桶展开）。 */
+    fun loadStatsHourly(date: String): Map<Int, StatsHourlyFlow> = transaction {
+        StatsHourly.selectAll().where { StatsHourly.date eq date }
+            .associate { row ->
+                row[StatsHourly.hour] to StatsHourlyFlow(row[StatsHourly.joins], row[StatsHourly.peakOnline])
+            }
+    }
+
+    // ---------- 社区互动按日聚合 ----------
+    // 说明：帖子/评论/点赞/认可本来就有现成的业务表（含日期列），直接按“日期区间 + GROUP BY 日期”
+    // 聚合即可，**不需要在业务写入点插桩、也不需要额外维护一份增量计数**，因此也不会漏掉
+    // 统计系统上线之前的历史数据。
+    //
+    // 成本边界（明确记录，避免后续误判为性能问题）：
+    // - 只扫描“最近 N 天”这一个日期区间（有界），不做全表 COUNT；
+    // - 结果由上层脚本按较长间隔（默认 5 分钟）缓存，不是每个刷新周期都查；
+    // - 只可能运行在统计 IO 协程里，游戏线程永不调用。
+
+    /** 最近 [days] 天的帖子/评论/点赞/认可按日聚合。 */
+    fun loadStatsCommunityDaily(days: Long): Map<String, StatsCommunityDay> {
+        val cutoff = LocalDate.now().minusDays(days.coerceAtLeast(1L) - 1L).toString()
+        return transaction {
+            val result = linkedMapOf<String, StatsCommunityDay>()
+            fun merge(date: String, transform: (StatsCommunityDay) -> StatsCommunityDay) {
+                result[date] = transform(result[date] ?: StatsCommunityDay())
+            }
+            // 点赞/认可本身就有日期列，直接按日期区间筛选即可（天级数据行数极少）。
+            ReputationDaily.selectAll().where { ReputationDaily.date greaterEq cutoff }
+                .forEach { row ->
+                    val count = row[ReputationDaily.count].toLong()
+                    val type = row[ReputationDaily.voteType]
+                    merge(row[ReputationDaily.date]) {
+                        when (type) {
+                            "like" -> it.copy(likes = it.likes + count)
+                            "dislike" -> it.copy(dislikes = it.dislikes + count)
+                            else -> it
+                        }
+                    }
+                }
+            RecognitionDaily.selectAll().where { RecognitionDaily.date greaterEq cutoff }
+                .forEach { row ->
+                    merge(row[RecognitionDaily.date]) { it.copy(recognitions = it.recognitions + 1L) }
+                }
+            // 帖子/评论表存的是时间戳，用数据库侧 COUNT + GROUP BY 日期聚合（只扫最近 N 天）。
+            ForumPosts.select(ForumPosts.createdAt, ForumPosts.id.count())
+                .where { ForumPosts.createdAt greaterEq cutoffInstant(cutoff) }
+                .groupBy(ForumPosts.createdAt)
+                .forEach { row ->
+                    merge(dayOf(row[ForumPosts.createdAt])) { it.copy(posts = it.posts + row[ForumPosts.id.count()]) }
+                }
+            ForumComments.select(ForumComments.createdAt, ForumComments.id.count())
+                .where { ForumComments.createdAt greaterEq cutoffInstant(cutoff) }
+                .groupBy(ForumComments.createdAt)
+                .forEach { row ->
+                    merge(dayOf(row[ForumComments.createdAt])) {
+                        it.copy(comments = it.comments + row[ForumComments.id.count()])
+                    }
+                }
+            result
+        }
+    }
+
+    /** 帖子/评论的累计总数（只用于一次性历史回填，不参与周期刷新）。 */
+    fun countStatsCommunityTotals(): Pair<Long, Long> = transaction {
+        var posts = 0L
+        var comments = 0L
+        ForumPosts.selectAll().forEach { posts++ }
+        ForumComments.selectAll().forEach { comments++ }
+        posts to comments
+    }
+
+    private fun cutoffInstant(cutoffDate: String): Instant =
+        runCatching { LocalDate.parse(cutoffDate).atStartOfDay(ZoneId.systemDefault()).toInstant() }
+            .getOrElse { Instant.EPOCH }
+
+    private fun dayOf(instant: Instant): String =
+        instant.atZone(ZoneId.systemDefault()).toLocalDate().toString()
+
+    /** 读取跨重启累计总量。 */
+    fun loadStatsTotals(): StatsTotalsRecord = transaction {
+        val raw = Settings.selectAll().where { Settings.id inList STATS_LIFETIME_VALUE_KEYS }
+            .associate { it[Settings.id].value to it[Settings.value] }
+        fun longValue(key: String): Long = raw[key]?.toLongOrNull() ?: 0L
+        StatsTotalsRecord(
+            chatMessages = longValue(SERVER_STATS_TOTAL_CHAT_KEY),
+            playMillis = longValue(STATS_TOTAL_PLAY_MILLIS_KEY),
+            forumPosts = longValue(STATS_TOTAL_POSTS_KEY),
+            forumComments = longValue(STATS_TOTAL_COMMENTS_KEY),
+            likes = longValue(STATS_TOTAL_LIKES_KEY),
+            dislikes = longValue(STATS_TOTAL_DISLIKES_KEY),
+            recognitions = longValue(STATS_TOTAL_RECOGNITIONS_KEY),
+            peakOnline = (raw[SERVER_STATS_PEAK_ONLINE_KEY]?.toIntOrNull() ?: 0),
+        )
+    }
+
+    /** 写入跨重启累计总量（只在数值变化时由上层调用）。 */
+    fun saveStatsTotals(record: StatsTotalsRecord) = transaction {
+        setSettingInTx(SERVER_STATS_TOTAL_CHAT_KEY, record.chatMessages.toString())
+        setSettingInTx(STATS_TOTAL_PLAY_MILLIS_KEY, record.playMillis.toString())
+        setSettingInTx(STATS_TOTAL_POSTS_KEY, record.forumPosts.toString())
+        setSettingInTx(STATS_TOTAL_COMMENTS_KEY, record.forumComments.toString())
+        setSettingInTx(STATS_TOTAL_LIKES_KEY, record.likes.toString())
+        setSettingInTx(STATS_TOTAL_DISLIKES_KEY, record.dislikes.toString())
+        setSettingInTx(STATS_TOTAL_RECOGNITIONS_KEY, record.recognitions.toString())
+        setSettingInTx(SERVER_STATS_PEAK_ONLINE_KEY, record.peakOnline.toString())
+        Unit
+    }
+
+    /**
+     * 是否需要做一次性历史回填。
+     *
+     * 两种情况需要回填：
+     * 1. 从未回填过（`serverStats.lifetimeBackfilled` 缺失）——全新启用；
+     * 2. **标记已存在但社区总量为 0**——老库由早期版本写过该标记（早期版本没有社区统计），
+     *    此时若不重做，帖子/评论/点赞/认可会永久停留在 0。回填是幂等的（按表全量重算后覆盖），
+     *    因此这里可以安全地自愈。
+     */
+    fun needsStatsLifetimeBackfill(): Boolean = transaction {
+        val marker = Settings.selectAll().where { Settings.id eq STATS_LIFETIME_BACKFILL_KEY }
+            .firstOrNull()?.get(Settings.value)
+        if (marker != "true") return@transaction true
+        val raw = Settings.selectAll().where { Settings.id inList STATS_LIFETIME_VALUE_KEYS }
+            .associate { it[Settings.id].value to it[Settings.value] }
+        val posts = raw[STATS_TOTAL_POSTS_KEY]?.toLongOrNull() ?: 0L
+        val comments = raw[STATS_TOTAL_COMMENTS_KEY]?.toLongOrNull() ?: 0L
+        posts <= 0L && comments <= 0L
+    }
+
+    /** 是否已完成一次性历史总量回填。 */
+    fun isStatsLifetimeBackfilled(): Boolean = transaction {
+        Settings.selectAll().where { Settings.id eq STATS_LIFETIME_BACKFILL_KEY }
+            .firstOrNull()?.get(Settings.value) == "true"
+    }
+
+    /**
+     * 一次性历史回填：把统计系统上线**之前**已有的帖子/评论/点赞/认可/在线时长总量取出来，
+     * 作为累计总量的基线。
+     *
+     * 说明：这是整个统计链路里唯一的重查询，只在“首次启用且从未回填过”时执行一次；
+     * 结果立即写入 MdtSettings，之后永不重复。**不做任何按日期的历史拆分**（那需要按时间戳
+     * 扫描全表，属于明确避免的做法），因此近 N 天曲线只统计上线之后的数据。
+     */
+    fun backfillStatsLifetime(): StatsTotalsRecord = transaction {
+        val (posts, comments) = countStatsCommunityTotals()
+        var likes = 0L
+        var dislikes = 0L
+        var recognitions = 0L
+        // 直接取各表的累计总量（各一次聚合查询），不做按日期拆分。
+        ReputationDaily.selectAll().forEach { row ->
+            val count = row[ReputationDaily.count].toLong()
+            when (row[ReputationDaily.voteType]) {
+                "like" -> likes += count
+                "dislike" -> dislikes += count
+            }
+        }
+        RecognitionPairs.selectAll().forEach { recognitions++ }
+        var playMillis = 0L
+        SeniorityProfiles.selectAll().forEach { playMillis += it[SeniorityProfiles.playMillis] }
+        setSettingInTx(STATS_LIFETIME_BACKFILL_KEY, "true")
+        StatsTotalsRecord(
+            chatMessages = 0L,
+            playMillis = playMillis,
+            forumPosts = posts,
+            forumComments = comments,
+            likes = likes,
+            dislikes = dislikes,
+            recognitions = recognitions,
+            peakOnline = 0,
+        )
+    }
+
+    /**
+     * 按保留窗口裁剪旧明细：每日汇总保留 [keepDailyDays] 天、小时明细保留
+     * [MdtStorage.STATS_HOURLY_KEEP_DAYS] 天、活跃主体登记保留与每日汇总一致。
+     * 只在启动与跨天滚动时各调用一次，删除范围是日期前缀（主键区间），不是全表扫描。
+     */
+    fun pruneServerStats(keepDailyDays: Long, today: String) {
+        val base = runCatching { LocalDate.parse(today) }.getOrNull() ?: LocalDate.now()
+        val dailyCutoff = base.minusDays(keepDailyDays.coerceAtLeast(2L) - 1L).toString()
+        val hourlyCutoff = base.minusDays(STATS_HOURLY_KEEP_DAYS - 1L).toString()
+        transaction {
+            StatsDaily.deleteWhere { StatsDaily.date less dailyCutoff }
+            StatsHourly.deleteWhere { StatsHourly.date less hourlyCutoff }
+            StatsActivePlayers.deleteWhere { StatsActivePlayers.date less dailyCutoff }
+            Unit
+        }
     }
 
     private fun ensureTrustProfile(uid: String) {
