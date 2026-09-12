@@ -22,6 +22,60 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-12（第四批）：160 自定义菜单实验功能（wiki/帖子/商店/成就）
+
+类型：实验功能（基于 Mindustry 160.1 新增的服务端下发菜单系统）
+
+涉及文件：
+
+- `mdtserver/config/scripts/coreMindustry/lib/customMenu.kt`（**新增**：会话层）
+- `mdtserver/config/scripts/coreMindustry/lib/customMenuParts.kt`（**新增**：渲染件）
+- `mdtserver/config/scripts/wayzer/user/shopList.kts`、`wiki.kts`、`forumPosts.kts`、`achievement.kts`
+- `docs/custom-menu.md`（**新增**专项文档）、`docs/scripts-maintenance.md`（本文档索引）
+
+### 上游能力（160.1）
+
+`Call.menuBuilder(con, menuId, token, title, hideOnClick, hideExisting, fillScreen, NodeBuilder)` 下发；
+客户端回传 `Call.menuBuilderChoose(player, menuId, MenuResult)`，服务端 `Menus.menuBuilderListeners.get(menuId).get(...)` 派发，
+同时 fire `EventType.MenuBuilderOptionChooseEvent`。支持 table/label/button/field/check/slider/image 等组件与多列布局。
+
+### 实现
+
+- **会话层**（`customMenu.kt`）：`sendCustomMenu` / `closeCustomMenu` / `customMenuSupported`；
+  用**监听器池 + 全局递增 id** 处理"menuId 实际是客户端监听器数组下标"这一约束（`registerMenuBuilder` 只增不删）；
+  每次下发带唯一 `token` 并回传校验；陈旧/离线会话在下发时顺带清理。
+- **渲染件**（`customMenuParts.kt`）：`sectionHeader` / `listRow`（论坛式整行可点） / `textRow` / `actionRow` / `navRow`，
+  以及 `RESULT_BACK`/`RESULT_CLOSE` 常量。
+- **四个系统接入**（都保留原聊天菜单作为回退，`if (openXxxCustom(...)) return`）：
+  - `/shop`：商店列表行 + 详情页（说明/入口指令/打开/返回）。
+  - `/wiki`：列表（标题+摘要+字数/更新者+翻页）+ 详情（整页滚动正文 + 编辑/最近修改）。
+  - `/posts`：列表（标题+作者/时间/评论数+翻页+发布）+ 详情（正文 + 赞/踩/评论/分享/编辑/置顶/锁定/保护锁/删除）。
+  - `/achievements`：成就卡片列表（要求/奖励/已完成标记；隐藏成就未完成显示"？？？"）。
+  - 正文超过 3000 字符截断并提示，避免一次性下发巨量文本。
+
+### 关键踩点（已写入 `docs/custom-menu.md`）
+
+1. **脚本之间不能互相 import 顶层函数**：最初把会话层写成 `coreMindustry/customMenu.kts`，
+   业务脚本 `import coreMindustry.sendCustomMenu` 全部解析失败；只有 `lib/*.kt` 才是可被 import 的普通 Kotlin 代码。
+2. `UiBuilder.table()/button()/label()` 是 **Java 静态方法**，不能写成 `table { }`，必须 `val t = table(); t.xxx()`。
+3. `LabelBuilder` 只有 `labelAlign("left"/"right"/"center")`，没有 `left()/right()`。
+4. 参数名不能叫 `build`：K2 分析器与 `kotlin.collections.build` 冲突，抛 `FileAnalysisException`。
+5. `RootCommands.handleInput` 与 `Player.hasPermission` 都是 suspend，菜单回调里要 `launch(Dispatchers.game) { }`。
+6. Kotlin **嵌套块注释**：注释正文里的 `/*` 会造成 `Unclosed comment`。
+
+### 验证
+
+- 冷启动：`共找到159脚本,加载成功155,启用成功150,出错0`（脚本数不变，新增的是两个 `lib/*.kt` 库文件），
+  编译错误 0、异常 0、命令 Socket 正常。
+- 期间逐轮修掉 6 类编译/环境问题（见上），每轮都做了完整冷启动复测。
+
+### 未覆盖边界（重要）
+
+- **完全没有真实客户端验证**：新菜单的实际渲染、点击回传、旧客户端回退行为均未测试（本项目测试边界不含真实客户端）。
+- `customMenuSupported` 只判断"有无连接"，不解析客户端版本；若出现"能连上但渲染不出菜单且不报错"的情况，
+  需要补更精确的能力探测。
+- 未使用 `menuBuilderUpdate` 做局部刷新（当前是"关旧开新"，翻页时会闪一下）。
+
 ## 2026-09-12（第三批）：suffixmark 落库 + 出生点保护 + 雷达修复
 
 类型：持久化改造 + 缺陷修复
@@ -670,6 +724,8 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 - `docs/map-scripts.md`：从柠檬开源插件迁入的地图特殊玩法脚本、兼容层与排除项。
 - `docs/help-menu.md`：新版 `/help` 分区菜单的入口、分区和维护方式。
 - `docs/wiki-system.md`：Wiki 系统、长文本分页显示与 3+级/管理员游戏内编辑说明。
+- `docs/custom-menu.md`：**Mindustry 160.1 自定义菜单（实验功能）**——服务端下发菜单的 API、会话层设计、
+  兼容回退方式、Kotlin 脚本环境踩点，以及 wiki/帖子/商店/成就四个系统的接入说明。
 - `docs/forum-posts.md`：帖子系统、评论、为作者赞踩、自动清理和权限说明。
 - `docs/tips-system.md`：Tips 小提示系统、随机轮播、管理指令和存储说明。
 - `docs/server-description.md`：服务器列表介绍轮播、管理指令和存储说明。

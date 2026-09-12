@@ -8,6 +8,17 @@ package wayzer.user
 
 import coreMindustry.MenuBuilder
 import cf.wayzer.placehold.PlaceHoldApi.with
+import coreMindustry.lib.CustomMenuParts.RESULT_BACK
+import coreMindustry.lib.CustomMenuParts.RESULT_CLOSE
+import coreMindustry.lib.CustomMenuParts.actionRow
+import coreMindustry.lib.CustomMenuParts.listRow
+import coreMindustry.lib.CustomMenuParts.navRow
+import coreMindustry.lib.CustomMenuParts.sectionHeader
+import coreMindustry.lib.CustomMenuParts.textRow
+import coreMindustry.lib.customMenuSupported
+import coreMindustry.lib.sendCustomMenu
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import mindustry.gen.Groups
 import wayzer.lib.DatabaseFeature
 import wayzer.lib.DatabaseFeatureChangedEvent
@@ -41,6 +52,10 @@ private val WIKI_DELETE_DAILY_LIMIT = 2
 private val WIKI_DELETE_SHORT_LIMIT = 1
 private val WIKI_DELETE_SHORT_WINDOW_MILLIS = 30 * 60_000L
 private val WIKI_CACHE_TTL_MILLIS = 60_000L
+/** 自定义菜单结果常量（新菜单用字符串 id 回传，`@close` 由框架处理，这里统一引用避免散落字面量）。 */
+private val WIKI_RESULT_CLOSE = RESULT_CLOSE
+/** 自定义菜单正文上限：过长时截断，避免一次性下发巨量文本。 */
+private val WIKI_CUSTOM_MAX_BODY_CHARS = 3000
 private val WIKI_SUMMARY_FIELDS = listOf("title", "updatedBy", "preview", "bodyLength", "body")
 private val WIKI_HISTORY_TIME_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
@@ -487,6 +502,8 @@ private suspend fun askWikiText(
 
 private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
     if (!ensureWikiEnabled(player)) return
+    // 实验功能：优先尝试 160 自定义菜单（论坛式列表 + 详情页），失败则回退既有聊天菜单。
+    if (openWikiIndexCustom(player, initialPage)) return
     val manager = canManageWiki(player)
     var selectedPage = initialPage
     object : MenuBuilder<Unit>(false) {
@@ -538,6 +555,8 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
 
 private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 1) {
     if (!ensureWikiEnabled(player)) return
+    // 实验功能：优先尝试 160 自定义菜单（整页滚动正文 + 返回/管理按钮）。
+    if (openWikiPageCustom(player, id)) return
     val page = db { getWikiPageCached(id) } ?: run {
         player.sendMessage("[yellow]未找到Wiki页面：$id")
         openWikiIndex(player)
@@ -606,6 +625,118 @@ private suspend fun shareWikiPageToChat(player: Player, id: String) {
     Groups.player.forEach { it.sendMessage(message) }
     player.sendMessage("[green]已分享到聊天栏：/wiki ${page.id}")
     openWikiPage(player, page.id)
+}
+
+/**
+ * 实验功能：Wiki 列表用 160 自定义菜单渲染（论坛式）。
+ *
+ * 列表页：每行 = 标题（亮色） + 摘要（次要色） + 右侧"字数/更新者"，整行可点；底部翻页与关闭。
+ * 详情页：整页滚动正文 + 返回列表 / 管理（有权限时） / 关闭。
+ *
+ * 返回 true 表示已成功下发；false 或异常时由调用方回退到既有聊天菜单。
+ */
+private suspend fun openWikiIndexCustom(player: Player, initialPage: Int = 1): Boolean {
+    if (!wikiEnabled()) return false
+    if (!customMenuSupported(player)) return false
+    val pageData = runCatching { db { listWikiSummariesPagedCached(initialPage, WIKI_LIST_PAGE_SIZE) } }.getOrNull() ?: return false
+    return runCatching {
+        showWikiIndexCustom(player, pageData)
+        true
+    }.getOrElse {
+        logger.warning("Wiki 列表自定义菜单下发失败，回退聊天菜单：${it.message}")
+        false
+    }
+}
+
+private fun showWikiIndexCustom(player: Player, pageData: WikiSummaryPage) {
+    val manager = canManageWiki(player)
+    sendCustomMenu(
+        player = player,
+        title = "Wiki列表",
+        onSelect = { result, _ ->
+            when {
+                result == WIKI_RESULT_CLOSE -> Unit
+                result.startsWith("page:") -> {
+                    val target = result.removePrefix("page:").toIntOrNull() ?: pageData.page
+                    launch(Dispatchers.game) { openWikiIndex(player, target.coerceAtLeast(1)) }
+                }
+                result == "manage" -> launch(Dispatchers.game) { openWikiManageMenu(player) }
+                result.startsWith("open:") -> {
+                    val id = result.removePrefix("open:")
+                    launch(Dispatchers.game) { openWikiPage(player, id) }
+                }
+            }
+        },
+    ) {
+        sectionHeader("Wiki列表", if (pageData.total == 0) "当前暂无 Wiki 页面" else "共 ${pageData.total} 条，点击整行查看正文")
+        if (pageData.items.isEmpty()) {
+            textRow("[gray]暂无内容。管理员可用 /wiki admin 创建页面。")
+        } else {
+            pageData.items.forEach { item ->
+                listRow(
+                    result = "open:${item.id}",
+                    title = item.title,
+                    subtitle = item.preview.ifBlank { "（无摘要）" },
+                    trailing = "${item.bodyLength}字" + if (item.updatedBy.isBlank()) "" else " · ${item.updatedBy}",
+                    accent = "ffd257",
+                )
+            }
+        }
+        val nav = mutableListOf<Pair<String, String>>()
+        if (pageData.page > 1) nav += "上一页" to "page:${pageData.page - 1}"
+        nav += "${pageData.page}/${pageData.totalPage}" to "refresh"
+        if (pageData.page < pageData.totalPage) nav += "下一页" to "page:${pageData.page + 1}"
+        nav += "关闭" to WIKI_RESULT_CLOSE
+        actionRow(nav)
+        if (manager) actionRow(listOf("管理Wiki" to "manage"))
+    }
+}
+
+/** 实验功能：Wiki 详情用 160 自定义菜单渲染（整页滚动正文）。 */
+private suspend fun openWikiPageCustom(player: Player, id: String): Boolean {
+    if (!wikiEnabled()) return false
+    if (!customMenuSupported(player)) return false
+    val page = runCatching { db { getWikiPageCached(id) } }.getOrNull() ?: return false
+    // 挂起查询要在进入非挂起渲染函数之前完成。
+    val protected = runCatching { db { isWikiProtected(page.id) } }.getOrDefault(false)
+    return runCatching {
+        showWikiPageCustom(player, page, protected)
+        true
+    }.getOrElse {
+        logger.warning("Wiki 详情自定义菜单下发失败，回退聊天菜单：${it.message}")
+        false
+    }
+}
+
+private fun showWikiPageCustom(player: Player, page: WikiPage, protected: Boolean) {
+    val manager = canManageWiki(player)
+    val adminWiki = canAdminWiki(player)
+    val canEdit = manager && (!protected || adminWiki)
+    val bodyText = MdtTextFormat.render(page.body)
+    val shown = if (bodyText.length > WIKI_CUSTOM_MAX_BODY_CHARS) {
+        bodyText.take(WIKI_CUSTOM_MAX_BODY_CHARS) + "\n[gray]…（正文过长，已截断显示；完整内容可在游戏内菜单或网页查看）"
+    } else bodyText
+
+    sendCustomMenu(
+        player = player,
+        title = page.title,
+        onSelect = { result, _ ->
+            when {
+                result == WIKI_RESULT_CLOSE -> Unit
+                result == RESULT_BACK -> launch(Dispatchers.game) { openWikiIndex(player) }
+                result == "edit" && canEdit -> launch(Dispatchers.game) { openWikiEditMenu(player, page.id) }
+                result == "history" && manager -> launch(Dispatchers.game) { openWikiHistoryMenu(player, page.id) }
+            }
+        },
+    ) {
+        sectionHeader(page.title, "最后修改：${page.updatedBy.ifBlank { "未知" }}")
+        textRow(shown)
+        val actions = mutableListOf<Pair<String, String>>()
+        if (canEdit) actions += "编辑" to "edit"
+        if (manager) actions += "最近修改" to "history"
+        if (actions.isNotEmpty()) actionRow(actions)
+        navRow(backText = "返回列表", closeText = "关闭")
+    }
 }
 
 private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {

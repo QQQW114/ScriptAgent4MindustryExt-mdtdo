@@ -8,6 +8,16 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.lib.CustomMenuParts.RESULT_BACK
+import coreMindustry.lib.CustomMenuParts.RESULT_CLOSE
+import coreMindustry.lib.CustomMenuParts.actionRow
+import coreMindustry.lib.CustomMenuParts.listRow
+import coreMindustry.lib.CustomMenuParts.sectionHeader
+import coreMindustry.lib.CustomMenuParts.textRow
+import coreMindustry.lib.customMenuSupported
+import coreMindustry.lib.sendCustomMenu
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import wayzer.lib.ForumPostCreatedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.MdtTextFormat
@@ -58,6 +68,10 @@ private val forumLevelRequirements = listOf(
 
 private val FORUM_SECTION_LIST_PAGE_SIZE = 6
 private val FORUM_LIST_PAGE_SIZE = 6
+/** 自定义菜单结果常量（新菜单用字符串 id 回传；`@close` 由框架处理，这里统一引用）。 */
+private val FORUM_RESULT_CLOSE = RESULT_CLOSE
+/** 自定义菜单正文上限：过长时截断，避免一次性下发巨量文本。 */
+private val FORUM_CUSTOM_MAX_BODY_CHARS = 3000
 private val FORUM_COMMENT_PAGE_SIZE = 5
 private val FORUM_BODY_PAGE_CHARS = 850
 private val FORUM_MAX_SECTION_CODE_LENGTH = 32
@@ -668,6 +682,8 @@ private suspend fun confirmPurgeForumPost(player: Player, postId: Int, trashPage
 
 private suspend fun openForumPostList(player: Player, sectionCode: String = "all", initialPage: Int = 1) {
     if (!ensureForumEnabled(player)) return
+    // 实验功能：优先尝试 160 自定义菜单（论坛式列表），失败则回退既有聊天菜单。
+    if (openForumPostListCustom(player, sectionCode, initialPage)) return
     db { cleanupForumPostsIfNeeded() }
     val section = db { forumSectionOrDefaultCached(sectionCode) }
     if (!canViewForumSection(player, section.code)) {
@@ -715,8 +731,226 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
     }.sendTo(player, FORUM_MENU_TIMEOUT_MILLIS)
 }
 
+/**
+ * 实验功能：帖子列表用 160 自定义菜单渲染（论坛式）。
+ *
+ * 列表行 = 标题（置顶另标） + 作者/时间/评论数，整行可点进详情；底部翻页、发布、返回分区、关闭。
+ * 返回 true 表示已成功下发；false 或异常由调用方回退到既有聊天菜单。
+ */
+private suspend fun openForumPostListCustom(player: Player, sectionCode: String, initialPage: Int): Boolean {
+    if (!forumEnabled()) return false
+    if (!customMenuSupported(player)) return false
+    val section = db { forumSectionOrDefaultCached(sectionCode) }
+    if (!canViewForumSection(player, section.code)) return false
+    val offset = (initialPage - 1).coerceAtLeast(0) * FORUM_LIST_PAGE_SIZE
+    val hiddenSections = hiddenForumSectionCodes(player)
+    val page = runCatching { db { forumPostListPageCached(section.code, offset, FORUM_LIST_PAGE_SIZE, hiddenSections) } }.getOrNull() ?: return false
+    return runCatching {
+        showForumPostListCustom(player, section, page.items, page.total, initialPage)
+        true
+    }.getOrElse {
+        logger.warning("帖子列表自定义菜单下发失败，回退聊天菜单：${it.message}")
+        false
+    }
+}
+
+private fun showForumPostListCustom(
+    player: Player,
+    section: MdtStorage.ForumSectionRecord,
+    items: List<ForumPostOption>,
+    total: Int,
+    requestPage: Int,
+) {
+    val canPost = canUseForum(player)
+    val totalPage = maxOf(1, (total + FORUM_LIST_PAGE_SIZE - 1) / FORUM_LIST_PAGE_SIZE)
+    val currentPage = requestPage.coerceIn(1, totalPage)
+
+    sendCustomMenu(
+        player = player,
+        title = "帖子：${section.name}",
+        onSelect = { result, _ ->
+            when {
+                result == FORUM_RESULT_CLOSE -> Unit
+                result.startsWith("page:") -> {
+                    val target = result.removePrefix("page:").toIntOrNull() ?: currentPage
+                    launch(Dispatchers.game) { openForumPostList(player, section.code, target) }
+                }
+                result == "new" -> launch(Dispatchers.game) { createForumPostFlow(player, section.code) }
+                result == "index" -> launch(Dispatchers.game) { openForumIndex(player) }
+                result.startsWith("open:") -> {
+                    val id = result.removePrefix("open:").toIntOrNull() ?: return@sendCustomMenu
+                    launch(Dispatchers.game) { openForumPost(player, id, section.code) }
+                }
+            }
+        },
+    ) {
+        sectionHeader(
+            "帖子：${section.name}",
+            if (total == 0) "当前分区暂无帖子" else "${section.description}（共 $total 条，第 $currentPage/$totalPage 页）"
+        )
+        if (items.isEmpty()) {
+            textRow("[gray]暂无帖子。" + if (canPost) "可点击下方「发布帖子」创建。" else "")
+        } else {
+            items.forEach { item ->
+                val post = item.post
+                val time = FORUM_TIME_FORMATTER.format(post.createdAt)
+                listRow(
+                    result = "open:${post.id}",
+                    title = (if (post.pinned) "[gold]📌 " else "") + post.title,
+                    subtitle = "#${post.id} · ${post.authorName} · $time",
+                    trailing = "💬 ${post.commentCount}",
+                    accent = if (post.pinned) "ffd257" else "4da3ff",
+                )
+            }
+        }
+        val nav = mutableListOf<Pair<String, String>>()
+        if (currentPage > 1) nav += "上一页" to "page:${currentPage - 1}"
+        nav += "$currentPage/$totalPage" to "refresh"
+        if (currentPage < totalPage) nav += "下一页" to "page:${currentPage + 1}"
+        nav += "关闭" to FORUM_RESULT_CLOSE
+        actionRow(nav)
+        val extra = mutableListOf<Pair<String, String>>()
+        if (canPost) extra += "发布帖子" to "new"
+        extra += "返回分区" to "index"
+        actionRow(extra)
+    }
+}
+
+/**
+ * 实验功能：帖子详情用 160 自定义菜单渲染（正文整页滚动 + 互动按钮）。
+ * 完整保留既有能力：赞/踩、评论、分享、编辑、置顶/锁定/保护锁、删除。
+ */
+private suspend fun openForumPostCustom(
+    player: Player,
+    postId: Int,
+    sectionCode: String,
+    initialPage: Int,
+): Boolean {
+    if (!forumEnabled()) return false
+    if (!customMenuSupported(player)) return false
+    val post = runCatching { db { forumPostCached(postId) } }.getOrNull() ?: return false
+    if (!canViewForumSection(player, post.sectionCode)) return false
+    val postSection = db { forumSectionOrDefaultCached(post.sectionCode) }
+    val protected = runCatching { db { post.id in protectedForumPostIdsCached() } }.getOrDefault(false)
+    val locked = runCatching { db { post.id in lockedForumPostIdsCached() } }.getOrDefault(false)
+    return runCatching {
+        showForumPostCustom(player, post, postSection, sectionCode, protected, locked, initialPage)
+        true
+    }.getOrElse {
+        logger.warning("帖子详情自定义菜单下发失败，回退聊天菜单：${it.message}")
+        false
+    }
+}
+
+private fun showForumPostCustom(
+    player: Player,
+    post: MdtStorage.ForumPostRecord,
+    postSection: MdtStorage.ForumSectionRecord,
+    sectionCode: String,
+    protected: Boolean,
+    locked: Boolean,
+    initialPage: Int,
+) {
+    val canEdit = canEditForumPost(player, post, protected)
+    val canManage = canManageForum(player)
+    val canAdmin = canAdminForum(player)
+    val social = socialActionsEnabled()
+    val bodyText = MdtTextFormat.render(post.body)
+    val shown = if (bodyText.length > FORUM_CUSTOM_MAX_BODY_CHARS) {
+        bodyText.take(FORUM_CUSTOM_MAX_BODY_CHARS) + "\n[gray]…（正文过长已截断，可用「查看评论」旁的分页入口或网页查看完整内容）"
+    } else bodyText
+
+    sendCustomMenu(
+        player = player,
+        title = post.title,
+        onSelect = { result, _ ->
+            val reopen = { launch(Dispatchers.game) { openForumPost(player, post.id, sectionCode, initialPage) } }
+            when {
+                result == FORUM_RESULT_CLOSE -> Unit
+                result == "@back" -> launch(Dispatchers.game) { openForumPostList(player, sectionCode) }
+                result == "comment" -> launch(Dispatchers.game) { createForumCommentFlow(player, post.id, sectionCode) }
+                result == "comments" -> launch(Dispatchers.game) { openForumComments(player, post.id, sectionCode) }
+                result == "share" -> launch(Dispatchers.game) { shareForumPostToChat(player, post.id, sectionCode) }
+                result == "edit" && canEdit -> launch(Dispatchers.game) { editForumPostFlow(player, post.id, sectionCode) }
+                result == "like" && social -> {
+                    launch(Dispatchers.game) {
+                        val ok = with(reputation) { likePlayer(player, post.authorUid, post.authorName) }
+                        if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "like") }) clearForumCache()
+                        openForumPost(player, post.id, sectionCode, initialPage)
+                    }
+                }
+                result == "dislike" && social -> {
+                    launch(Dispatchers.game) {
+                        val ok = with(reputation) { dislikePlayer(player, post.authorUid, post.authorName) }
+                        if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "dislike") }) clearForumCache()
+                        openForumPost(player, post.id, sectionCode, initialPage)
+                    }
+                }
+                result == "pin" && canManage -> {
+                    launch(Dispatchers.game) {
+                        if (db { MdtStorage.setForumPostPinned(post.id, !post.pinned) }) clearForumCache()
+                        player.sendMessage(if (post.pinned) "[green]已取消置顶" else "[green]已置顶此帖")
+                        openForumPost(player, post.id, sectionCode, initialPage)
+                    }
+                }
+                result == "lock" && canManage -> {
+                    launch(Dispatchers.game) {
+                        if (db { MdtStorage.setForumPostLocked(post.id, !locked) }) clearForumCache()
+                        player.sendMessage(if (locked) "[green]已解除帖子自动清理锁定" else "[green]已锁定此帖，自动清理不会删除它")
+                        openForumPost(player, post.id, sectionCode, initialPage)
+                    }
+                }
+                result == "protect" && canAdmin -> {
+                    launch(Dispatchers.game) {
+                        if (db { MdtStorage.setForumPostProtected(post.id, !protected) }) clearForumCache()
+                        player.sendMessage(if (protected) "[green]已解除帖子保护锁" else "[green]已设置保护锁，4级以下不可编辑/删除")
+                        openForumPost(player, post.id, sectionCode, initialPage)
+                    }
+                }
+                result == "delete" && canManage -> launch(Dispatchers.game) { confirmDeleteForumPost(player, post.id, sectionCode) }
+                else -> reopen()
+            }
+        },
+    ) {
+        val time = FORUM_TIME_FORMATTER.format(post.createdAt)
+        sectionHeader(
+            post.title,
+            "#${post.id} · ${post.authorName} · $time · 分区 ${postSection.name}" +
+                (if (post.pinned) " · [gold]已置顶" else "") +
+                (if (protected) " · [red]保护锁开启" else "")
+        )
+        textRow(shown)
+        val first = mutableListOf<Pair<String, String>>()
+        if (social) {
+            first += "赞作者" to "like"
+            first += "踩作者" to "dislike"
+        }
+        first += "看评论(${post.commentCount})" to "comments"
+        first += "发评论" to "comment"
+        first += "分享" to "share"
+        actionRow(first)
+
+        val second = mutableListOf<Pair<String, String>>()
+        if (canEdit) second += "修改" to "edit"
+        if (canManage) {
+            second += (if (post.pinned) "取消置顶" else "置顶") to "pin"
+            second += (if (locked) "解除锁清理" else "锁定防清理") to "lock"
+        }
+        if (canAdmin) second += (if (protected) "解除保护锁" else "设置保护锁") to "protect"
+        if (second.isNotEmpty()) actionRow(second)
+
+        val third = mutableListOf<Pair<String, String>>()
+        if (canManage && (!protected || canAdmin)) third += "删除此帖" to "delete"
+        third += "返回列表" to "@back"
+        third += "关闭" to FORUM_RESULT_CLOSE
+        actionRow(third)
+    }
+}
+
 private suspend fun openForumPost(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
     if (!ensureForumEnabled(player)) return
+    // 实验功能：优先尝试 160 自定义菜单（论坛式正文 + 互动按钮）。
+    if (openForumPostCustom(player, postId, sectionCode, initialPage)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
         openForumPostList(player, sectionCode)
