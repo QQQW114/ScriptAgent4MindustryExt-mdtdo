@@ -6,6 +6,7 @@ package wayzer.map
 
 import arc.Core
 import mindustry.game.EventType
+import mindustry.gen.Fire
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Unit
@@ -92,9 +93,12 @@ private fun ensureSnapshot() {
 }
 
 private fun clearFires(): Int {
-    val fires = Groups.fire.toList()
-    fires.forEach { it.remove() }
-    return fires.size
+    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），这里从 Groups.all 中筛选 Fire 实体清理。
+    var removed = 0
+    Groups.all.each { entity ->
+        if (entity is Fire) runCatching { entity.remove() }.onSuccess { removed++ }
+    }
+    return removed
 }
 
 private fun clearBullets(): Int {

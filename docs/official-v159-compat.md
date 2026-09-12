@@ -1,6 +1,7 @@
-# 官方 Mindustry v159.x / MindustryX B485（v159.7）兼容层说明
+# 官方 Mindustry 兼容层说明（v160.x / MindustryX B491 起，含 v159.x / B485 历史）
 
-> 当前生产候选基线为 MindustryX `prerelease-2026.08.12.B485` / Mindustry v159.7，并继续保留官方端与旧 API 的反射降级。ScriptAgent 仍按项目当前版本独立维护，不与本轮网络补丁混合升级。
+> 当前生产候选基线为 MindustryX `prerelease-2026.09.11.B491` / Mindustry **v160.1**（2026-09-12 跟进），
+> 上一基线为 `prerelease-2026.08.12.B485` / v159.7。ScriptAgent 仍按项目当前版本独立维护，不与游戏版本混合升级。
 >
 > **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。本基线只是当前候选快照，跟进新版本由用户拍板后更新本文档与候选构建物。
 
@@ -10,6 +11,26 @@
 - 官方端缺少的 X API 不直接引用，改为反射检测；缺失时只降级对应边缘功能，避免整条依赖链加载失败。
 - 不为官方端硬造高风险同步/网络 Hook；无法稳定兼容的实验功能直接 no-op，并打印明确警告。
 - 兼容层集中使用 `*Compat`、运行时 `Class.forName(...)`、`javaClass.getField/getDeclaredField(...)` 等方式，方便搜索和切除。
+
+## 2026-09-12：跟进 Mindustry 160.1 / MindustryX B491
+
+- 目标构建：MindustryX `prerelease-2026.09.11.B491` 的 `server-2026.09.11.B491.jar`
+  （`version.properties` 内 `build=160.1`，SHA-256 `BC6ADBBF32E43AA98B9218F26641DA04D1507E188F4F78CAA2E598F5B234D3C2`）。
+  注意 MindustryX **正式发行版 X36 仍是 v159.7**，160 目前只有 `prerelease-*` 构建。
+- **160 的破坏性改动（本次唯一需要适配的点）**：生成的 `mindustry.gen.Groups` 中
+  **移除了 `fire` 与 `puddle` 两个实体分组**；火焰与液体洼地改为按 tile 存储，
+  新增 `Tiles.getFire/setFire/getPuddle/setPuddle`，业务入口为 `mindustry.entities.Fires`
+  （`create/get/has/extinguish/remove/register`）与 `mindustry.entities.Puddles`
+  （`deposit/get/hasLiquid/remove/register`）。
+- 适配口径：不再依赖版本专属分组字段，统一改为遍历 `Groups.all`（160 中仍包含 Fire/Puddle 实体，
+  二者依旧实现 `Entityc` 并具备 `remove()`）并按实体类型筛选。涉及
+  `wayzer/reGrief/limitFire.kts`、`wayzer/map/performanceGuard.kts`、
+  `wayzer/map/serverPressureActions.kts`、`coreMindustry/contentsTweaker.kts`、
+  `wayzer/user/ext/skills.kts` 共 5 处；细节见 [脚本维护总览](scripts-maintenance.md) 2026-09-12 条目。
+- 已核对 160 仍保留的接口：`state.rules.fire`（`public boolean fire`，可读可写）、`Fires.*`、`Puddles.*`、
+  `Groups.weather`、`Groups.all/unit/build/bullet/player`。
+- 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`（适配前为 `157/131/129/出错22`），
+  火焰链路运行期实测通过（造 60 格火 → `limitFire` 触发自动关闭火焰）。
 
 ## 2026-08-14：跟进 B485 发行版（原 B480 自定义专服补丁已废弃）
 

@@ -14,6 +14,7 @@ import mindustry.game.MapObjectives
 import mindustry.gen.Building
 import mindustry.gen.Groups
 import mindustry.gen.Payloadc
+import mindustry.gen.Puddle
 import mindustry.type.Item
 import mindustry.type.ItemStack
 import mindustry.type.Liquid
@@ -523,7 +524,8 @@ private fun verifyDynamicContentCleared(targets: DynamicContentTargets, report: 
     if (Groups.player.any { it.unit()?.type in targets.units }) report.addFailure("仍有玩家附身旧DP单位")
     if (Groups.unit.any { it.type in targets.units }) report.addFailure("仍有旧DP单位")
     if (Groups.build.any { it.block in targets.blocks }) report.addFailure("仍有旧DP建筑")
-    if (Groups.puddle.any { it.liquid in targets.liquids }) report.addFailure("仍有旧DP液体洼地")
+    // 160 起原版移除了 Groups.puddle 分组（液体洼地改为按 tile 存储），改为从 Groups.all 中筛选。
+    if (Groups.all.any { it is Puddle && it.liquid in targets.liquids }) report.addFailure("仍有旧DP液体洼地")
     if (Groups.weather.any { it.weather in targets.weather }) report.addFailure("仍有旧DP天气")
     if (Groups.bullet.size() > 0) report.addFailure("仍有未清理子弹")
 
@@ -675,15 +677,20 @@ fun prepareForDataAssetReload(reason: String): DynamicContentCleanupReport {
         }
     }
 
-    Groups.puddle.toList().filter { it.liquid in targets.liquids }.forEach { puddle ->
-        runCatching { puddle.remove() }
-            .onSuccess { report.removedPuddles++ }
-            .onFailure { report.addFailure("移除旧DP液体洼地失败: ${it.message}") }
+    // 160 起原版移除了 Groups.puddle 分组，改为从 Groups.all 中筛选液体洼地实体后逐个移除。
+    Groups.all.each { entity ->
+        if (entity is Puddle && entity.liquid in targets.liquids) {
+            runCatching { entity.remove() }
+                .onSuccess { report.removedPuddles++ }
+                .onFailure { report.addFailure("移除旧DP液体洼地失败: ${it.message}") }
+        }
     }
-    Groups.weather.toList().filter { it.weather in targets.weather }.forEach { weather ->
-        runCatching { weather.remove() }
-            .onSuccess { report.removedWeather++ }
-            .onFailure { report.addFailure("移除旧DP天气失败: ${it.message}") }
+    Groups.weather.each { weather ->
+        if (weather.weather in targets.weather) {
+            runCatching { weather.remove() }
+                .onSuccess { report.removedWeather++ }
+                .onFailure { report.addFailure("移除旧DP天气失败: ${it.message}") }
+        }
     }
 
     Vars.world.tiles?.forEach { tile ->

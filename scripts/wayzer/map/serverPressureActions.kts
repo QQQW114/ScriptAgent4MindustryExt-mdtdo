@@ -13,6 +13,7 @@ import mindustry.game.EventType
 import mindustry.game.Team
 import mindustry.gen.BuildingTetherc
 import mindustry.gen.Call
+import mindustry.gen.Fire
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.TimedKillc
@@ -170,8 +171,12 @@ private fun setUnitCapRule(value: Int) =
     syncIntRule("unitCap", state.rules.unitCap, value) { state.rules.unitCap = it }
 
 private fun clearFires(): Int {
-    val fires = Groups.fire.toList()
-    return fires.count { runCatching { it.remove() }.isSuccess }
+    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），这里从 Groups.all 中筛选 Fire 实体清理。
+    var removed = 0
+    Groups.all.each { entity ->
+        if (entity is Fire) runCatching { entity.remove() }.onSuccess { removed++ }
+    }
+    return removed
 }
 
 private fun clearBullets(): Int {

@@ -22,6 +22,59 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-12：跟进 Mindustry 160 / MindustryX B491 —— 移除 `Groups.fire` / `Groups.puddle` 依赖
+
+类型：上游大版本适配（v159.7 → v160.1）
+
+背景：Mindustry 上游发布 **v160.1**（官方 `Mindustry-master` 已跟进；MindustryX 正式版 X36 仍是 v159.7，
+160 取 `prerelease-2026.09.11.B491`，其 `version.properties` 内 `build=160.1`，子模块 Arc v160.1 /
+Mindustry 84cdf2b）。**160 从生成的 `Groups` 中移除了 `fire` 与 `puddle` 两个实体分组**
+（火焰/液体洼地改为按 tile 存储，`Tiles.getFire/setFire/getPuddle/setPuddle` + `Fires`/`Puddles` 工具类），
+插件中 5 处直接引用 `Groups.fire`/`Groups.puddle` 的代码因此在 160 上编译失败，并级联拖垮 19 个脚本。
+
+涉及文件：
+
+- `mdtserver/config/scripts/wayzer/reGrief/limitFire.kts`
+- `mdtserver/config/scripts/wayzer/map/performanceGuard.kts`
+- `mdtserver/config/scripts/wayzer/map/serverPressureActions.kts`
+- `mdtserver/config/scripts/coreMindustry/contentsTweaker.kts`
+- `mdtserver/config/scripts/wayzer/user/ext/skills.kts`
+- `docs/scripts-maintenance.md`、`docs/project-memory.md`、`README.md`、`../参考项目/README.md`
+
+改动（统一口径：改为遍历 `Groups.all` 并按实体类型筛选，属于版本无关写法）：
+
+- `wayzer/reGrief/limitFire.kts`：`val fireCount get() = Groups.fire.size()` →
+  `Groups.all.count { it is Fire }`，新增 `import mindustry.gen.Fire`。
+  这是用户提出的"灭火/关闭火焰"问题所在：160 上 `Groups.fire` 已不存在，脚本编译失败后
+  "火焰过多自动关闭火焰"的保护随之失效。
+- `wayzer/map/performanceGuard.kts` `clearFires()`：`Groups.fire.toList().forEach { it.remove() }` →
+  遍历 `Groups.all`，对 `Fire` 实体逐个 `remove()` 并计数。
+- `wayzer/map/serverPressureActions.kts` `clearFires()`：同上（原实现同样用 `Groups.fire`）。
+- `coreMindustry/contentsTweaker.kts`：动态 Content 清理的洼地检查与清理改用 `Groups.all` +
+  `is Puddle`（新增 `import mindustry.gen.Puddle`）；天气清理顺带由 `Groups.weather.toList()`
+  改为 `Groups.weather.each`（行为不变，去掉一次无谓拷贝）。
+- `wayzer/user/ext/skills.kts` 的 `clearNearbyFires()`：范围内火焰兜底清理由 `Groups.fire.toList()`
+  改为遍历 `Groups.all` 并筛 `mindustry.gen.Fire`；`Fires.extinguish(tile, 1f)` / `Fires.remove(tile)`
+  在 160 仍存在，保持不变。
+- 已核对 160 源码确认**未受影响**的接口：`state.rules.fire`（`public boolean fire`，可读可写）、
+  `Fires.has/get/extinguish/remove`、`Puddles.get/remove`、`Groups.weather` 及 `all/unit/build/bullet/player`。
+
+验证状态（2026-09-12，本地测试副本 `.tmp-160test` + `server-2026.09.11.B491.jar`）：
+
+- **冷启动通过**：`共找到157脚本,加载成功153,启用成功148,出错0`，`Server loaded`，
+  与 159 基线（B485）计数完全一致；编译错误 0、异常 0；命令 Socket 正常。
+- 适配前同一环境为 `157/131/129/出错22`（3 个根脚本编译失败：`coreMindustry/contentsTweaker`、
+  `wayzer/reGrief/limitFire`、`wayzer/map/performanceGuard`，级联其余 19 个）。
+- **运行期实测火焰链路**（命令 Socket + `/js` 造火）：造 60 格火焰后 `Groups.all.count { it is Fire }`
+  读数为 60；把测试副本阈值临时降为 1 后 `limitFire` 真实触发——控制台出现
+  `火焰过多造成服务器卡顿,自动关闭火焰`，且 `Vars.state.rules.fire == false`；随后按新逻辑清理无异常。
+- 测试工具：`.agents/test160.ps1`（冷启动+错误汇总）、`.agents/test160-fire.ps1`（火焰路径）、
+  `.agents/test160-limitfire.ps1`（触发路径）、`.agents/test160-run.cmd`（启动器，stdout 落文件避免管道死锁）。
+- 测试进程已结束、6567/6859/10099 端口释放；测试副本与主工作区源文件已同步（临时阈值已还原）。
+
+未覆盖边界：真实客户端进服、菜单/技能交互、多人压力，以及除火焰/洼地外的运行期长时行为；
+生产部署与实测仍需用户/运维执行。
+
 ## 2026-09-11：服务器状态统计改版 schema 2（移除 MDC、新增 14 天/24 小时曲线与社区互动）
 
 类型：统计系统改版（数据口径变更 + 新增明细表 + Web 重做）

@@ -523,13 +523,15 @@ fun clearNearbyFires(player: Player, radiusTiles: Int = 10): Int {
         }
     }
 
-    Groups.fire.toList().forEach { fire ->
-        if (Mathf.dst(fire.x, fire.y, unit.x, unit.y) > radius) return@forEach
-        val tile = fire.tile
-        if (tile != null && !removedTiles.add(tile.pos())) return@forEach
-        Call.effect(Fx.fireRemove, fire.x, fire.y, 0f, extinguishColor)
-        fire.remove()
-        removed++
+    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），改为从 Groups.all 中筛选火焰实体。
+    Groups.all.each { entity ->
+        if (entity is mindustry.gen.Fire && Mathf.dst(entity.x, entity.y, unit.x, unit.y) <= radius) {
+            val t = entity.tile
+            if (t != null && !removedTiles.add(t.pos())) return@each
+            Call.effect(Fx.fireRemove, entity.x, entity.y, 0f, extinguishColor)
+            entity.remove()
+            removed++
+        }
     }
     emitTsunamiWaterScatter(player)
     Call.effect(Fx.pointShockwave, unit.x, unit.y, radius, extinguishColor)
