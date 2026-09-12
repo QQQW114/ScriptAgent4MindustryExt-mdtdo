@@ -13,16 +13,7 @@ package wayzer.user
 
 import coreMindustry.MenuBuilder
 import coreMindustry.PagedMenuBuilder
-import coreMindustry.lib.CustomMenuParts.RESULT_CLOSE
-import coreMindustry.lib.CustomMenuParts.actionRow
-import coreMindustry.lib.CustomMenuParts.listRow
-import coreMindustry.lib.CustomMenuParts.sectionHeader
-import coreMindustry.lib.CustomMenuParts.textRow
-import coreMindustry.lib.customMenuSupported
 import coreMindustry.lib.hasPermission
-import coreMindustry.lib.sendCustomMenu
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import wayzer.lib.DatabaseFeature
 import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
@@ -86,8 +77,6 @@ private val playerTitle = contextScript<PlayerTitle>()
 private val textInput = contextScript<coreMindustry.UtilTextInput>()
 
 private val ACHIEVEMENT_COMPLETED_CACHE_TTL_MILLIS = 60_000L
-/** 自定义菜单结果常量（新菜单用字符串 id 回传；`@close` 由框架处理，这里统一引用）。 */
-private val ACHIEVEMENT_RESULT_CLOSE = RESULT_CLOSE
 private val CUSTOM_ACHIEVEMENT_CACHE_TTL_MILLIS = 60_000L
 private val CUSTOM_ACHIEVEMENT_CODE_REGEX = Regex("[a-zA-Z0-9_\\-]{2,64}")
 private val ACHIEVEMENT_CHECK_DEBOUNCE_MILLIS by config.key(1_200L, "成就自动检测防抖时间(ms)，用于合并连续点赞/点踩/认可/MDC等事件")
@@ -518,82 +507,15 @@ private fun showAchievement(uid: String, player: Player, achievement: Achievemen
     broadcast("[gold]${player.name}[white]正在展示ta的[accent]${achievement.name}[gold]成就！[white] 奖励：${rewardText(achievement)}".with())
 }
 
-/**
- * 实验功能：成就列表用 160 自定义菜单渲染（论坛式卡片列表）。
- *
- * 每行 = 成就名（已完成用绿色）+ 达成要求/奖励摘要，右侧进度标记；整行可点打开成就详情菜单。
- * 返回 true 表示已成功下发；false 或异常由调用方回退既有分页菜单。
- */
-private fun showAchievementMenuCustom(
-    player: Player,
-    defs: List<AchievementDefinition>,
-    completed: Set<String>,
-    canAdmin: Boolean,
-): Boolean {
-    if (!customMenuSupported(player)) return false
-    val uid = PlayerData[player].id
-    val knownCodes = defs.mapTo(hashSetOf()) { it.code }
-    val completedCount = completed.count { it in knownCodes }
-    return runCatching {
-        sendCustomMenu(
-            player = player,
-            title = "成就系统",
-            onSelect = { result, _ ->
-                when {
-                    result == ACHIEVEMENT_RESULT_CLOSE -> Unit
-                    result == "admin" && canAdmin -> launch(Dispatchers.game) { showAchievementAdminMenu(player) }
-                    result.startsWith("open:") -> {
-                        val code = result.removePrefix("open:")
-                        val def = defs.firstOrNull { it.code == code } ?: return@sendCustomMenu
-                        launch(Dispatchers.game) { showAchievement(uid, player, def) }
-                    }
-                }
-            },
-        ) {
-            sectionHeader(
-                "成就系统",
-                "完成进度：$completedCount/${defs.size}（点击条目查看达成要求与奖励；已完成的可向全服展示）"
-            )
-            if (defs.isEmpty()) {
-                textRow("[gray]当前没有可显示的成就。")
-            } else {
-                defs.forEach { item ->
-                    val done = item.code in completed
-                    val hiddenLocked = item.hidden && !done
-                    listRow(
-                        result = "open:${item.code}",
-                        title = if (hiddenLocked) "？？？（隐藏成就）" else item.name,
-                        subtitle = when {
-                            hiddenLocked -> "隐藏成就：完成后才会公开名称与奖励"
-                            done -> "已完成 · 奖励：${rewardText(item)}"
-                            else -> "要求：${item.requirement} · 奖励：${rewardText(item)}"
-                        },
-                        trailing = if (done) "✔ 已完成" else "未完成",
-                        accent = if (done) "3ddc84" else if (hiddenLocked) "9aa1b5" else "ffd257",
-                    )
-                }
-            }
-            if (canAdmin) actionRow(listOf("成就管理" to "admin"))
-            actionRow(listOf("关闭" to ACHIEVEMENT_RESULT_CLOSE))
-        }
-        true
-    }.getOrElse {
-        logger.warning("成就列表自定义菜单下发失败，回退分页菜单：${it.message}")
-        false
-    }
-}
-
 private suspend fun showAchievementMenu(player: Player) {
     if (!ensureAchievementEnabled(player)) return
     val uid = PlayerData[player].id
     checkAchievements(uid, player)
     val completed = completedAchievements(uid)
     val defs = allAchievementDefinitions(includeDisabledCustom = false)
-    val canAdmin = player.hasPermission("wayzer.admin.achievement")
-    // 实验功能：优先尝试 160 自定义菜单（论坛式卡片列表）。
-    if (showAchievementMenuCustom(player, defs, completed, canAdmin)) return
     val knownCodes = defs.mapTo(hashSetOf()) { it.code }
     val completedCount = completed.count { it in knownCodes }
+    val canAdmin = player.hasPermission("wayzer.admin.achievement")
 
     object : PagedMenuBuilder<AchievementDefinition>(defs, prePage = 6) {
         override suspend fun renderItem(item: AchievementDefinition) {

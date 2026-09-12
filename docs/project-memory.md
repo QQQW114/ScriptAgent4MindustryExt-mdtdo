@@ -266,13 +266,12 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
-- **2026-09-12（第四批，实验功能）**：基于 **Mindustry 160.1 新增的服务端下发自定义菜单**（`Call.menuBuilder` +
-  `mindustry.ui.builder` + `MenuBuilderOptionChooseEvent`）实现"论坛式"菜单，新增两个库文件
-  `coreMindustry/lib/customMenu.kt`（会话层）与 `customMenuParts.kt`（渲染件），并把 **wiki、帖子列表、
-  商店列表、成就系统**四个入口接入（各自**完整保留原聊天菜单作为回退**，`customMenuSupported` 判定 + 异常兜底）。
-  关键约束：`menuId` 实为客户端监听器数组下标（`registerMenuBuilder` 只增不删），故用"监听器池 + 全局递增 id + token 校验"。
-  另记录一条重要环境事实：**脚本（.kts）之间不能互相 import 顶层函数**，跨脚本可见的只有 `lib/*.kt`。
-  详见 [自定义菜单（实验）](custom-menu.md)。冷启动 `159/155/150/0`；**未做真实客户端验证**。
+- **2026-09-12（第四批，实验功能）**：尝试基于 **Mindustry 160.1 的服务端下发自定义菜单**（`Call.menuBuilder` +
+  `mindustry.ui.builder`）把 wiki、帖子列表、商店、成就改成"论坛式"界面（新增两个 `coreMindustry/lib/*.kt` 库文件并接入四个入口）。
+  **当日按用户实测反馈全部回退**：按钮缩放异常、界面无法适配、缺失贴图——"实际几乎全是问题"。
+  四个脚本已还原到接入前版本，两个库文件已删除；复测冷启动 `158/154/149/0` 与接入前一致。
+  结论与踩点保留在 [自定义菜单（尝试与回退记录）](custom-menu.md)（含一条重要环境事实：**脚本(.kts)之间不能互相 import 顶层函数**，
+  跨脚本可见的只有 `lib/*.kt`）。**该方向在解决"贴图存在性 + 尺寸适配"之前不再重启。**
 - **2026-09-12（第三批）**：suffixmark 自定义后缀标记从 `@Savable`（仅会话内热重载、重启即丢）改为
   **落库持久化**（`MdtSettings` 键 `suffix.customMarks`）；新增出生点保护 `spawnOverlapError` 并接入
   3x3/4x4 核心区、初级/标准预制防线、物品源、E星核心共 6 个技能（用户反馈这些技能会把敌人出生点卡掉）；
