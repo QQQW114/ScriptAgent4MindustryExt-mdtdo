@@ -55,6 +55,7 @@ private val hardExternalCpBytes by config.key(64_000_000L, "外部CP硬读取上
 private val worldSyncDelayMillis by config.key(350L, "外部CP变更后分批同步玩家间隔(ms)")
 private val largeWorldSyncDelayMillis by config.key(1500L, "大文件外部CP变更后分批同步玩家间隔(ms)")
 private val contentModuleGuardMillis by config.key(30_000L, "外部DP变更后持续修复旧建筑物品/液体模块容量的时长(ms)")
+private val CONTENT_MODULE_GUARD_SCAN_INTERVAL_MILLIS = 250L
 private val maxZipEntries by config.key(16384, "v159 ZIP CP允许的最大文件数")
 private val maxZipEntryBytes by config.key(32_000_000L, "v159 ZIP CP单文件解压上限")
 private val maxZipExpandedBytes by config.key(128_000_000L, "v159 ZIP CP累计解压上限")
@@ -106,6 +107,8 @@ private var cpMutationInProgress = false
 private var contentModuleGuardUntilMillis = 0L
 private var contentModuleGuardReason = ""
 private var contentModuleGuardLastLogMillis = 0L
+/** 短期守护的扫描间隔：原本每帧一次全量 Building 扫描，2026-09-12 起降频到该间隔。 */
+private var contentModuleGuardLastScanMillis = 0L
 
 private fun externalCpDir(): File = File(Vars.dataDirectory.file(), "scripts/$externalCpDirName")
 
@@ -1549,8 +1552,14 @@ listen(EventType.Trigger.update) {
             flushContentModuleGuardRepairs(now)
             contentModuleGuardUntilMillis = 0L
             contentModuleGuardReason = ""
-        } else {
-            // 高频守护只扫描活跃 Building；暂时离组但仍挂在 tile.build 的对象已在 DP 变更时一次性覆盖。
+        } else if (now - contentModuleGuardLastScanMillis >= CONTENT_MODULE_GUARD_SCAN_INTERVAL_MILLIS) {
+            // 2026-09-12 性能修复：原来是**每个游戏帧**都跑一次全量 Building 扫描
+            //（`Groups.build.toList()` + 逐建筑修复模块容量），默认守护 30 秒 ≈ 1800 次全扫描；
+            // 建筑数千～数万时每次都是 O(buildings)，在帧预算里占比可观（属"热循环全量扫实体"）。
+            // 现降频到每 250ms 一次（≈4 次/秒，总扫描量降约 15 倍），保护语义不变：
+            // 修复本身幂等，250ms 的发现延迟对这种"防止后续邻接更新越界"的守护没有实质影响。
+            contentModuleGuardLastScanMillis = now
+            // 只扫描活跃 Building；暂时离组但仍挂在 tile.build 的对象已在 DP 变更时一次性覆盖。
             runCatching { repairCurrentContentModuleCapacities(Groups.build.toList(), validate = false) }
                 .onSuccess { stats ->
                     if (stats.total() > 0) {

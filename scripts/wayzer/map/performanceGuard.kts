@@ -6,7 +6,6 @@ package wayzer.map
 
 import arc.Core
 import mindustry.game.EventType
-import mindustry.gen.Fire
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Unit
@@ -92,14 +91,10 @@ private fun ensureSnapshot() {
     )
 }
 
-private fun clearFires(): Int {
-    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），这里从 Groups.all 中筛选 Fire 实体清理。
-    var removed = 0
-    Groups.all.each { entity ->
-        if (entity is Fire) runCatching { entity.remove() }.onSuccess { removed++ }
-    }
-    return removed
-}
+// 2026-09-12：**移除火焰清理**。原 Groups.fire 在 160 被上游移除（火焰改为按 tile 存储），
+// 替代写法是遍历 Groups.all 筛 Fire 实体——但那是"每次清理都全量扫实体"，
+// 实体多时开销随总数线性增长，属于明确要避免的热路径全量遍历（用户已确认移除）。
+// 因此本脚本不再清理火焰，只保留"关闭火焰规则"这一 O(1) 措施（见 applyConservativeLevel）。
 
 private fun clearBullets(): Int {
     val bullets = Groups.bullet.toList()
@@ -136,13 +131,12 @@ private fun applyConservativeLevel(level: Int, avg: Double) {
     ensureSnapshot()
     val effectiveLevel = maxOf(activeLevel, level)
 
-    var fires = 0
     var bullets = 0
     var units = 0
 
     if (effectiveLevel >= 1) {
+        // 只关掉火焰规则（O(1)，阻止继续蔓延）；不再遍历实体清理已有火焰（原因见文件上方说明）。
         state.rules.fire = false
-        fires = clearFires()
         bullets = clearBullets()
     }
 
@@ -162,10 +156,9 @@ private fun applyConservativeLevel(level: Int, avg: Double) {
     if (effectiveLevel > activeLevel) {
         broadcast(
             ("[yellow][性能优化] TPS均值 [white]{tps}[yellow]，进入保守优化等级 [white]{level}[yellow]。" +
-                    " 清理: 火焰{fires}/子弹{bullets}/单位{units}").with(
+                    " 清理: 子弹{bullets}/单位{units}").with(
                 "tps" to avg.roundToInt(),
                 "level" to effectiveLevel,
-                "fires" to fires,
                 "bullets" to bullets,
                 "units" to units,
             )
@@ -257,7 +250,7 @@ fun conservativeStatusText(): String {
         |[cyan]性能优化模式：[white]$mode
         |[cyan]性能优化等级：[white]$activeLevel
         |[cyan]TPS均值：[white]${avg.roundToInt()}[] / 当前：[white]${currentTps()}
-        |[cyan]PVP自动介入：[white]开启[]（标准性能优化也会介入PVP，但优先清理火焰/子弹/非玩家单位）
+        |[cyan]PVP自动介入：[white]开启[]（标准性能优化也会介入PVP，但优先清理子弹/非玩家单位）
         |[gray]标准/旧实验性模式已合并；自动检测/执行由 serverPressure + serverPressureActions 统一负责。
     """.trimMargin()
 }

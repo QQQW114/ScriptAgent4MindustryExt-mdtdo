@@ -46,23 +46,27 @@ README 只提供入口和简要基线；长期决策、用户偏好、重大历�
 
 ## 当前候选基线（以实际文件复核为准）
 
-- **当前基线：Mindustry v160.1 / MindustryX prerelease 2026.09.11.B491**（2026-09-12 起启用）；
-- 基线 JAR：`mdtserver/server-2026.09.11.B491.jar`（**MindustryX 发行版**，`version.properties` 内 `build=160.1`），
+- **当前基线：Mindustry v160.1 / MindustryX 正式发行版 X37（`v2026.09.X37`，2026-09-13 起启用）**；
+- 基线 JAR：`mdtserver/server-2026.09.X37.jar`（**MindustryX 发行版**，`version.properties` 内 `build=160.1`），
   已在 `server.properties` 的 `jar=` 中显式指定为启动目标；
 - 获取方式：直接从 GitHub 发行版下载（`TinyLake/MindustryX` releases 的 `server-*.jar`），不再自建/打补丁；
-  **MindustryX 正式发行版 X36 仍是 v159.7，160 目前只有 `prerelease-*` 构建**；
-- 基线 JAR SHA-256：`BC6ADBBF32E43AA98B9218F26641DA04D1507E188F4F78CAA2E598F5B234D3C2`；
-- 回滚：`server-2026.08.12.B485.jar`（v159.7，最后一个稳定发行线）保留在 `mdtserver/` 内，
-  需要回滚时把 `server.properties` 的 `jar=` 改回该文件名即可。
+  `v2026.09.X37` 与 prerelease `2026.09.12.B493` 是同一提交 `dc388e9`，游戏版本仍是 v160.1；
+- 基线 JAR SHA-256：`F1CD2B5AFB9ED5395707F228F0848FCE4C0872E14171D4C80941C53226F7B575`；
+- 回滚：`server-2026.09.11.B491.jar`（同 v160.1 的上一构建）与 `server-2026.08.12.B485.jar`
+  （v159.7，最后一个稳定发行线）都保留在 `mdtserver/` 内，需要回滚时把 `server.properties` 的
+  `jar=` 改回对应文件名即可。
 
 脚本硬依赖 MindustryX 端（`trafficMonitor.kts` 直接 `import mindustryX.events.SendPacketEvent`），
 **不能用官方 Mindustry 的 jar 顶替**。
 
 B485 起不再需要 MDT 自定义补丁：B480 时代的 `0075`（批量 SendPacketEvent）与 `0076`（可靠自定义实体快照）所针对的 API 已被上游移除/重构；上行统计改为 Windows 网卡计数器（`netstat -e`），核心机恢复改为 `checkSpawn()` + 原版快照。
-**160 适配**（2026-09-12）：160 移除了生成的 `Groups.fire` / `Groups.puddle` 实体分组（火焰与液体洼地改为按 tile 存储），
-插件中 5 处引用已改为遍历 `Groups.all` 按类型筛选（`limitFire` 在 160 上曾以 `NoSuchFieldError` 每 tick 炸服，
-上游 issue 见 [way-zer/ScriptAgent4MindustryExt#49](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/49)）；
-冷启动 `157/153/148/0` 与 159 基线一致，详见 [脚本维护总览](docs/scripts-maintenance.md) 2026-09-12 条目。
+**160 适配**（2026-09-12，2026-09-13 修订）：160 移除了生成的 `Groups.fire` / `Groups.puddle` 实体分组（火焰与液体洼地改为按 tile 存储）。
+09-12 曾把 5 处引用统一改为遍历 `Groups.all` 按类型筛选，**该口径已于 09-13 按用户要求撤回**：
+`wayzer/reGrief/limitFire.kts` 整脚本删除（它每 tick 全量扫实体数火焰，也是 160 上 `NoSuchFieldError` 每 tick 炸服的现场，
+上游 issue 见 [way-zer/ScriptAgent4MindustryExt#49](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/49)），
+`performanceGuard.kts` / `serverPressureActions.kts` 的 `clearFires()` 随之删除（保留 O(1) 的 `state.rules.fire=false` 规则开关），
+灭火技能改为纯 tile 实现；现在只有 `contentsTweaker.kts` 的 DP 卸载冷路径还允许 `Groups.all`。
+冷启动 `157/153/148/0`（脚本数 158 → 157 即删除 `limitFire.kts`），B491 与 X37 结果一致，详见 [脚本维护总览](docs/scripts-maintenance.md) 2026-09-13 条目。
 **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。以上基线只是当前候选快照而非永久目标。
 **日常跟进口径**（2026-09-12 用户明确）：**常态化跟进上游最新版本**（Mindustry / MindustryX / 参考项目）；
 **ScriptAgent 插件以本项目自行维护为主**，只在出现**较大变动的发行版更新**时再评估是否跟进。

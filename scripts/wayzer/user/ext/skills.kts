@@ -549,9 +549,13 @@ fun clearNearbyFires(player: Player, radiusTiles: Int = 10): Int {
     val radius = radiusTiles * 8f
     val centerX = unit.tileX()
     val centerY = unit.tileY()
-    val removedTiles = mutableSetOf<Int>()
     var removed = 0
 
+    // 2026-09-12：**移除对火焰实体/`Groups.all` 的引用**。
+    // 160 起原版移除了 `Groups.fire` 分组（火焰改为按 tile 存储），替代写法是遍历 `Groups.all` 筛 `Fire`——
+    // 那是"每次释放都全量扫实体"，实体多时开销随总数线性增长，属于明确要避免的热路径全量遍历。
+    // 因此这里只保留**按 tile 定位**的清理（局部 2×2 半径范围内的格，与实体总数无关，
+    // 且原版 `Fires.has/get/extinguish/remove` 在 160 仍存在）。
     for (x in centerX - radiusTiles..centerX + radiusTiles) {
         for (y in centerY - radiusTiles..centerY + radiusTiles) {
             if (Mathf.dst(x.toFloat(), y.toFloat(), centerX.toFloat(), centerY.toFloat()) > radiusTiles + 0.5f) continue
@@ -559,21 +563,11 @@ fun clearNearbyFires(player: Player, radiusTiles: Int = 10): Int {
             if (!Fires.has(tile.x.toInt(), tile.y.toInt())) continue
             Fires.extinguish(tile, 1f)
             Fires.remove(tile)
-            if (removedTiles.add(tile.pos())) removed++
+            removed++
             Call.effect(Fx.fireRemove, tile.worldx(), tile.worldy(), 0f, extinguishColor)
         }
     }
 
-    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），改为从 Groups.all 中筛选火焰实体。
-    Groups.all.each { entity ->
-        if (entity is mindustry.gen.Fire && Mathf.dst(entity.x, entity.y, unit.x, unit.y) <= radius) {
-            val t = entity.tile
-            if (t != null && !removedTiles.add(t.pos())) return@each
-            Call.effect(Fx.fireRemove, entity.x, entity.y, 0f, extinguishColor)
-            entity.remove()
-            removed++
-        }
-    }
     emitTsunamiWaterScatter(player)
     Call.effect(Fx.pointShockwave, unit.x, unit.y, radius, extinguishColor)
     return removed

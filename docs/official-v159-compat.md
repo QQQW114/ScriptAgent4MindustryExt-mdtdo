@@ -1,7 +1,9 @@
-# 官方 Mindustry 兼容层说明（v160.x / MindustryX B491 起，含 v159.x / B485 历史）
+# 官方 Mindustry 兼容层说明（v160.x / MindustryX X37 起，含 B493/B491/B485 历史）
 
-> 当前生产候选基线为 MindustryX `prerelease-2026.09.11.B491` / Mindustry **v160.1**（2026-09-12 跟进），
-> 上一基线为 `prerelease-2026.08.12.B485` / v159.7。ScriptAgent 仍按项目当前版本独立维护，不与游戏版本混合升级。
+> 当前生产候选基线为 MindustryX **正式发行版 `v2026.09.X37`** / Mindustry **v160.1**（2026-09-13 跟进；
+> `v2026.09.X37` 与预发行 tag `prerelease-2026.09.12.B493` 指向同一提交 `dc388e9`），
+> 上一基线为 `prerelease-2026.09.11.B491`，再往前为 `prerelease-2026.08.12.B485` / v159.7。
+> ScriptAgent 仍按项目当前版本独立维护，不与游戏版本混合升级。
 >
 > **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。本基线只是当前候选快照，跟进新版本由用户拍板后更新本文档与候选构建物。
 
@@ -11,6 +13,24 @@
 - 官方端缺少的 X API 不直接引用，改为反射检测；缺失时只降级对应边缘功能，避免整条依赖链加载失败。
 - 不为官方端硬造高风险同步/网络 Hook；无法稳定兼容的实验功能直接 no-op，并打印明确警告。
 - 兼容层集中使用 `*Compat`、运行时 `Class.forName(...)`、`javaClass.getField/getDeclaredField(...)` 等方式，方便搜索和切除。
+
+## 2026-09-13：跟进 MindustryX X37（正式发行版，v160.1）
+
+- **X37 = 预发行 B493 的正式化**：tag `v2026.09.X37` 与 `prerelease-2026.09.12.B493` 同一个提交
+  `dc388e903e3be54b386787785ad5c15d589bea90`。游戏版本仍是 **v160.1**，因此相对 B491 属于同版本内的
+  构建推进（X36 才是 v159.7），插件侧不需要新的破坏性适配。
+- 构建物：`server-2026.09.X37.jar`，SHA-256
+  `F1CD2B5AFB9ED5395707F228F0848FCE4C0872E14171D4C80941C53226F7B575`，
+  JAR 内 `version.properties` 为 `build=160.1 / modifier=release / number=7 / type=official`
+  （与 B491/B485 同形，无法据此区分发行通道，只能认 tag）。
+- X37 相对 B491（B492/B493）的变更中，**与插件有重叠的是 DP Unloader / ItemModule 的刷新逻辑**，
+  对应我们的 `coreMindustry/contentsTweaker.kts`（动态 Content 装卸与模块容量守卫）；其余为服务器积分榜
+  Overlay、`packets.jsonl` 协议映射、SDL3 桌面端等，服务端侧无接口破坏。
+- 验证口径：用 `server-2026.09.X37.jar` 跑 `config socketInput true` 冷启动，与 B491 同脚本集对比加载计数与
+  编译错误数；同时确认 `contentsTweaker` 的 DP 卸载路径无异常。结论见
+  [脚本维护总览](scripts-maintenance.md) 2026-09-13 条目。
+- 基线保留：B491 与 B485 的 JAR 都留在 `mdtserver/`，`server.properties` 的 `jar=` 决定实际使用哪个，
+  回滚只需改这一个键。
 
 ## 2026-09-12：跟进 Mindustry 160.1 / MindustryX B491
 
@@ -33,11 +53,17 @@
   `wayzer/map/serverPressureActions.kts`、`coreMindustry/contentsTweaker.kts`、
   `wayzer/user/ext/skills.kts` 共 5 处；细节见 [脚本维护总览](scripts-maintenance.md) 2026-09-12 条目。
   同源问题已提交上游：[way-zer/ScriptAgent4MindustryExt#49](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/49)。
+- **⚠️ 上述"遍历 `Groups.all`"的口径已在 2026-09-13 被撤回**（用户要求）：`Groups.all` 扫描本身就是
+  全实体遍历，代价远大于它想统计的火焰数量。现在 `limitFire.kts` 整脚本删除，`performanceGuard.kts` /
+  `serverPressureActions.kts` 的 `clearFires()` 删除，`skills.kts` 只保留按 tile 的写法；
+  仅保留 O(1) 的 `state.rules.fire = false` 规则开关。`contentsTweaker.kts` 因处于冷路径（动态 CP 卸载）
+  且必须按类型筛实体，保留 `Groups.all` 遍历——**这是当前唯一允许的 `Groups.all` 用法**，理由见
+  [性能保护](performance-guard.md#火焰处理2026-09-13移除全部实体遍历)。
 - 已核对 160 仍保留的接口：`state.rules.fire`（`public boolean fire`，可读可写）、`Fires.*`、`Puddles.*`、
   `Groups.weather`、`Groups.all/unit/build/bullet/player`。
 - 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`（适配前为 `157/131/129/出错22`），
   正式启动脚本 `start-server.ps1` 冷启动该基线 JAR 亦通过（`[E]` 0 条、无 `NoSuchFieldError`、6567 开放）；
-  火焰链路运行期实测通过（造 60 格火 → `limitFire` 触发自动关闭火焰）。
+  当时火焰链路运行期实测通过（造 60 格火 → `limitFire` 触发自动关闭火焰）——**该实测随 09-13 删除 `limitFire.kts` 一并作废**。
 
 ## 2026-08-14：跟进 B485 发行版（原 B480 自定义专服补丁已废弃）
 

@@ -22,7 +22,124 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
-## 2026-09-12（第四批）：160 自定义菜单实验功能 —— **已实现、已回退（不采用）**
+## 2026-09-13（第一批）：跟进 MindustryX X37 + 移除"遍历全部实体找火焰"的全部代码 + 热循环全量扫描审查
+
+类型：上游版本跟进 + 性能治理（用户要求）
+
+> 用户原话：**"跟进上游(mdtX)的X37，移除遍历全部实体找火焰的脚本（删除关闭火焰功能，以及移除引用相关代码段的灭火技能），以及审查最近修改中类似的会导致大量性能浪费的代码"**
+
+### 1. 跟进 MindustryX X37（正式发行版）
+
+- **tag 对应关系**：`v2026.09.X37` 与预发行 tag `prerelease-2026.09.12.B493` 指向**同一提交**
+  `dc388e903e3be54b386787785ad5c15d589bea90`；即 X37 是 B493 的正式发行化，不是新游戏版本。
+- **游戏版本仍是 v160.1**（JAR 内 `version.properties`：`build=160.1 / modifier=release / number=7 / type=official`，
+  与 B485/B491 同形，无法据此区分发行通道，只能认 git tag）。因此相对 B491 基线**不需要新的破坏性适配**。
+- 构建物：`mdtserver/server-2026.09.X37.jar`，SHA-256
+  `F1CD2B5AFB9ED5395707F228F0848FCE4C0872E14171D4C80941C53226F7B575`（24,271,806 字节）。
+- **基线切换已执行**：`mdtserver/server.properties` 的 `jar=` 从 `server-2026.09.11.B491.jar`
+  改为 `server-2026.09.X37.jar`；B491/B485 的 JAR 都留在 `mdtserver/`，回滚只改这一个键。
+  `start-server.ps1 -DryRun` 已确认选中 X37（脚本优先读 `jar=`，键缺失时才取最新 `server-*.jar`）。
+- 与插件有**重叠的上游改动**：B492/B493 刷新了 DP Unloader / ItemModule 相关逻辑，对应我们的
+  `coreMindustry/contentsTweaker.kts`（动态 Content 装卸、模块容量守卫）——本次冷启动与编译均无异常；
+  其余（服务器积分榜 Overlay、`packets.jsonl` 协议映射、SDL3 桌面端）不影响服务端脚本。
+- 参考项目：`参考项目/MindustryX-main` 已切到 `tags/v2026.09.X37`（`dc388e9`，当前 `HEAD (no branch)`），
+  子模块同步 Arc v160.1 / work。
+
+### 2. 移除"遍历全部实体找火焰"的脚本与引用代码
+
+背景：160 移除了 `Groups.fire`/`Groups.puddle`（火焰/液体洼地改为按 tile 存储），09-12 的适配把
+5 处引用统一改成了 **`Groups.all` + 按实体类型筛选**。这个口径本身是错的——`Groups.all` 是**全部实体**
+（单位+子弹+火焰+洼地+……）的集合，"数火焰/删火焰"要付全量遍历的代价，属于典型的热路径性能浪费。
+本轮按用户要求整体撤回：
+
+- **`wayzer/reGrief/limitFire.kts` 整脚本删除**（`git rm`）。它的唯一职责是
+  `Groups.all.count { it is Fire }`（原 `Groups.fire.size()`）**每 tick** 统计火焰数，超阈值就
+  `state.rules.fire = false` 并广播"火焰过多造成服务器卡顿,自动关闭火焰"。
+  删除后脚本总数 158 → **157**。它同时也是 09-12 生产侧 `NoSuchFieldError` 打崩主循环的现场
+  （每 tick 抛异常），删除后这条风险链路彻底消失。
+- **`wayzer/map/performanceGuard.kts`**：
+  - 删除 `clearFires()`（09-12 版为 `Groups.all` 遍历 + `Fire.remove()` 计数）；
+  - 删除 `import mindustry.gen.Fire`；`applyConservativeLevel` 去掉 `var fires` 与
+    `fires = clearFires()`；广播文案 `清理: 火焰{fires}/子弹{bullets}/单位{units}` →
+    `清理: 子弹{bullets}/单位{units}`（同时去掉 `"fires" to fires` 参数）；
+  - `conservativeStatusText()` 帮助文案 `优先清理火焰/子弹/非玩家单位` → `优先清理子弹/非玩家单位`；
+  - **保留** `state.rules.fire = false`（L1 措施）：这是 O(1) 的规则开关，能阻止火焰继续蔓延，
+    与"遍历实体清火焰"是两件事（见下方"保留与代价"）。
+- **`wayzer/map/serverPressureActions.kts`**：
+  - 删除 `clearFires()` 与 `import mindustry.gen.Fire`；
+  - 删除 `pendingFireCleanupCount`（声明、`flushPendingCleanup` 的早退判断、
+    `清理火焰N处` 文案、清零、`clearPendingCleanup` 重置）；
+  - `recordCleanup(level, fires, bullets, units, processors)` →
+    `recordCleanup(level, bullets, units, processors)`，两处调用点同步去掉 `fires` 实参；
+  - **保留** `setFireRule(false)` 与压力快照里的 `fire` 字段（只记录规则状态，不遍历实体）。
+- **`wayzer/user/ext/skills.kts`（灭火技能）**：
+  - `clearNearbyFires()` **移除对火焰实体/`Groups.all` 的引用**，只保留按 tile 的写法：
+    以玩家中心 10 格半径逐格 `Fires.has(tile.x, tile.y)` → `Fires.extinguish(tile, 1f)` +
+    `Fires.remove(tile)` + `Fx.fireRemove`；
+  - 同时删掉了 09-12 引入的 `removedTiles` 去重集合（那是为"实体扫描结果与 tile 结果去重"服务的，
+    现在只有一条来源，不再需要）；
+  - 技能本体保留：主机制是散射原版海啸水弹（`emitTsunamiWaterScatter`，`Fx.pointShockwave` 收尾），
+    tile 清理只是"周围 10 格"的兜底；**每局释放一次的代价固定为 21×21 格查询，与实体总数无关**。
+  - `/extinguish`（灭火）、`/firetruck`（消防车）入口、冷却与菜单文案均未变（文案里的
+    "并直接清理周围10格火焰兜底"依然成立，因为兜底改为纯 tile 实现）。
+
+**保留与代价（重要，避免后续误读）**：
+
+- 保留 `state.rules.fire = false`：压力 L1 时关闭火焰**蔓延**，压力恢复时还原，属于性能措施阶梯里的
+  一个 O(1) 开关；被去掉的只是"遍历全部实体去数/去删火焰"这个本身很贵的实现。
+- 代价：**不再主动删除地图上已经存在的火焰**，只阻止新的蔓延；原版火焰会自己烧完熄灭。
+- 对性能等级判定无影响：火焰数量本来就不参与压力采样，它只是清理动作的一项统计与广播文案。
+- 如果要连 `rules.fire` 开关也一并去掉，只需删 `performanceGuard.kts`/`serverPressureActions.kts` 里
+  各一行 `state.rules.fire = false` 与对应恢复项（本次未做，因为用户要求针对的是"遍历全部实体"的代码）。
+
+### 3. 同类性能浪费审查（"最近修改中类似的会导致大量性能浪费的代码"）
+
+审查范围：**最近改动过的脚本 + 所有挂在每帧 `Trigger.update` 上的监听器**（`Groups.all` 全量遍历是重点）。
+
+| 位置 | 结论 |
+| --- | --- |
+| `wayzer/map/externalCpHotReload.kts` DP 模块容量守卫 | **发现并修复**（见下） |
+| `coreMindustry/contentsTweaker.kts` | 唯一保留 `Groups.all` 的地方；处于**动态 CP 卸载的冷路径**（模块卸载时才扫一次，用于清理指向已注销内容的实体引用），且必须按实体类型筛选，**保留** |
+| `wayzer/user/ext/variables.kts` | 每帧只读/解析变量表，无实体遍历，`list.clear()` 复用集合 |
+| `wayzer/map/mainThreadWatchdog.kts` | 每帧只做时间戳差值与计数，无实体遍历 |
+| `wayzer/user/ext/funRuleModes.kts` | 内部已有节流（不是每帧真正执行体） |
+| `wayzer/user/ext/limitLogicPacket.kts` | 每帧只统计逻辑包计数，集合用 `list.clear()` 复用，不重建 |
+| `wayzer/map/syncThrottle.kts` | 只改 `snapshotInterval` 数值，无遍历 |
+| `wayzer/map/performanceGuard.kts` / `serverPressureActions.kts` 清理轮 | 已全部改为 `Groups.bullet` / `Groups.unit` / `Groups.build` 等**按类别**取集合，不再有 `Groups.all` |
+
+**修复：`wayzer/map/externalCpHotReload.kts` 的 DP 模块容量守卫原来每个游戏帧全量扫描建筑**
+
+- 原实现（2026-08-01 `338b7f1` 引入）：外部 DP 变更后进入 `contentModuleGuardUntilMillis` 守护期
+  （默认 30 秒），期间 **每个 `Trigger.update`（每帧，60fps）** 都执行
+  `repairCurrentContentModuleCapacities(Groups.build.toList(), validate = false)` ——
+  `Groups.build.toList()` 会**重建整个建筑列表**，再逐个建筑修复物品/液体模块容量。
+  30 秒守护 ≈ **1800 次全建筑扫描**；建筑数千～数万时每次都是 O(buildings)，在帧预算里占比可观。
+- 修复：新增 `private val CONTENT_MODULE_GUARD_SCAN_INTERVAL_MILLIS = 250L` 与
+  `contentModuleGuardLastScanMillis`，把 `else` 分支改为
+  `else if (now - contentModuleGuardLastScanMillis >= CONTENT_MODULE_GUARD_SCAN_INTERVAL_MILLIS)`，
+  进入时更新 `contentModuleGuardLastScanMillis = now`。即 **60fps → 4 次/秒**，总扫描量降约 **15 倍**。
+- 保护语义不变：修复动作本身幂等（同建筑重复修复无副作用），250ms 的发现延迟对"防止后续邻接更新
+  越界"这种守护没有实质影响；`REPAIR`/`validate` 的其它调用路径（DP 变更时的一次性覆盖）未动。
+
+### 4. 验证
+
+- **删改后（B491）冷启动**：`共找到157脚本,加载成功153,启用成功148,出错0`（脚本数 158 → 157 与删除
+  `limitFire.kts` 一致，出错 0）；`Server loaded` 已出现；命令 Socket（6859）`status` 正常响应；
+  退出后 6567/6859/10099 端口全部释放、无残留 java 进程。测试走独立副本
+  `mdtdo/.tmp-160test`，未改动生产 `server.properties`（该副本的 `socketInput` 由启动参数给 `true`）。
+- **X37 冷启动**：`共找到157脚本,加载成功153,启用成功148,出错0`，`Server loaded`、Socket 正常、
+  无异常输出（`OTHER-EXCEPTIONS` 为空），与 B491 结果完全一致；`contentsTweaker` 的 DP 路径未报错。
+- 测试工具：`test160.ps1` 新增 `-Runner` 参数（默认 `test160-run.cmd`），新增
+  `.agents/test160-x37-run.cmd` 用于跑 X37 基线；两个 runner 都只改 JAR 名，其余参数一致。
+
+### 5. 未覆盖边界
+
+- 真实客户端进服、多人压力下的火焰表现（本轮只做冷启动与代码级审查，未做运行期造火实验）。
+- 灭火技能的实际手感（水弹散射 + tile 兜底）仍需真人在游戏内确认；按测试边界约定，菜单/技能类改动
+  不做控制台实测，如实记录为未覆盖。
+- DP 模块容量守卫降频到 250ms 后的实际保护效果（需真实外部 DP 热重载 + 有玩家在场时观察）。
+
+
 
 类型：实验功能（基于 Mindustry 160.1 新增的服务端下发菜单系统）→ **当日按用户实测反馈全部回退**
 
@@ -225,6 +342,11 @@
 
 ## 2026-09-12（第一批）：跟进 Mindustry 160 / MindustryX B491 —— 移除 `Groups.fire` / `Groups.puddle` 依赖
 
+> **⚠️ 已部分回退（2026-09-13）**：本条目里"改为遍历 `Groups.all` 按类型筛选"的适配口径**已被撤回**——
+> 那是热路径全量扫实体。`limitFire.kts` 已整脚本删除，`performanceGuard.kts` / `serverPressureActions.kts`
+> 的 `clearFires()` 已删除，`skills.kts` 只保留纯 tile 写法；仅 `contentsTweaker.kts`（DP 卸载冷路径）保留。
+> 请以本文档 2026-09-13 条目为准，本条仅作历史记录。
+
 类型：上游大版本适配（v159.7 → v160.1）
 
 背景：Mindustry 上游发布 **v160.1**（官方 `Mindustry-master` 已跟进；MindustryX 正式版 X36 仍是 v159.7，
@@ -308,7 +430,9 @@ Mindustry 84cdf2b）。**160 从生成的 `Groups` 中移除了 `fire` 与 `pudd
 
 **版本跟踪与 SA 维护口径（2026-09-12 用户明确）**：**常态化跟进上游最新版本**（Mindustry / MindustryX /
 参考项目）；**ScriptAgent 插件以本项目自行维护为主**，不再逐版跟随上游 SA，**仅在出现较大变动的发行版更新时
-再评估是否跟进**。当前基线为 Mindustry v160.1 / MindustryX `prerelease-2026.09.11.B491`。
+再评估是否跟进**。当下基线为 Mindustry v160.1 / MindustryX `prerelease-2026.09.11.B491`。
+（**后续更新**：2026-09-13 已跟进到正式发行版 `v2026.09.X37`，并整体撤回本条目里的 `Groups.all` 火焰口径与
+`limitFire.kts`，见本文档 2026-09-13 条目。）
 
 未覆盖边界：真实客户端进服、菜单/技能交互、多人压力，以及除火焰/洼地外的运行期长时行为；
 生产部署与实测仍需用户/运维执行。

@@ -13,7 +13,6 @@ import mindustry.game.EventType
 import mindustry.game.Team
 import mindustry.gen.BuildingTetherc
 import mindustry.gen.Call
-import mindustry.gen.Fire
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.TimedKillc
@@ -82,7 +81,6 @@ private var lastPpsCleanupAt = 0L
 private var lastSevereTrafficCleanupAt = 0L
 private var lastLevel4TopUnitCleanupAt = 0L
 private var lowTpsSinceMillis = 0L
-private var pendingFireCleanupCount = 0
 private var pendingBulletCleanupCount = 0
 private var pendingUnitCleanupCount = 0
 private var pendingProcessorDisableCount = 0
@@ -170,14 +168,10 @@ private fun setDisableWorldProcessorsRule(value: Boolean) =
 private fun setUnitCapRule(value: Int) =
     syncIntRule("unitCap", state.rules.unitCap, value) { state.rules.unitCap = it }
 
-private fun clearFires(): Int {
-    // 160 起原版移除了 Groups.fire 分组（火焰改为按 tile 存储），这里从 Groups.all 中筛选 Fire 实体清理。
-    var removed = 0
-    Groups.all.each { entity ->
-        if (entity is Fire) runCatching { entity.remove() }.onSuccess { removed++ }
-    }
-    return removed
-}
+// 2026-09-12：**移除火焰清理**。原 Groups.fire 在 160 被上游移除（火焰改为按 tile 存储），
+// 替代写法是遍历 Groups.all 筛 Fire 实体——但那是"每次清理都全量扫实体"，
+// 实体多时开销随总数线性增长，属于明确要避免的热路径全量遍历。
+// 因此本措施不再清理火焰，相关计数与文案一并去掉。
 
 private fun clearBullets(): Int {
     val bullets = Groups.bullet.toList()
@@ -479,7 +473,7 @@ private fun maxTierForLevel(level: Int): Int = when (level.coerceIn(1, 4)) {
 }.coerceIn(1, 5)
 
 private fun flushPendingCleanup(force: Boolean = false): Boolean {
-    if (pendingFireCleanupCount <= 0 && pendingBulletCleanupCount <= 0 &&
+    if (pendingBulletCleanupCount <= 0 &&
         pendingUnitCleanupCount <= 0 && pendingProcessorDisableCount <= 0
     ) return true
     val now = System.currentTimeMillis()
@@ -488,7 +482,6 @@ private fun flushPendingCleanup(force: Boolean = false): Boolean {
 
     val level = pendingUnitCleanupLevel.coerceIn(1, 4)
     val actions = mutableListOf<String>()
-    if (pendingFireCleanupCount > 0) actions += "清理火焰${pendingFireCleanupCount}处"
     if (pendingBulletCleanupCount > 0) actions += "清理子弹${pendingBulletCleanupCount}发"
     if (pendingUnitCleanupCount > 0) {
         actions += "击杀清理T${maxTierForLevel(level)}及以下压力单位${pendingUnitCleanupCount}个"
@@ -496,7 +489,6 @@ private fun flushPendingCleanup(force: Boolean = false): Boolean {
     if (pendingProcessorDisableCount > 0) actions += "关闭逻辑处理器${pendingProcessorDisableCount}个"
     // 持续介入清理属于高频动作，不再反复向玩家广播，只保留日志，避免刷屏。
     logger.info("[压力措施] 普通压力清理：level=$level ${actions.joinToString("、")}")
-    pendingFireCleanupCount = 0
     pendingBulletCleanupCount = 0
     pendingUnitCleanupCount = 0
     pendingProcessorDisableCount = 0
@@ -505,9 +497,8 @@ private fun flushPendingCleanup(force: Boolean = false): Boolean {
     return true
 }
 
-private fun recordCleanup(level: Int, fires: Int, bullets: Int, units: Int, processors: Int) {
-    if (fires <= 0 && bullets <= 0 && units <= 0 && processors <= 0) return
-    pendingFireCleanupCount += fires.coerceAtLeast(0)
+private fun recordCleanup(level: Int, bullets: Int, units: Int, processors: Int) {
+    if (bullets <= 0 && units <= 0 && processors <= 0) return
     pendingBulletCleanupCount += bullets.coerceAtLeast(0)
     pendingUnitCleanupCount += units.coerceAtLeast(0)
     pendingProcessorDisableCount += processors.coerceAtLeast(0)
@@ -516,7 +507,6 @@ private fun recordCleanup(level: Int, fires: Int, bullets: Int, units: Int, proc
 }
 
 private fun clearPendingCleanup() {
-    pendingFireCleanupCount = 0
     pendingBulletCleanupCount = 0
     pendingUnitCleanupCount = 0
     pendingProcessorDisableCount = 0
@@ -536,14 +526,14 @@ private fun applyLevel(level: Int, reason: String) {
     val previousLevel = activeLevel
     val restoredProcessors = restoreMeasuresAbove(level)
 
-    var fires = 0
     var bullets = 0
     var units = 0
     var processors = 0
 
     if (level >= 1) {
+        // 保留"关闭火焰规则"（只改 state.rules.fire，O(1)，能阻止继续蔓延），
+        // 但不再遍历实体清理已存在的火焰（原因见上方"移除火焰清理"说明）。
         setFireRule(false)
-        fires = clearFires()
         bullets = clearBullets()
     }
     if (level >= 2) {
@@ -590,10 +580,10 @@ private fun applyLevel(level: Int, reason: String) {
             announcedLevel = level
         } else {
             // 进入等级提示失败时保留本轮实际清理数量，下一轮重试时不会丢失事实。
-            recordCleanup(level, fires, bullets, units, processors)
+            recordCleanup(level, bullets, units, processors)
         }
     } else {
-        recordCleanup(level, fires, bullets, units, processors)
+        recordCleanup(level, bullets, units, processors)
     }
 
     if (previousLevel > level) {
