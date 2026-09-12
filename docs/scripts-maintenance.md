@@ -22,7 +22,131 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
-## 2026-09-12：跟进 Mindustry 160 / MindustryX B491 —— 移除 `Groups.fire` / `Groups.puddle` 依赖
+## 2026-09-12（第二批）：禁投票、SuperChat 时长、协管快捷菜单、波次卡死修复、随机永久效果
+
+类型：功能新增 + 缺陷修复
+
+涉及文件：
+
+- `mdtserver/config/scripts/wayzer/vote.lib.kt`（禁发投票的持久化状态 + startBlocker）
+- `mdtserver/config/scripts/wayzer/vote.kts`（`/votestartban`、`/voteunban`、`/votelist`）
+- `mdtserver/config/scripts/wayzer/ext/playerInfoTripleTap.kts`（玩家信息菜单按钮）
+- `mdtserver/config/scripts/wayzer/cmds/vote.kts`（`/vote sc` 新格式 + 中屏控时；波次暂停恢复）
+- `mdtserver/config/scripts/wayzer/cmds/quickOps.kts`（**新增**：3++ 协管快捷操作菜单）
+- `mdtserver/config/scripts/wayzer/map/performanceGuard.kts`、`wayzer/map/serverPressureActions.kts`（波次卡死修复）
+- `mdtserver/config/scripts/wayzer/user/ext/skillsLevel2.kts`、`wayzer/user/ext/skills.kts`（随机永久效果）
+- `mdtserver/config/scripts/coreMindustry/menu.kts`（新增指令全部进分区）
+- `docs/help-menu.md`、`docs/skill-system.md`、`docs/performance-guard.md`、`docs/v159-network-sync.md`
+
+### 1. 禁止指定玩家发起投票（3++/4级）
+
+- `wayzer/vote.lib.kt`：新增 `startBans`（uid → 原因），通过脚本 config 键
+  `startBanPairs`（格式 `uid|原因`）**持久化**，跨重启保留；暴露
+  `isStartBanned / startBanReason / banVoteStarter / unbanVoteStarter / allStartBans`；
+  在 `init` 里注册 `registerStartBlocker("wayzer/vote.startBan")`，
+  因此 `/vote` 与任何 `VoteEvent` 子类（含点歌投票）**统一生效**，被禁玩家发起时直接收到原因提示。
+- 只拦截"发起投票"，**不影响该玩家参与别人发起的投票**（`canVote` 未改动）。
+- `wayzer/vote.kts`：新增三个管理根指令，权限门槛与菜单按钮一致（3++ 及以上，控制台始终允许）：
+  - `/votestartban <玩家id|三位id> [理由]`（别名 `禁投票`/`禁止投票`/`voteban`）
+  - `/voteunban <玩家id|三位id>`（别名 `解禁投票`/`解除禁止投票`）
+  - `/votelist`（别名 `禁投票名单`/`votebanlist`）
+  目标解析支持玩家名 / UUID / 三位ID（`PlayerData.findByShortId`，含 1 天内离线玩家）。
+- `wayzer/ext/playerInfoTripleTap.kts`：玩家信息菜单（双击玩家）新增按钮，按状态显示
+  "禁止ta发起投票"（弹文本输入框要理由）/ "解除禁止发起投票（理由）"；
+  可见性口径与 `ban` 类按钮一致：`3++ 及以上 + canModerateTrustTarget` 目标分层。
+
+### 2. `/vote sc [文字] [秒数]`（最多 5 秒、缺省 3 秒）
+
+- 参数解析：末位是纯数字且参数数 ≥2 时视为秒数，其余为文字；秒数 `coerceIn(1f, 5f)`。
+  这样"只给一个数字"（例如 `/vote sc 123`）仍按正文处理，不会被误判成秒数。
+- 显示时长实现：原版 `Call` 在 160 只有 `announce(String)` / `announce(NetConnection, String)`，
+  **没有带时长的重载**（时长由客户端决定）。因此改用 `Call.setHudText` 主动维持：
+  每 **250ms** 刷新一次，到达秒数后 `Call.hideHudText()` 收起；用并发令牌保证只维持最新一条 SC。
+- 用法行与帮助条目同步更新为 `[文字] [中屏秒数,最多5秒,默认3秒]`。
+
+### 3. 3++ 协管快捷操作菜单（新增 `wayzer/cmds/quickOps.kts`）
+
+- `/quickops`（别名 `快捷操作`/`协管菜单`/`qops`/`opmenu`），3++ 及以上可开。
+- 菜单列出 `VoteEvent.VoteCommands.registeredSubCommands()` 的**全部投票项**
+  （各脚本新增的投票项自动出现，停用脚本的项自动消失），点击即**直接执行**——
+  即"不需要投票就能通过某项投票里的功能"。
+- 执行走 `RootCommands.handleInput("/vote <子项>", player)`，与玩家手打完全同路径，
+  权限（`wayzer.vote.*` 的 Permission attr）照常校验，**不存在越权**。
+- 需要参数的项（usage 含 `<>`/`[]`）不在菜单内空参数执行，改为提示改用指令补参数，避免误操作。
+- 菜单只列出当前玩家**可见可用**的项（复用指令自身的权限判定，不新增权限节点）。
+
+### 4. 性能优化系统检查
+
+**(1) 160 把实体纳入世界流：评估结论为"不需要改代码"，已写入 `v159-network-sync.md`。**
+
+- 上游 `6ef175cb2` 改 `NetworkIO`：发送侧改为 `writeEntityMapping` → `writeTeamBlocks` →
+  `writeWorldEntities`（带迷雾过滤），接收侧 `readMap` + `readEntities` 并新增 `SaveReadState`，
+  读完后把实体 id 记入 `netClient.addRemovedEntity()`（丢弃世界流建立前先到的实体快照）。
+- 对本项目：三口径流量都来自网卡累计字节，**没有需要适配的包级解析**；世界流属"资源传输尖峰"，
+  按既有分层原则**不得触发清单位/暂停玩法/换图**，性能保护由总上行驱动，因此维持现状自洽。
+- 唯一新增关注点：世界流体积变大 → 首次入服的可靠流占用更高（低带宽/高并发入服时握手更久），
+  以及**动态 Content 卸载前清理更重要**（实体现在会被序列化进世界流）。二者都不属于必须改代码的项。
+
+**(2) 波次间隔被改成很久、无法自动复原：已定位并修复**（详见 `performance-guard.md` 新增小节）。
+
+- 根因：`state.wavetime` 单位是**游戏刻**，原值 `60f*60f*10f` = 36000 刻 = **10 分钟**（不是 10 秒）；
+  恢复条件是 `if (state.wavetime > saved && saved > 0f)`，当快照值为 **0**（合法的"马上出波"状态）时
+  **永不成立**，于是这个巨大的值一直留着。
+- 修复：推迟值收敛为 **30 秒**（1800 刻）；恢复改为**哨兵判定**——写入时记录"我们塞进去的值"，
+  恢复时只有当 `state.wavetime` 仍等于该值才回写快照值（0 也照常恢复），
+  其它来源的合法修改不会被覆盖。三处旧守卫（`performanceGuard.restoreConservative`、
+  `serverPressureActions.restoreMeasuresAbove`/`restoreWaveRules`、`/vote pauseWave` 的两条恢复路径）已全部改掉。
+
+### 5. 二级技能"随机永久buff" → "随机永久效果"
+
+- `skillsLevel2.kts`：显示名与别名更新（保留旧别名 `随机永久buff`/`permbuff`/`randomBuff` 兼容）。
+- 效果池扩为**双向**：70% 增益（`fast`/`overclock`/`overdrive`/`shielded`/`boss`/`wet`）、
+  30% 负面（`slow`/`sapped`/`tarred`/`corroded`/`freezing`）；概率常量 `NEGATIVE_EFFECT_CHANCE = 0.3f`。
+- **刻意排除**：`disarmed`（缴械，单位完全无法攻击）、`unmoving`（完全无法移动）——过于致命；
+  `invincible`/`dynamic`（原版特殊用途）不进入任何池。仍按项目口径以 `Float.POSITIVE_INFINITY` 附加。
+- 提示与广播区分增益/负面；`skills.kts` 技能菜单条目同步改名与说明。
+
+### 指令与菜单分类（用户要求：新增指令都要进菜单并分类）
+
+- `/quickops` 放在**管理指令**分区**首位**（3++/4级核心入口）。
+- `/votestartban`、`/voteunban`、`/votelist` 放在管理分区**禁封相关条目附近**。
+- `/vote sc` 条目保留在**投票指令**分区，用法行更新为 `[文字] [秒数]`。
+- 三个管理指令均为根指令，会自动进入 `/help` 的"搜索指令"索引。
+
+验证状态（2026-09-12，测试副本 `.tmp-160test` + `server-2026.09.11.B491.jar`）：
+
+- **冷启动通过**：`共找到158脚本,加载成功154,启用成功149,出错0`（脚本数 +1 = 新增 `wayzer/cmds/quickOps`），
+  `Server loaded`、命令 Socket 正常、无异常；编译错误 0。
+- 期间修掉的 4 个编译问题（都已复测）：`script.config.key` 委托必须是 `var`（`vote.lib.kt`）；
+  startBlocker 回调要返回 `String?` 而不是 `VarString`（补 `.toString()`）；
+  **脚本顶层不允许 `private const val`**（`skillsLevel2.kts`、`cmds/vote.kts` 各一处，与既有经验一致）；
+  `Hidden` 是 `Commands` 的嵌套接口（`coreLibrary.lib.Commands.Hidden`），`CommandInfo.attr` 是函数不是属性
+  （可见性判定改用与 `/help` 同款的 `attrs + Hidden` 写法）。
+- **运行期指令实测**（命令 Socket）：
+  - `votelist` → `当前没有玩家被禁止发起投票。`
+  - `votestartban 不存在的玩家XYZ 测试理由` → `找不到目标玩家：…（可用玩家名/三位ID/UUID）`
+  - `quickops`（控制台）→ `该菜单需要在游戏内由玩家打开。`（符合设计：菜单面向游戏内玩家）
+  - `vote sc`（控制台）→ `该命令当前不可用`（该子指令是 `CommandType.Client`，控制台不可用属预期）
+  - 日志确认 `启用脚本 wayzer/cmds/quickOps`、`启用脚本 wayzer/vote`。
+- **禁投票持久化专项实测**（两轮冷启动 + 命令 Socket）：
+  1. 第一轮：`votestartban account:999001 通用测试理由` → `已禁止 …发起投票：通用测试理由`；
+     `votelist` → `禁止发起投票名单（1）：account:999001：通用测试理由`；
+     落盘确认：`config/scripts/data/config.conf` 内出现 `"startBanPairs": ["account:999001|通用测试理由"]`。
+  2. 第二轮（重启后）：`votelist` 仍显示该条目 → **`R2-STILL-BANNED=True`**（跨重启保留）；
+     `voteunban account:999001` → `已解除 … 的禁止发起投票`，名单恢复为空。
+- **自测暴露并修复的真实缺口**：目标解析最初只覆盖"在线玩家 / 1 天内历史缓存"，
+  管理员无法对**离线较久的玩家**施加限制（自测直接报"找不到目标玩家"）。
+  现已扩展为：在线玩家（名字/UUID）→ `PlayerData.findByShortId` → 直接按主体 uid 查库
+  （`MdtStorage.getSubjectName`），并允许 `account:*` / 长 UUID 形式按 uid 直接施加。
+- 测试进程已结束、6567/6859/10099 端口释放；测试副本与主工作区源文件已同步。
+
+未覆盖边界：**所有需要真实客户端的交互均未实测**——`/vote sc` 的实际中屏停留与收起观感、
+协管快捷菜单在客户端的排版与点击执行、玩家信息菜单里"禁止/解除ta发起投票"按钮、
+以及禁投票对被封玩家实际发起投票时的拦截提示（这些依赖真实玩家会话）。
+波次卡死修复属于逻辑修复：本轮只做了加载与静态核对，未构造真实压力场景回归
+（压力系统需要 TPS/上行达到阈值才会介入）。
+
+## 2026-09-12（第一批）：跟进 Mindustry 160 / MindustryX B491 —— 移除 `Groups.fire` / `Groups.puddle` 依赖
 
 类型：上游大版本适配（v159.7 → v160.1）
 

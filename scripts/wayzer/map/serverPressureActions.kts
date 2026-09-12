@@ -423,6 +423,34 @@ private fun applyUnitCap(): Boolean {
     return changed
 }
 
+/**
+ * 记录"由压力措施人为抬高"的 wavetime（单位：游戏刻）。
+ *
+ * 背景（2026-09-12 定位的 bug）：恢复时原本写的是
+ * `if (state.wavetime > saved.wavetime && saved.wavetime > 0f) state.wavetime = saved.wavetime`。
+ * 当快照里的 wavetime 是 0（合法的"马上就要出波"状态，`Logic` 在 wavetime<=0 时直接 runWave）
+ * 或快照未建立时，该守卫**永不成立**，于是压力期间塞进去的巨大 wavetime 一直保留，
+ * 表现为"性能保护把波次间隔改成很久、无法自动复原"。
+ *
+ * 改为哨兵判定：只有当 wavetime 仍等于我们塞进去的值（期间没有其它来源改过）才回写快照值。
+ */
+private var artificialWaveTime: Float? = null
+
+private fun pushWaveTimeFloor(floor: Float) {
+    if (floor <= 0f) return
+    if (state.wavetime >= floor) return
+    state.wavetime = floor
+    artificialWaveTime = floor
+}
+
+private fun restoreWaveTimeFrom(saved: Float) {
+    val artificial = artificialWaveTime
+    artificialWaveTime = null
+    if (artificial != null && state.wavetime >= artificial) {
+        state.wavetime = saved.coerceAtLeast(0f)
+    }
+}
+
 private fun restoreMeasuresAbove(targetLevel: Int): Int {
     val saved = snapshot ?: return 0
     var restoredProcessors = 0
@@ -437,7 +465,7 @@ private fun restoreMeasuresAbove(targetLevel: Int): Int {
         setWaveSendingRule(saved.waveSending)
         setUnitCapRule(saved.unitCap)
         setDisableUnitCapRule(saved.disableUnitCap)
-        if (state.wavetime > saved.wavetime && saved.wavetime > 0f) state.wavetime = saved.wavetime
+        restoreWaveTimeFrom(saved.wavetime)
     }
 
     return restoredProcessors
@@ -522,7 +550,10 @@ private fun applyLevel(level: Int, reason: String) {
         if (wavePauseEnabled) {
             setWaveTimerRule(false)
             setWaveSendingRule(false)
-            state.wavetime = maxOf(state.wavetime, 60f * 60f * 10f)
+            // 压力期间把下一次出波推后（单位：游戏刻）。原来写死 60*60*10（=36000 刻 = 10 分钟）过长：
+            // 一旦恢复守卫不成立就再也退不回来，玩家会一直卡在"波次间隔很久"。
+            // 现收敛为 30 秒，并用哨兵记录我们塞进去的值，恢复时按哨兵精确回退（见 pushWaveTimeFloor）。
+            pushWaveTimeFloor(60f * 30f)
         } else {
             // 出波暂停被关闭时，恢复波次规则，避免压力期间一直卡住出波。
             restoreWaveRules()
@@ -583,7 +614,7 @@ private fun restoreWaveRules() {
     snapshot?.let {
         setWaveTimerRule(it.waveTimer)
         setWaveSendingRule(it.waveSending)
-        if (state.wavetime > it.wavetime && it.wavetime > 0f) state.wavetime = it.wavetime
+        restoreWaveTimeFrom(it.wavetime)
     }
 }
 

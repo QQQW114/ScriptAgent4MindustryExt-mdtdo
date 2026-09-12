@@ -579,7 +579,7 @@ onEnable {
         SkillMenuEntry("decisivesquad", "决胜中队", SkillMenuCategory.Level2, "召唤携带爆炸混合物的决胜中队；消耗6 MDC，冷却120秒", "/skill decisiveSquad"),
         SkillMenuEntry("anvilsquad", "铁砧小队", SkillMenuCategory.Level2, "呼叫不可附身雷霆(quad)运输机抵达后投放铁砧小队；死亡/40秒超时则取消且不返还MDC；消耗6 MDC，冷却120秒", "/skill anvilSquad"),
         SkillMenuEntry("hammersquad", "铁锤小队", SkillMenuCategory.Level2, "呼叫不可附身雷霆(quad)运输机抵达后投放铁锤小队；死亡/40秒超时则取消且不返还MDC；消耗6 MDC，冷却120秒", "/skill hammerSquad"),
-        SkillMenuEntry("randompermbuff", "随机永久buff", SkillMenuCategory.Level2, "当前附身单位随机获得一个永久可识别Buff（加速/超频/超速/护盾/Boss/潮湿，不含无敌）；消耗10 MDC，冷却120秒，PVP与noskill禁用", "/skill randompermbuff"),
+        SkillMenuEntry("randompermbuff", "随机永久效果", SkillMenuCategory.Level2, "当前附身单位随机获得一个永久效果：70% 为增益（加速/超频/超速/护盾/Boss/潮湿），30% 为负面（减速/削弱/焦油/腐蚀/冰冻，不含缴械与定身）；消耗10 MDC，冷却120秒，PVP与noskill禁用", "/skill randompermbuff"),
         SkillMenuEntry("blitz", "骇人空袭", SkillMenuCategory.Level3, "在玩家位置快速召唤三波自爆空军冲向光标附近；消耗15 MDC，一局一次"),
         SkillMenuEntry("antiarmor", "反装甲炮击", SkillMenuCategory.Level3, "在鼠标位置标记20格炮击区，30秒内锁定区域敌方单位并每1.5秒造成10%最大生命+800伤害；消耗23 MDC，冷却300秒"),
         SkillMenuEntry("pddcut", "拼夕夕砍一刀", SkillMenuCategory.Level3, "使全场单位当前血量减少90%；消耗15 MDC，一局一次", "/skill pddCut"),

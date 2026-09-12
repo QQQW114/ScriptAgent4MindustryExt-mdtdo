@@ -71,6 +71,7 @@
 | `shield` | 护盾 | 2 MDC | 120秒 | 获得等于最大血量的护盾 |
 | `health` | 范围治愈 | 2 MDC | 120秒 | 治疗周围200像素内受伤友方单位与建筑，每个目标恢复20%最大生命（至少25） |
 | `fullheal` | 完全痊愈 | 5 MDC | 120秒 | 完全治愈当前附身单位，恢复至满血 |
+| `randompermbuff` | 随机永久效果 | 10 MDC | 120秒 | 当前附身单位随机获得一个**无限时间**的永久效果：**70%** 为增益（`fast`/`overclock`/`overdrive`/`shielded`/`boss`/`wet`），**30%** 为负面（`slow`/`sapped`/`tarred`/`corroded`/`freezing`）；负面池刻意排除 `disarmed`（缴械）与 `unmoving`（定身）这类过于致命的效果，`invincible`/`dynamic` 不进入任何池；PVP 与 noskill 禁用 |
 | `fortune` | 查看今日运势 | 0 | 每日一次 | 在“大凶/凶/中吉/吉/大吉”中随机今日运势；随机到大吉时授予 `[gold][无不利！]` 称号 |
 | `monoMother` | 递归mono | 2 MDC | 300秒 | 召唤可短时间生成 mono 的递归 mono |
 | `lowwallKiller` | 墙壁粉碎者 | 0 | 120秒 | 粉碎脚下一格墙壁 |

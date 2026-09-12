@@ -87,6 +87,9 @@ private fun notifyHealthChangedCompat(target: Any) {
 
 private val BOUND_MEGA_TICK_MILLIS = 500L
 private val SQUAD_DELIVERY_TIMEOUT_MILLIS = 40_000L
+
+/** "随机永久效果"抽到负面效果的概率（其余为增益）。注意：脚本顶层不允许 const。 */
+private val NEGATIVE_EFFECT_CHANCE = 0.3f
 private val boundMegaOwners = ConcurrentHashMap<Int, String>()
 private val ownerBoundMegas = ConcurrentHashMap<String, Int>()
 private val deliveryQuadIds = ConcurrentHashMap<Int, Boolean>()
@@ -591,28 +594,45 @@ command("hammerSquad", "2级技能：铁锤小队".with(), commands = SkillComma
     }
 }
 
-command("randompermbuff", "2级技能：随机永久buff".with(), commands = SkillCommands) {
-    aliases = listOf("随机永久buff", "永久buff", "随机buff", "randomBuff")
+command("randompermbuff", "2级技能：随机永久效果".with(), commands = SkillCommands) {
+    aliases = listOf("随机永久buff", "随机永久效果", "永久效果", "随机效果", "permbuff", "randomBuff")
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
     skillBody {
         levelError(player, "2")?.let { returnReply("[red]$it".with()) }
-        if (!spendSkillCost(player, 10, "randompermbuff")) returnReply("[red]MDC不足：随机永久buff需要 10 MDC".with())
+        if (!spendSkillCost(player, 10, "randompermbuff")) returnReply("[red]MDC不足：随机永久效果需要 10 MDC".with())
         val unit = player.unit() ?: returnReply("[red]无法获取当前单位".with())
-        // 随机永久buff：与 docs/hybrid-system-design.md 的“可识别 Buff”正向/常用一致
-        //（加速/超频/超速/护盾/Boss/潮湿），不含无敌与动态；按项目口径以无限时间（Float.POSITIVE_INFINITY）附加。
-        val picked = listOf(
+
+        // 随机永久效果：正向池沿用 docs/hybrid-system-design.md 的"可识别 Buff"正向/常用
+        //（加速/超频/超速/护盾/Boss/潮湿）；按用户要求加入**负面池**，有概率抽到减益。
+        // 按项目口径以无限时间（Float.POSITIVE_INFINITY）附加。
+        // 负面池刻意排除两类"过于致命/会破坏玩法"的效果：
+        // - `disarmed`（缴械，单位完全无法攻击）、`unmoving`（完全无法移动）；
+        // - `invincible`/`dynamic`（原版特殊用途效果，与永久附加语义冲突），不进入任何池。
+        val positivePool = listOf(
             StatusEffects.fast,
             StatusEffects.overclock,
             StatusEffects.overdrive,
             StatusEffects.shielded,
             StatusEffects.boss,
             StatusEffects.wet,
-        ).random()
-        applyStackedStatus(unit, picked, Float.POSITIVE_INFINITY)
-        player.sendMessage(
-            "[green]你的[white]${unit.type.localizedName}[green]获得了随机永久buff：[cyan]${picked.localizedName}[green]！"
         )
-        broadcastSkill("随机永久buff")
+        val negativePool = listOf(
+            StatusEffects.slow,
+            StatusEffects.sapped,
+            StatusEffects.tarred,
+            StatusEffects.corroded,
+            StatusEffects.freezing,
+        )
+        val negative = Random.nextFloat() < NEGATIVE_EFFECT_CHANCE
+        val picked = (if (negative) negativePool else positivePool).random()
+
+        applyStackedStatus(unit, picked, Float.POSITIVE_INFINITY)
+        val kindText = if (negative) "[red]负面效果" else "[green]增益效果"
+        player.sendMessage(
+            "[green]你的[white]${unit.type.localizedName}[green]获得了随机永久效果（$kindText[green]）：" +
+                "[cyan]${picked.localizedName}[green]！"
+        )
+        broadcastSkill(if (negative) "随机永久效果（负面）" else "随机永久效果")
     }
 }
 

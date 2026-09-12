@@ -1,5 +1,8 @@
 # v159 网络同步与完整重同步
 
+> 当前基线已更新为 **Mindustry 160.1 / MindustryX B491**（2026-09-12），160 起实体随世界流传输，
+> 见下文"160.1 起：实体随世界流传输"；其余同步不变量沿用。
+
 ## 故障模型
 
 v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商资产并再次确认世界。高上行时，UDP 快照丢失和可靠包排队会造成核心机引用、单位状态及建筑血量恢复缓慢。
@@ -31,6 +34,37 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 - 不因玩家加入、音乐或 CP 世界流清理单位或触发换图。
 - 门控及协调器异常时必须自动放行。
 - 极端换图仅允许当前与平均 TPS 同时低于 5 并连续 120 秒。
+
+## 160.1 起：实体随世界流传输（2026-09-12 核对）
+
+上游在 **Mindustry 160** 的提交 `6ef175cb2`（"Building afterReadAll fix + Send entities over network"）中修改了
+`core/src/mindustry/net/NetworkIO.java` 的世界收发：
+
+- **发送**（`writeWorld`）：在 `writeContentHeader` + `writeMap` 之后，把原来的 `writeTeamBlocks` 一段替换为
+  `writeEntityMapping(stream)` → `writeTeamBlocks(stream)` → `writeWorldEntities(stream, fogFilter)`；
+  源码注释自述这是"模仿 `writeEntities`，但用自定义过滤器，略显脆弱"（`NetworkIO.java:65`）。
+- **接收**（`loadWorld`）：`readMap` + `readEntities`，新增 `SaveReadState` 贯穿读取；
+  读完后把 `Groups.all` / `Groups.unit` 里的实体 id 记入 `netClient.addRemovedEntity()`，
+  用于丢弃"世界流还没建立时先到的实体快照"。
+
+### 对本项目优化口径的影响评估（结论：不需要改代码，属于口径内自洽）
+
+1. **流量口径不变**：三口径同源为网卡速率（`trafficMonitor` 读 `netstat -e`），世界流变大只会体现在
+   "总上行/世界流"读数里，不需要包级分类，因此**没有需要适配的解析逻辑**。
+2. **不触发破坏性措施**：按 `docs/performance-guard.md` 的分层原则，入服世界流属于"资源传输尖峰"，
+   不得触发清单位/暂停玩法/换图；性能保护由**总上行**驱动，且单位清理只由游戏同步口径与 TPS 驱动。
+3. **重同步协调器无需改动**：`worldResyncCoordinator` 只负责串行与超时，世界流内容变化不影响其语义；
+   实体随世界流发送后，客户端不再需要为这批实体额外等待 UDP 快照，反而降低"世界已加载但实体缺失"的窗口。
+4. **需要注意但不属于本轮改动**：世界流体积变大意味着**首次入服的可靠流占用更高**，
+   在低带宽/高并发入服时可能拉长握手时间；本项目既不门控新玩家（不放行会被判定为破坏可用性），
+   也不把世界流算作游戏同步压力，因此维持现状是符合既有不变量的选择。
+
+### 与动态 Content（外部 CP/DP）的关系
+
+本项目的 `contentsTweaker.kts` 会在动态 Content 注销前清理旧 DP 实体引用；实体现在会随世界流序列化，
+所以**这条清理链路比 159 更关键**：若世界里残留指向已注销内容的实体，序列化阶段就可能失败。
+本轮未改动该逻辑（160 适配只改了 `Groups.fire`/`Groups.puddle` 的遍历方式），
+但已作为"160 下需重点回归"的项记录：真实多人 + 运行中卸载 DP 仍需受控观察。
 
 ## B485 构建与部署
 

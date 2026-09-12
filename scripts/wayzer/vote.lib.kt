@@ -343,6 +343,65 @@ class VoteEvent(
                 runCatching { blocker(player) }.getOrNull()
             }
 
+        // ---------- 禁止发起投票（3++/4级可对他人施加） ----------
+        // 说明：这里的"禁止"只拦截**发起投票**，不影响目标参与别人发起的投票。
+        // 状态用脚本 config 键持久化（ScriptAgent 自动落盘，不需要新建数据库表）。
+
+        private var startBanPairs by script.config.key(
+            emptyList<String>(),
+            "禁止发起投票的主体列表(uid|原因)",
+            "由 /votestartban 或玩家信息菜单写入；每项格式 uid|原因"
+        )
+
+        /** uid -> 原因；通过 config 键持久化，跨重启保留。 */
+        private val startBans: MutableMap<String, String> = run {
+            val map = linkedMapOf<String, String>()
+            startBanPairs.forEach { item ->
+                val idx = item.indexOf('|')
+                if (idx <= 0) {
+                    if (item.isNotBlank()) map[item] = ""
+                } else {
+                    map[item.substring(0, idx)] = item.substring(idx + 1)
+                }
+            }
+            map
+        }
+
+        private fun persistStartBans() {
+            startBanPairs = startBans.map { (uid, reason) -> "$uid|$reason" }
+        }
+
+        /** 该主体是否被禁止发起投票；返回原因（可能为空串）。 */
+        fun startBanReason(uid: String): String? = startBans[uid]
+
+        fun isStartBanned(uid: String): Boolean = startBans.containsKey(uid)
+
+        /** 施加/更新"禁止发起投票"。 */
+        fun banVoteStarter(uid: String, reason: String) {
+            if (uid.isBlank()) return
+            startBans[uid] = reason.trim()
+            persistStartBans()
+        }
+
+        /** 解除"禁止发起投票"；返回是否确实解除了一项。 */
+        fun unbanVoteStarter(uid: String): Boolean {
+            val removed = startBans.remove(uid) != null
+            if (removed) persistStartBans()
+            return removed
+        }
+
+        fun allStartBans(): Map<String, String> = startBans.toMap()
+
+        init {
+            // 统一走已有的 startBlocker 机制，`/vote` 与任何 VoteEvent 子类都会自动生效。
+            registerStartBlocker("wayzer/vote.startBan") { player ->
+                startBanReason(PlayerData[player].id)?.let { reason ->
+                    if (reason.isBlank()) "[red]你已被管理员禁止发起投票。"
+                    else "[red]你已被管理员禁止发起投票：[white]$reason".with().toString()
+                }
+            }
+        }
+
         private fun normalizeVoteIp(player: Player): String =
             player.con?.address
                 ?.let { ipv4Regex.find(it)?.value ?: it.trim().substringBefore('%') }

@@ -149,7 +149,9 @@ private fun applyConservativeLevel(level: Int, avg: Double) {
     if (effectiveLevel >= 2) {
         state.rules.waveTimer = false
         state.rules.waveSending = false
-        state.wavetime = maxOf(state.wavetime, 60f * 60f * 10f)
+        // 压力期间把下一次出波推后（单位：游戏刻）。原来的 60*60*10（=36000 刻 = 10 分钟）
+        // 太长：一旦守卫条件不满足就再也退不回来（详见 pushWaveTimeFloor 注释），这里收敛为 30 秒。
+        pushWaveTimeFloor(60f * 30f)
         state.rules.unitBuildSpeedMultiplier = 0f
     }
 
@@ -172,6 +174,36 @@ private fun applyConservativeLevel(level: Int, avg: Double) {
     activeLevel = effectiveLevel
 }
 
+/**
+ * 记录"由我们人为抬高"的 wavetime。
+ *
+ * 背景（2026-09-12 定位的 bug）：恢复时原本写的是
+ * `if (state.wavetime > it.wavetime && it.wavetime > 0f) state.wavetime = it.wavetime`。
+ * 当快照里的 wavetime 是 0（合法的"马上就要出波"状态，`Logic` 在 wavetime<=0 时直接 runWave）
+ * 或快照没赶上时，这个守卫**永不成立**，于是压力期间塞进去的巨大 wavetime 会一直留着，
+ * 表现为"波次间隔被改成很久、无法自动复原"。
+ *
+ * 现在改为哨兵判定：只有当 wavetime 仍然等于我们塞进去的那个值（说明期间没有别的来源改过它）
+ * 才回写快照值；任何合法的 wavetime 变化（例如其它脚本/投票修改）都会让哨兵失效，不覆盖。
+ */
+private var artificialWaveTime: Float? = null
+
+private fun pushWaveTimeFloor(floor: Float) {
+    if (floor <= 0f) return
+    if (state.wavetime >= floor) return // 本来就更靠后，不记录哨兵、也不改
+    state.wavetime = floor
+    artificialWaveTime = floor
+}
+
+private fun restoreWaveTimeFrom(saved: Float) {
+    val artificial = artificialWaveTime
+    artificialWaveTime = null
+    // 只有当 wavetime 还是我们塞进去的那个值时，才恢复快照值（0 也照常恢复，让原版按原节奏出波）。
+    if (artificial != null && state.wavetime >= artificial) {
+        state.wavetime = saved.coerceAtLeast(0f)
+    }
+}
+
 fun restoreConservative(reason: String = "TPS已恢复", silent: Boolean = false) {
     val oldLevel = activeLevel
     snapshot?.let {
@@ -179,8 +211,9 @@ fun restoreConservative(reason: String = "TPS已恢复", silent: Boolean = false
         state.rules.waveTimer = it.waveTimer
         state.rules.waveSending = it.waveSending
         state.rules.unitBuildSpeedMultiplier = it.unitBuildSpeedMultiplier
-        if (state.wavetime > it.wavetime && it.wavetime > 0f) state.wavetime = it.wavetime
+        restoreWaveTimeFrom(it.wavetime)
     }
+    artificialWaveTime = null
     snapshot = null
     activeLevel = 0
     recoverSamples = 0

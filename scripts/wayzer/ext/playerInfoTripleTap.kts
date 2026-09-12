@@ -25,6 +25,7 @@ import coreMindustry.MenuBuilder
 import coreMindustry.PagedMenuBuilder
 import coreMindustry.lib.RootCommands
 import coreLibrary.lib.PermissionApi
+import wayzer.VoteEvent
 import wayzer.lib.DatabaseFeature
 import wayzer.lib.DatabaseFeatureChangedEvent
 import wayzer.lib.MdtStorage
@@ -607,6 +608,9 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
             )
     val canModerateTarget = !isSelf && with(trustLevel) { canModerateTrustTarget(viewer, target) }
     val canAdminBan = !isSelf && viewerOrder >= order3PlusPlus && canModerateTarget
+    // 禁止发起投票：3++ 与 4 级可对他人施加，沿用既有的目标分层边界。
+    val canManageVoteStartBan = !isSelf && viewerOrder >= order3PlusPlus && canModerateTarget
+    val targetVoteStartBanned = canManageVoteStartBan && VoteEvent.isStartBanned(targetUid)
     val targetForceOb = with(voteOb) { isForceOb(target) }
     val canReleaseForceOb = !isSelf && targetForceOb && (
             viewerOrder >= order4 ||
@@ -795,6 +799,28 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                 }
                 option("ban掉ta的ip") {
                     banIpFlow(viewer, target.plainName(), with(securityGuard) { playerIpForAdmin(target) }, PlayerData[target], target.uuid())
+                }
+            }
+            if (canManageVoteStartBan) {
+                newRow()
+                if (targetVoteStartBanned) {
+                    val banReason = VoteEvent.startBanReason(targetUid).orEmpty()
+                    option(if (banReason.isBlank()) "解除禁止发起投票" else "解除禁止发起投票（$banReason）") {
+                        val done = VoteEvent.unbanVoteStarter(targetUid)
+                        if (done) {
+                            viewer.sendMessage("[green]已解除 [white]${target.plainName()}[green] 的禁止发起投票")
+                            target.sendMessage("[green]管理员已解除你的禁止发起投票状态。")
+                        } else {
+                            viewer.sendMessage("[yellow]目标当前没有禁止发起投票记录")
+                        }
+                    }
+                } else {
+                    option("禁止ta发起投票") {
+                        val reason = askReason(viewer, "禁止发起投票理由", target) ?: return@option
+                        VoteEvent.banVoteStarter(targetUid, reason)
+                        viewer.sendMessage("[green]已禁止 [white]${target.plainName()}[green] 发起投票：[white]$reason")
+                        target.sendMessage("[yellow]你已被管理员禁止发起投票：[white]$reason")
+                    }
                 }
             }
         }

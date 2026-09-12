@@ -165,7 +165,7 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "调整波次", "投票将当前波次调整到目标波次", "/vote setWave <波次>"),
     HelpEntryDef("vote", "清理建筑记录", "投票清理本队建筑记录", "/vote clear"),
     HelpEntryDef("vote", "自定义投票", "发起自定义文本投票", "/vote text"),
-    HelpEntryDef("vote", "SuperChat", "发送中屏醒目留言，不发起实际投票；1级信任以上且2分钟冷却", "/vote sc <内容>"),
+    HelpEntryDef("vote", "SuperChat", "发送中屏醒目留言，不发起实际投票；1级信任以上且2分钟冷却。用法：/vote sc [文字] [秒数]，中屏最多5秒、缺省3秒", "/vote sc <文字> [秒数]"),
     HelpEntryDef("vote", "投票加载CP", "投票加载/热重载外部JSON/HJSON CP，需70%同意", "/vote cp load <文件名|编号>"),
     HelpEntryDef("vote", "投票卸载CP", "投票卸载已加载外部CP，需70%同意", "/vote cp unload <文件名|编号|all>"),
     HelpEntryDef("vote", "投票封禁地图", "投票 ban 掉问题地图", "/vote banmap"),
@@ -188,6 +188,7 @@ private val voteHelpEntries = listOf(
 )
 
 private val adminHelpEntries = listOf(
+    HelpEntryDef("quickops", "[cyan]协管快捷操作", "3++/4级：列出全部投票项，点击直接执行（免投票通过）"),
     HelpEntryDef("security", "[cyan]安全风控菜单", "管理聊天/菜单/连接风控与IP封禁"),
     HelpEntryDef("serverfeatures", "[cyan]服务器功能总览", "查看功能状态与打开管理菜单"),
     HelpEntryDef("databasefeatures", "[cyan]数据库业务功能", "统一暂停玩家可操作或高频数据库业务"),
@@ -225,6 +226,9 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("banips", "[cyan]IP封禁列表", "查看当前被封禁IP、UUID与玩家名"),
     HelpEntryDef("banlist", "[cyan]统一封禁管理", "分页查看玩家/账号与IP封禁、原因、剩余时长并快速解封"),
     HelpEntryDef("recentplayers", "[cyan]最近玩家", "查看最近80名玩家并打开离线管理面板"),
+    HelpEntryDef("votestartban", "[red]禁止发起投票", "3++/4级：禁止指定玩家发起投票（玩家信息菜单也可快速操作）"),
+    HelpEntryDef("voteunban", "[red]解除禁止投票", "解除指定玩家的禁止发起投票状态"),
+    HelpEntryDef("votelist", "[cyan]禁止投票名单", "查看当前被禁止发起投票的玩家与理由"),
     HelpEntryDef("cp", "[green]CP/DP管理", "查看v159完整Data Assets、属性Patch，并可 /cp load 快速加载服务器CP"),
     HelpEntryDef("externalcp", "[purple]外部CP", "管理 scripts/external-cp 下的外部JSON/HJSON CP热重载"),
     HelpEntryDef("worldprocessor", "[green]世界处理器", "查看/开启/关闭世界处理器与编辑权限"),
