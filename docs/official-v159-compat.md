@@ -14,6 +14,8 @@
 
 ## 2026-09-12：跟进 Mindustry 160.1 / MindustryX B491
 
+- **B491 已设为当前基线**：`server-2026.09.11.B491.jar` 放入 `mdtserver/`，并在 `server.properties`
+  的 `jar=` 中显式指定（启动脚本优先读该键）。回滚线 `server-2026.08.12.B485.jar` 保留。
 - 目标构建：MindustryX `prerelease-2026.09.11.B491` 的 `server-2026.09.11.B491.jar`
   （`version.properties` 内 `build=160.1`，SHA-256 `BC6ADBBF32E43AA98B9218F26641DA04D1507E188F4F78CAA2E598F5B234D3C2`）。
   注意 MindustryX **正式发行版 X36 仍是 v159.7**，160 目前只有 `prerelease-*` 构建。
@@ -22,14 +24,19 @@
   新增 `Tiles.getFire/setFire/getPuddle/setPuddle`，业务入口为 `mindustry.entities.Fires`
   （`create/get/has/extinguish/remove/register`）与 `mindustry.entities.Puddles`
   （`deposit/get/hasLiquid/remove/register`）。
+- **故障形态（生产实测）**：`limitFire.kts` 在 160 上编译通过但**运行期每 tick 抛
+  `NoSuchFieldError: Groups does not have member field 'EntityGroup fire'`**（监听器挂在
+  `Trigger.update` 上），直接打崩主循环——即群里所说"LimitFire 坏了会炸服"。
 - 适配口径：不再依赖版本专属分组字段，统一改为遍历 `Groups.all`（160 中仍包含 Fire/Puddle 实体，
   二者依旧实现 `Entityc` 并具备 `remove()`）并按实体类型筛选。涉及
   `wayzer/reGrief/limitFire.kts`、`wayzer/map/performanceGuard.kts`、
   `wayzer/map/serverPressureActions.kts`、`coreMindustry/contentsTweaker.kts`、
   `wayzer/user/ext/skills.kts` 共 5 处；细节见 [脚本维护总览](scripts-maintenance.md) 2026-09-12 条目。
+  同源问题已提交上游：[way-zer/ScriptAgent4MindustryExt#49](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/49)。
 - 已核对 160 仍保留的接口：`state.rules.fire`（`public boolean fire`，可读可写）、`Fires.*`、`Puddles.*`、
   `Groups.weather`、`Groups.all/unit/build/bullet/player`。
 - 冷启动验证：`共找到157脚本,加载成功153,启用成功148,出错0`（适配前为 `157/131/129/出错22`），
+  正式启动脚本 `start-server.ps1` 冷启动该基线 JAR 亦通过（`[E]` 0 条、无 `NoSuchFieldError`、6567 开放）；
   火焰链路运行期实测通过（造 60 格火 → `limitFire` 触发自动关闭火焰）。
 
 ## 2026-08-14：跟进 B485 发行版（原 B480 自定义专服补丁已废弃）

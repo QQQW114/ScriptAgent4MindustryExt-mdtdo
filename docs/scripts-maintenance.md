@@ -32,6 +32,24 @@ Mindustry 84cdf2b）。**160 从生成的 `Groups` 中移除了 `fire` 与 `pudd
 （火焰/液体洼地改为按 tile 存储，`Tiles.getFire/setFire/getPuddle/setPuddle` + `Fires`/`Puddles` 工具类），
 插件中 5 处直接引用 `Groups.fire`/`Groups.puddle` 的代码因此在 160 上编译失败，并级联拖垮 19 个脚本。
 
+**生产侧实际故障形态（用户提供的服务端日志，2026-09-11）**：`limitFire.kts` 在 160.1 上不是"编译失败不加载"，
+而是**加载后每 tick 抛 `NoSuchFieldError` 打崩主循环**（"会炸服"）：
+
+```
+[E] java.lang.NoSuchFieldError: Class mindustry.gen.Groups does not have member field 'mindustry.entities.EntityGroup fire'
+        at wayzer.reGrief.LimitFire.getFireCount(limitFire.kts:5)
+        at wayzer.reGrief.LimitFire._init_$lambda$1(limitFire.kts:9)   ← Trigger.update 监听器
+        at arc.Events.fire(Events.java:36)
+        at mindustry.core.Logic.update(Logic.java:510)
+```
+
+即 `Groups.fire` 的静态类型信息在编译期仍可解析（脚本能编译），但运行期解析字段时失败；
+监听器挂在 `Trigger.update` 上，因此异常每 tick 复现。上游维护者在群里给出的临时建议是"先删除该脚本、等插件升级"——
+本项目已按下方口径完成适配，**无需删除脚本**。
+
+> 上游 issue：[way-zer/ScriptAgent4MindustryExt#49](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/49)
+> （同源脚本在上游 master 上仍是旧写法，已附复现日志、根因与最小改法，标注 AIGC）。
+
 涉及文件：
 
 - `mdtserver/config/scripts/wayzer/reGrief/limitFire.kts`
@@ -69,8 +87,27 @@ Mindustry 84cdf2b）。**160 从生成的 `Groups` 中移除了 `fire` 与 `pudd
   读数为 60；把测试副本阈值临时降为 1 后 `limitFire` 真实触发——控制台出现
   `火焰过多造成服务器卡顿,自动关闭火焰`，且 `Vars.state.rules.fire == false`；随后按新逻辑清理无异常。
 - 测试工具：`.agents/test160.ps1`（冷启动+错误汇总）、`.agents/test160-fire.ps1`（火焰路径）、
-  `.agents/test160-limitfire.ps1`（触发路径）、`.agents/test160-run.cmd`（启动器，stdout 落文件避免管道死锁）。
+  `.agents/test160-limitfire.ps1`（触发路径）、`.agents/test160-launcher.ps1`（**正式启动脚本验证**）、
+  `.agents/test160-run.cmd`（启动器，stdout 落文件避免管道死锁）。
 - 测试进程已结束、6567/6859/10099 端口释放；测试副本与主工作区源文件已同步（临时阈值已还原）。
+
+**基线切换与正式启动脚本验证（2026-09-12）**：
+
+- `server-2026.09.11.B491.jar` 已放入 `mdtserver/`（SHA-256 复核一致），并把 `server.properties` 的
+  `jar=` 从 `server-2026.08.12.B485.jar` 改为该文件（原文件备份为 `server.properties.bak-*`）。
+  注意启动脚本**优先读 `jar=`**，缺省才按 `server-*.jar` 最新修改时间自动选择。
+- 用**项目正式启动脚本** `start-server.ps1` 冷启动该基线 JAR 验证：日志确认
+  `Jar file: …server-2026.09.11.B491.jar`、`共找到157脚本,加载成功153,启用成功148,出错0`、
+  `Server loaded`、6567 端口开放、地图 `evs 核裂阵（90波版）` 加载成功；
+  本次运行 `[E]` 行 **0 条**、无 `NoSuchFieldError`，日志按启动脚本正常归档到
+  `config/logs/history/2026-09-12/startup-*.log` 与 `script-load/history/…/script-load-startup-*.log`。
+- 已知边界（非本次适配引入）：`server.properties` 保持 `socketInput=false`，所以命令 Socket 不开放；
+  测试收尾走强杀进程，因此启动脚本会按"异常退出"记录一次自动重启尝试（`restart-supervisor.log`），
+  与本项目既有的 ScriptAgent 集中卸载停滞边界一致。
+
+**版本跟踪与 SA 维护口径（2026-09-12 用户明确）**：**常态化跟进上游最新版本**（Mindustry / MindustryX /
+参考项目）；**ScriptAgent 插件以本项目自行维护为主**，不再逐版跟随上游 SA，**仅在出现较大变动的发行版更新时
+再评估是否跟进**。当前基线为 Mindustry v160.1 / MindustryX `prerelease-2026.09.11.B491`。
 
 未覆盖边界：真实客户端进服、菜单/技能交互、多人压力，以及除火焰/洼地外的运行期长时行为；
 生产部署与实测仍需用户/运维执行。

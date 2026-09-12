@@ -60,9 +60,9 @@ Agent 可以在本工作区分析、编辑、构建、运行测试副本并准�
 |---|---|---|
 | 工作区 | C:\Users\qw114\Desktop\other\mdt保留\mdtdo | MDT DO 服务器独立开发项目；与 `mdt保留` 下其他项目（mod-dp-bridge、参考项目等）并列，不等同生产目录。 |
 | Git 基线 | 本地分支 master；提交号以 `git rev-parse HEAD` 现场核对 | 本文档不嵌入“当前提交号”，避免文档随提交自身变化而循环失效；写新改动前仍需检查 git status。 |
-| 游戏/服务端候选 | Mindustry **v160.1**，MindustryX prerelease **2026.09.11.B491**（160 首个候选） | **版本跟进总体原则：跟进新的稳定版本，由用户决定跟进哪个版本**；2026-09-12 按用户要求跟进 160 并完成插件适配。注意 MindustryX 正式发行版 X36 仍是 v159.7，160 只能取 `prerelease-*` 构建。 |
-| 候选 JAR | `mdtserver/server-2026.09.11.B491.jar`（**MindustryX** 发行版，`version.properties` 内 `build=160.1`） | SHA-256 `BC6ADBBF32E43AA98B9218F26641DA04D1507E188F4F78CAA2E598F5B234D3C2`；旧候选 `server-2026.08.12.B485.jar`（v159.7）仍保留在目录内可回滚。脚本硬依赖 MindustryX（`trafficMonitor.kts` → `mindustryX.events.SendPacketEvent`），**不能用官方 Mindustry 的 jar 顶替**。 |
-| JAR 与脚本时点 | B491（160.1）候选 JAR 于 2026-09-12 完成插件适配并冷启动验证 | 两个候选 JAR 并存；`start-server.ps1` 内写死 JAR 文件名，切换版本时需同步该脚本与 README 基线。 |
+| 游戏/服务端候选 | **当前基线：Mindustry v160.1，MindustryX prerelease 2026.09.11.B491**（2026-09-12 起启用） | **版本跟踪口径：常态化跟进上游最新版本**（Mindustry/MindustryX/参考项目）；**ScriptAgent 以本项目自行维护为主**，仅在较大变动的发行版更新时评估是否跟进。历史上由用户拍板升级基线。注意 MindustryX 正式发行版 X36 仍是 v159.7，160 目前只有 `prerelease-*` 构建。 |
+| 基线 JAR | `mdtserver/server-2026.09.11.B491.jar`（**MindustryX** 发行版，`version.properties` 内 `build=160.1`），已在 `server.properties` 的 `jar=` 显式指定 | SHA-256 `BC6ADBBF32E43AA98B9218F26641DA04D1507E188F4F78CAA2E598F5B234D3C2`；回滚线 `server-2026.08.12.B485.jar`（v159.7 最后一个稳定发行）保留在目录内，改 `jar=` 即可回滚。脚本硬依赖 MindustryX（`trafficMonitor.kts` → `mindustryX.events.SendPacketEvent`），**不能用官方 Mindustry 的 jar 顶替**。 |
+| JAR 与脚本时点 | B491（160.1）于 2026-09-12 完成插件适配、设为基线，并用正式启动脚本 `start-server.ps1` 冷启动验证 | 启动脚本优先读 `server.properties` 的 `jar=`，缺省才按 `server-*.jar` 最新修改时间自动选择——切换版本时务必同步 `jar=`。 |
 | 脚本运行时 | 工作区脚本已按 ScriptAgent 3.4.0 迁移；2026-07-29 已替换为维护者提供的未发行竞态修复构建 | 构建文件名为 `ScriptAgent4MindustryExt-e4b136c.jar`，运行时显示 `ScriptAgent c2823c1`；旧本地字节码 workaround 已备份。该构建尚未进入正式发行版，也不能推断生产正在使用。 |
 | 最近本地证据 | 2026-09-12 **B491 / Mindustry 160.1 冷启动 157/153/148/0**（`ScriptAgent c2823c1`），编译错误 0、异常 0；火焰链路运行期实测（造 60 格火 → `limitFire` 触发 `state.rules.fire=false` + 播报）。此前 2026-08-14 B485 冷启动 156/152/147/0，上行网卡统计生效（`性能等级 0->3` 实测）；08-06 冷启动 156/152/147/0 并控制台实测性能保护 L1-L4 阈值与出波暂停开关 | 160 适配前同环境为 `157/131/129/出错22`（`Groups.fire`/`Groups.puddle` 被 160 移除导致 3 个根脚本编译失败并级联）。各轮测试进程均已清理、端口释放、`server.properties` 未被改动（测试走独立副本）。 |
 | 生产状态 | 生产待用户/运维确认（生产服不存在于本机，Agent 无法推送/部署） | Agent 无法完成生产部署、停启、替换、推送或回滚；当前 HEAD 之后的改动尤其不能默认已经部署。 |
@@ -107,6 +107,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - 远程推送流程（2026-08-13 明确）：mdtdo 服务器仓库只做本地维护、不直接推送；每次推送前，**先同步 docs 与 scripts 的改动**到 `ScriptAgent4MindustryExt-mdtdo` 仓库，再从该仓库提交并推送；**推送默认包含 scripts 与 Agent 开发文档（docs）**。
 - 提交与推送的当前状态（2026-09-11 用户明确）：**默认提交但不推送**——完成一轮工作后按上述流程把改动提交到 mdtdo 与插件仓库即可，插件仓库可以处于“领先 origin/main 若干提交”的状态；**未经用户明确指示不要执行 `git push`**，也不要为了推送反复询问。
 - 版本跟进总体原则（2026-08-13 明确）：**跟进新的稳定版本**；无论 JAR 文件还是 SA 插件，**均由用户决定跟进哪个版本，并跟进用户所要求的对应版本**。文档中的版本号只是“当前时点状态”，Agent 不自行锁定基线、也不因上游更新自动改基线；需要升级时由用户提出并按新版本重新核对。
+- 版本跟踪与 SA 维护口径（2026-09-12 明确）：**常态化跟进上游最新版本**——Mindustry / MindustryX / 参考项目持续跟到最新，发现新版本按流程记录并适配；**ScriptAgent 插件以本项目自行维护为主**（不再逐版跟随上游 SA），**只在出现较大变动的发行版更新时再评估是否跟进**。当前基线为 Mindustry v160.1 / MindustryX `prerelease-2026.09.11.B491`。
 - 文档跟进规则（2026-08-22 明确）：**每次更新内容都要跟进文档**——凡是代码/脚本行为、配置、指令、版本或功能变化，都需要在对应专项文档与维护记录中同步，不留未记录的变化。
 - 汇报以中文、结构化、简洁、可追溯为宜；信息不足的会话如实记录，不为凑篇幅臆测扩写。
 
