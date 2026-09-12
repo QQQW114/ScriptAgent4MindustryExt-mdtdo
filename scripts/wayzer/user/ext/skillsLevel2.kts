@@ -72,6 +72,8 @@ private fun spendSkillCost(player: Player, cost: Int, code: String): Boolean = s
 private val playerTitle get() = skillsCore.playerTitle
 private val skillHealColor: Color get() = skillsCore.skillHealColor
 private fun setCoreZone(player: Player, range: IntRange) = skillsCore.setCoreZone(player, range)
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
+    skillsCore.spawnOverlapError(player, range, displayName)
 private fun unitTypeByName(name: String): UnitType? = skillsCore.unitTypeByName(name)
 private fun spawnAround(type: UnitType, player: Player, count: Int, radius: Float = 56f, configure: (mindustry.gen.Unit) -> Unit = {}) =
     skillsCore.spawnAround(type, player, count, radius, configure)
@@ -435,6 +437,8 @@ command("coreZone", "2级技能：核心区".with(), commands = SkillCommands) {
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
     skillBody {
         levelError(player, "2")?.let { returnReply("[red]$it".with()) }
+        // 出生点保护：核心区地板会占位，盖在敌方出生点上会让敌人刷不出来。
+        spawnOverlapError(player, -1..1, "核心区")?.let { returnReply(it.with()) }
         if (!spendSkillCost(player, 2, "coreZone")) returnReply("[red]MDC不足：核心区需要 2 MDC".with())
         setCoreZone(player, -1..1)
         broadcastSkill("核心区")

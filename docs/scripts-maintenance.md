@@ -22,6 +22,56 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-12（第三批）：suffixmark 落库 + 出生点保护 + 雷达修复
+
+类型：持久化改造 + 缺陷修复
+
+涉及文件：
+
+- `mdtserver/config/scripts/wayzer/user/suffix.kts`（自定义后缀标记改为落库）
+- `mdtserver/config/scripts/wayzer/lib/MdtStorage.kt`（新增后缀标记读写接口）
+- `mdtserver/config/scripts/wayzer/user/ext/skills.kts`（新增 `spawnOverlapError` 出生点保护）
+- `mdtserver/config/scripts/wayzer/user/ext/skillsCommon.kts`、`skillsLevel2.kts`、`skillsLevel3.kts`、
+  `skillsGodAdmin.kts`、`wayzer/user/skillShop.kts`（接入出生点保护）
+- `docs/skill-system.md`、`docs/scripts-maintenance.md`
+
+### 1. suffixmark 自定义后缀标记落库（用户要求）
+
+- 原实现 `@Savable` + `customLoad` 只是 **ScriptAgent 会话内热重载**机制（工程内无任何落盘文件，
+  重启即丢）；现改为以 `MdtStorage` 为唯一权威，键 `suffix.customMarks`，JSON 对象 `{"主体uid": "标记"}`。
+- 启动在 `Dispatchers.IO` 载入内存副本（`getSuffix()` 仍同步读内存，**不给名字渲染路径加数据库调用**）；
+  设置/隐藏/清除后立即整体写回；载入失败时**不打开写入开关**，避免空表覆盖已有数据。
+- 已移除 `@Savable`/`customLoad`，避免两套来源互相覆盖（符合"一个职责一个权威执行者"不变量）。
+- 详见上文 `wayzer/user/suffix.kts` 段落的验证记录（三步端到端已通过）。
+
+### 2. 出生点保护：核心区 / 预制防线不再卡掉敌人刷新（用户反馈）
+
+**现象**：3x3 核心区、4x4 核心区、初级预制防线、标准预制防线释放后，敌人出生点被占位，**敌人刷不出来**。
+
+- 原因：这些技能直接往地上铺地板/放方块，释放前只检查了"范围是否为空地/是否越界"
+  （`prefabAreaError`），**没有检查是否压到出生点**。
+- 修复：在核心技能库新增 `spawnOverlapError(player, range, displayName)`，判定口径与原版一致——
+  出生点 = 地图 `Blocks.spawn` 覆盖层所在格（运行时集合 `Vars.spawner.getSpawns()`），
+  影响半径取 `rules.dropZoneRadius / 8`（与 `WaveSpawner.isNearEnemySpawn()` 同一半径），
+  **只保护敌方（`rules.waveTeam`）出生点**；命中则拒绝释放并提示原因。
+- 接入 6 个技能：`coreZone`（3x3）、`corezone4`（4x4，商店技能）、`basicdefense`、`standarddefense`，
+  以及管理员技能的 `source`（物品源）与 `ecore`（E星核心）——后两者用 `setNet` 直接放**实体方块**，
+  压在出生点格上会真正占位。
+
+### 3. 雷达技能修复：不再"无雾就不可用"（用户反馈"雷达无用"）
+
+- 原实现开头有 `if (!Vars.state.rules.fog) returnReply("当前地图没有战争迷雾可开启")`，
+  但多数地图默认 `fog=false`，导致这个技能**实际上只能看着不能用**。
+- 修复：不再依赖释放前的雾状态——记录释放前的 `fog` 值，关闭迷雾 300 秒后**按原值恢复**；
+  连续释放用令牌保证只有最后一次负责恢复，避免互相打架；并按释放前的状态给出对应提示
+  （原本有雾 → "已解除战争迷雾，300 秒后恢复"；原本无雾 → "本图当前未启用战争迷雾，已保持全图可见 300 秒"）。
+
+验证（2026-09-12，测试副本 + B491 冷启动）：`共找到158脚本,加载成功154,启用成功149,出错0`，
+编译错误 0、异常 0。出生点保护与雷达属于运行期行为，需真实对局观察（已列入未覆盖边界）。
+
+未覆盖边界：出生点保护的实际拒绝效果与雷达的实际开雾观感都需要**真实对局**验证；
+本轮只做了加载与静态核对。
+
 ## 2026-09-12（第二批）：禁投票、SuperChat 时长、协管快捷菜单、波次卡死修复、随机永久效果
 
 类型：功能新增 + 缺陷修复
@@ -2733,6 +2783,22 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
   - `/suffixmark <玩家/3位ID> hide|clear|set <标记>`：为目标玩家设置。
 - 自定义标记允许颜色标签/十六进制颜色；原始长度限制 64，去颜色后可见字符限制 16。
 - 空字符串作为“隐藏”覆盖值保存，因此不会继续显示默认管理图标。
+- **持久化（2026-09-12 改为落库）**：此前 `customSuffixMark` 用的是 `@Savable` + `customLoad`，
+  那只是 ScriptAgent 的**会话内热重载**机制（工程内没有任何对应落盘文件，重启即丢）。
+  现在以 `MdtStorage`（`MdtSettings` 键 `suffix.customMarks`，JSON 对象 `{"主体uid": "标记"}`）为**唯一权威**：
+  - 启动时在 `Dispatchers.IO` 载入内存副本（日志 `已从数据库载入自定义后缀标记 N 条`），
+    `getSuffix()` 仍同步读内存，**不给名字渲染路径增加数据库调用**；
+  - 每次设置/隐藏/清除后立即整体写回；载入失败时**不打开写入开关**，避免用空表覆盖已有数据；
+  - 已移除 `@Savable`/`customLoad`，避免两套来源互相覆盖。
+  存储层新增 `loadCustomSuffixMarks` / `saveCustomSuffixMarks` / `removeCustomSuffixMark`。
+
+验证（2026-09-12，测试副本 + B491，三步冷启动端到端）：
+
+- `/suffixmark account:999006 set SUFFIXDBTEST` 后直接查 H2：`MdtSettings` 出现键 `suffix.customMarks`，
+  值为 `{"account:999006":{class:java.lang.String,value:SUFFIXDBTEST}}`（Arc `JsonIO` 的带类型标签格式）；
+- 重启后脚本日志：`已从数据库载入自定义后缀标记 1 条`（**跨重启保留**）；
+- 执行 `clear` 后再重启：`已从数据库载入自定义后缀标记 0 条`，库中键值同步清空。
+- 顺带确认 `JsonIO` 的写入/读回 round-trip 正常（解析时能正确跳过 `class` 标签）。
 
 权限：
 

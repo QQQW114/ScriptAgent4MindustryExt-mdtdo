@@ -1,13 +1,17 @@
 @file:Depends("wayzer/user/nameExt", "玩家名字前后缀")
 @file:Depends("wayzer/user/trustLevel", "3++协管后缀权限")
+@file:Depends("wayzer/mdtDatabase", "MDT数据库持久化")
 
 package wayzer.user
 
 import arc.util.Strings
 import cf.wayzer.placehold.DynamicVar
 import mindustry.gen.Iconc
+import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.TrustLevelChangedEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private val nameExt = contextScript<NameExt>()
 
@@ -25,9 +29,45 @@ listenTo<TrustLevelChangedEvent> {
     }
 }
 
-@Savable
+/**
+ * 自定义后缀标记（主体 uid → 标记；空字符串表示"隐藏"）。
+ *
+ * 2026-09-12：改为**落库持久化**。此前用的是 `@Savable` + `customLoad`，那只是 ScriptAgent
+ * **会话内热重载**用的机制（重启不会保留，工程内也没有对应落盘文件），所以设置的自定义标记会丢。
+ * 现在以 `MdtStorage`（MdtSettings 键 `suffix.customMarks`，JSON）为唯一权威：
+ * - 启动时从库载入内存副本（IO 线程），`getSuffix()` 仍然同步读内存，不给渲染路径加数据库调用；
+ * - 每次设置/清除后立即整体写回。
+ */
 val customSuffixMark = mutableMapOf<String, String>()
-customLoad(::customSuffixMark) { customSuffixMark.putAll(it) }
+
+/** 是否已完成一次库载入（未完成前的读取只看到内存态，属可接受的启动期窗口）。 */
+@Volatile private var suffixMarkLoaded = false
+
+private fun persistCustomSuffixMarks() {
+    if (!suffixMarkLoaded) return
+    val snapshot = customSuffixMark.toMap()
+    launch(Dispatchers.IO) {
+        runCatching { MdtStorage.saveCustomSuffixMarks(snapshot) }
+            .onFailure { logger.warning("保存自定义后缀标记失败：${it.message}") }
+    }
+}
+
+onEnable {
+    launch(Dispatchers.IO) {
+        runCatching { MdtStorage.loadCustomSuffixMarks() }
+            .onSuccess { loaded ->
+                // 以库为准：不再保留 @Savable 的会话副本，避免两套来源冲突。
+                customSuffixMark.clear()
+                customSuffixMark.putAll(loaded)
+                suffixMarkLoaded = true
+                logger.info("已从数据库载入自定义后缀标记 ${loaded.size} 条")
+            }
+            .onFailure {
+                // 载入失败时按空处理，但**不**打开写入开关，避免用空表覆盖已有数据。
+                logger.warning("读取自定义后缀标记失败（本次不写回，避免覆盖）：${it.message}")
+            }
+    }
+}
 
 fun Player.getSuffix(): String? {
     cache[uuid()]?.let { return it }
@@ -86,6 +126,7 @@ private fun applyCustomSuffix(target: SuffixTarget, mark: String?, operator: Pla
     } else {
         customSuffixMark[target.uid] = mark
     }
+    persistCustomSuffixMarks()
     target.player?.let {
         cache.remove(it.uuid())
         with(nameExt) { it.updateName() }

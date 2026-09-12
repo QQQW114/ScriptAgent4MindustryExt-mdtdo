@@ -70,6 +70,7 @@ private val seniorityLevel = contextScript<wayzer.user.SeniorityLevel>()
 private val recognition = contextScript<wayzer.ext.PlayerRecognition>()
 private val funRules = contextScript<wayzer.map.FunRuleModes>()
 private val randomForm = contextScript<wayzer.ext.PlayerRandomForm>()
+private val skillsCore = contextScript<wayzer.user.ext.Skills>()
 
 private val skillDefinitions = listOf(
     SkillShopDefinition("1", "radar", "雷达", "开雾300秒", buyPrice = 60, useCost = 4, cooldownMillis = 600_000),
@@ -303,6 +304,14 @@ private fun setFloorSquare(player: Player, block: Block, xRange: IntRange, yRang
         Vars.world.tile(unit.tileX() + x, unit.tileY() + y)?.setFloorNet(block)
     }
 }
+
+/**
+ * 出生点保护：放置类商店技能（核心区4x4 等）会往地上铺地板/方块，
+ * 盖在敌方出生点上会占位导致敌人刷不出来（2026-09-12 用户反馈）。
+ * 复用核心技能库的判定，保持与技能系统同一口径。
+ */
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
+    with(skillsCore) { spawnOverlapError(player, range, displayName) }
 
 private fun setOreSquare(player: Player, block: Block, xRange: IntRange, yRange: IntRange = xRange) {
     val unit = player.unit() ?: return
@@ -1029,21 +1038,34 @@ command("skillshop", "打开技能商店") {
     body { openSkillShop(player!!) }
 }
 
+/** 雷达开雾令牌：只有最新一次释放负责恢复，避免连续释放互相打架。 */
+private var radarFogToken = 0
+
 command("radar", "商店技能：雷达".with(), commands = SkillCommands) {
     aliases = listOf("雷达")
     val def = skillByCode.getValue("radar")
     attr(ShopSkillPrecheck(def)); attr(SkillCooldown(def.cooldownMillis ?: -1))
     skillBody {
-        if (!Vars.state.rules.fog) returnReply("[yellow]当前地图没有战争迷雾可开启".with())
         prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
+        // 2026-09-12 修复：原实现在 `!rules.fog` 时直接回「当前地图没有战争迷雾可开启」，
+        // 但绝大多数地图默认 fog=false，导致这个技能实际上只能看着不能用。
+        // 现在改为：无论当前是否开雾都以「开雾 300 秒」结算——记录释放前的 fog 值，到点按原值恢复。
+        val previousFog = Vars.state.rules.fog
+        val token = ++radarFogToken
         launch(Dispatchers.game) {
             Vars.state.rules.fog = false
             Call.setRules(Vars.state.rules)
             delay(300_000)
-            Vars.state.rules.fog = true
+            if (token != radarFogToken) return@launch
+            Vars.state.rules.fog = previousFog
             Call.setRules(Vars.state.rules)
         }
         broadcastSkill("雷达")
+        if (previousFog) {
+            player.sendMessage("[green]雷达已开启：[white]已解除战争迷雾，300 秒后恢复。".with())
+        } else {
+            player.sendMessage("[green]雷达已开启：[white]本图当前未启用战争迷雾，已保持全图可见 300 秒。".with())
+        }
     }
 }
 
@@ -1096,6 +1118,7 @@ command("corezone4", "商店技能：核心区4x4".with(), commands = SkillComma
     attr(ShopSkillPrecheck(def)); attr(SkillCooldown(def.cooldownMillis ?: -1))
     skillBody {
         prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
+        spawnOverlapError(player, -1..2, "核心区4x4")?.let { returnReply(it.with()) }
         setFloorSquare(player, Blocks.coreZone, -1..2)
         broadcastSkill("核心区4x4")
     }

@@ -3,6 +3,8 @@ package wayzer.lib
 import coreLib.db.DBApi
 import coreLib.db.DBApi.WithUpgrade
 import coreLibrary.lib.get
+import arc.struct.ObjectMap
+import mindustry.io.JsonIO
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.dao.id.IntIdTable
@@ -971,6 +973,52 @@ object MdtStorage {
                 result[key] = Settings.selectAll().where { Settings.id eq key }.firstOrNull()?.get(Settings.value)
             }
         result
+    }
+
+    // ---------- 名字后缀标记（自定义/隐藏管理标）----------
+    // 2026-09-12：从脚本会话态改为落库持久化，键值存在 MdtSettings，格式为 JSON 对象 {"主体uid": "标记"}。
+    // 标记是任意可见字符串（可能含颜色标记、图标字符），因此用 JSON 而不是分隔符拼接，避免转义问题。
+
+    private const val SUFFIX_MARKS_KEY = "suffix.customMarks"
+
+    /** 读取全部自定义后缀标记（主体 uid → 标记；空字符串表示"隐藏"）。 */
+    fun loadCustomSuffixMarks(): Map<String, String> = transaction {
+        val raw = Settings.selectAll().where { Settings.id eq SUFFIX_MARKS_KEY }
+            .firstOrNull()?.get(Settings.value)
+        if (raw.isNullOrBlank()) return@transaction emptyMap()
+        runCatching { JsonIO.read(ObjectMap::class.java, raw) as? ObjectMap<*, *> }
+            .getOrNull()
+            ?.let { map ->
+                val out = linkedMapOf<String, String>()
+                // ObjectMap 既没有 Kotlin 解构也没有 forEach，用 entries() 显式迭代。
+                val it = map.entries().iterator()
+                while (it.hasNext()) {
+                    val entry = it.next()
+                    val k = entry.key
+                    val v = entry.value
+                    if (k != null && v != null) out[k.toString()] = v.toString()
+                }
+                out
+            }
+            ?: emptyMap()
+    }
+
+    /** 覆盖写入全部自定义后缀标记（整体替换语义，与内存态保持一致）。 */
+    fun saveCustomSuffixMarks(marks: Map<String, String>) = transaction {
+        val map = ObjectMap<String, String>()
+        marks.forEach { (k, v) -> map.put(k, v) }
+        setSettingInTx(SUFFIX_MARKS_KEY, JsonIO.write(map))
+        Unit
+    }
+
+    /** 删除单个主体的后缀标记；返回是否存在过。 */
+    fun removeCustomSuffixMark(uid: String): Boolean = transaction {
+        val current = loadCustomSuffixMarks()
+        if (!current.containsKey(uid)) return@transaction false
+        val map = ObjectMap<String, String>()
+        current.filterKeys { it != uid }.forEach { (k, v) -> map.put(k, v) }
+        setSettingInTx(SUFFIX_MARKS_KEY, JsonIO.write(map))
+        true
     }
 
     private fun setSettingInTx(key: String, value: String?) {

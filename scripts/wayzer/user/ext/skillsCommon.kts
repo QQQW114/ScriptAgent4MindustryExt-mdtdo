@@ -70,6 +70,8 @@ private fun placeBlockAtPlayer(player: Player, block: mindustry.world.Block, req
     skillsCore.placeBlockAtPlayer(player, block, requireAir)
 private fun prefabAreaError(player: Player, range: IntRange, displayName: String): String? =
     skillsCore.prefabAreaError(player, range, displayName)
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
+    skillsCore.spawnOverlapError(player, range, displayName)
 private suspend fun buildBasicPrefabDefense(player: Player) = skillsCore.buildBasicPrefabDefense(player)
 private fun clearNearbyFires(player: Player, radiusTiles: Int = 10): Int = skillsCore.clearNearbyFires(player, radiusTiles)
 
@@ -171,6 +173,8 @@ command("basicdefense", "通用技能：初级预制防线".with(), commands = S
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown())
     skillBody {
         prefabAreaError(player, -1..2, "初级预制防线")?.let { returnReply(it.with()) }
+        // 出生点保护：防线会占位，盖在敌方出生点上会让敌人刷不出来。
+        spawnOverlapError(player, -1..2, "初级预制防线")?.let { returnReply(it.with()) }
         launch(Dispatchers.game) { buildBasicPrefabDefense(player) }
         broadcastSkill("初级预制防线")
     }

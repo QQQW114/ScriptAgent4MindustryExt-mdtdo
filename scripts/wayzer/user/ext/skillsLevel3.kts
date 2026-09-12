@@ -81,6 +81,7 @@ private fun damageAllUnits(percent: Float) = skillsCore.damageAllUnits(percent)
 private fun randomWeather() = skillsCore.randomWeather()
 private fun clearNearbyFires(player: Player, radiusTiles: Int = 10): Int = skillsCore.clearNearbyFires(player, radiusTiles)
 private fun prefabAreaError(player: Player, range: IntRange, displayName: String): String? = skillsCore.prefabAreaError(player, range, displayName)
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? = skillsCore.spawnOverlapError(player, range, displayName)
 private suspend fun buildStandardPrefabDefense(player: Player) = skillsCore.buildStandardPrefabDefense(player)
 private fun unitTypeByName(name: String): UnitType? = skillsCore.unitTypeByName(name)
 private fun spawnAround(type: UnitType, player: Player, count: Int, radius: Float = 56f, configure: (mindustry.gen.Unit) -> Unit = {}) =
@@ -516,6 +517,8 @@ command("standarddefense", "3级技能：标准预制防线".with(), commands = 
     skillBody {
         levelError(player, "3")?.let { returnReply("[red]$it".with()) }
         prefabAreaError(player, -2..3, "标准预制防线")?.let { returnReply(it.with()) }
+        // 出生点保护：防线会占位，盖在敌方出生点上会让敌人刷不出来。
+        spawnOverlapError(player, -2..3, "标准预制防线")?.let { returnReply(it.with()) }
         if (!spendSkillCost(player, 23, "standarddefense")) returnReply("[red]MDC不足：标准预制防线需要 23 MDC".with())
         launch(Dispatchers.game) { buildStandardPrefabDefense(player) }
         broadcastSkill("标准预制防线")

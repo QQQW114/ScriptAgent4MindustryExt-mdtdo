@@ -13,6 +13,7 @@ import arc.audio.Sound
 import arc.graphics.Color
 import arc.math.Interp
 import arc.math.Mathf
+import arc.math.geom.Point2
 import arc.math.geom.Vec2
 import arc.struct.Seq
 import arc.util.pooling.Pools
@@ -313,6 +314,46 @@ data class PrefabBlock(
     val block: Block,
     val rotation: Int = 0,
 )
+
+/**
+ * 出生点保护：检查以脚下为锚点的矩形是否会压到敌方出生点。
+ *
+ * 背景（2026-09-12 用户反馈）：核心区（3x3/4x4）与预制防线（初级/标准）会直接往地上铺地板或放方块，
+ * 如果盖在敌人出生点上，会占位导致**敌人刷不出来**（出生点被卡掉）。
+ *
+ * 判定口径与原版一致：出生点 = 地图上 `Blocks.spawn` 覆盖层所在格，
+ * 运行时集合为 `Vars.spawner.getSpawns()`；影响范围按 `rules.dropZoneRadius`（像素）折算成格，
+ * 与 `Vars.spawner.isNearEnemySpawn()` 用的是同一个半径。
+ */
+fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? {
+    val unit = player.unit() ?: return null
+    val anchorX = unit.tileX()
+    val anchorY = unit.tileY()
+    val usedTeam = player.team()
+    // dropZoneRadius 是像素；出生点自身所在格加上半径覆盖的格数。
+    val radiusTiles = ((Vars.state.rules.dropZoneRadius / 8f).coerceAtLeast(1f) + 0.5f).toInt()
+    val px1 = anchorX + range.first
+    val py1 = anchorY + range.first
+    val px2 = anchorX + range.last
+    val py2 = anchorY + range.last
+
+    val hit = runCatching {
+        Vars.spawner.getSpawns().any { tile ->
+            // 只保护敌方（波次队伍）出生点；己方/中立出生点被覆盖不影响出怪。
+            val teamHere = tile.team()
+            if (teamHere != Vars.state.rules.waveTeam) return@any false
+            val sx1 = tile.x - radiusTiles
+            val sy1 = tile.y - radiusTiles
+            val sx2 = tile.x + radiusTiles
+            val sy2 = tile.y + radiusTiles
+            px1 <= sx2 && px2 >= sx1 && py1 <= sy2 && py2 >= sy1
+        }
+    }.getOrDefault(false)
+
+    return if (hit)
+        "[red]$displayName 的放置范围压到了敌方出生点（含出怪保护半径），会卡掉敌人刷新，已拒绝释放。"
+    else null
+}
 
 fun prefabAreaError(player: Player, range: IntRange, displayName: String): String? {
     val unit = player.unit() ?: return "[red]无法获取当前单位"

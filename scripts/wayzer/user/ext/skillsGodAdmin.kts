@@ -71,6 +71,8 @@ private fun godMenuAllowed(player: Player): Boolean = skillsCore.godMenuAllowed(
 private fun skillAdmin(player: Player): Boolean = skillsCore.skillAdmin(player)
 private suspend fun openSkillMainMenu(player: Player) = skillsCore.openSkillMainMenu(player)
 private fun setBlockSquare(player: Player, block: mindustry.world.Block, range: IntRange) = skillsCore.setBlockSquare(player, block, range)
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
+    skillsCore.spawnOverlapError(player, range, displayName)
 private fun placeBlockAtPlayer(player: Player, block: mindustry.world.Block, requireAir: Boolean = false): Boolean = skillsCore.placeBlockAtPlayer(player, block, requireAir)
 private fun smashWalls(player: Player, range: IntRange): Int = skillsCore.smashWalls(player, range)
 private fun spawnAround(type: UnitType, player: Player, count: Int, radius: Float = 56f, configure: (mindustry.gen.Unit) -> Unit = {}) =
@@ -506,6 +508,7 @@ command("source", "管理员技能：物品源".with(), commands = SkillCommands
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
+        spawnOverlapError(player, -1..1, "物品源")?.let { returnReply(it.with()) }
         setBlockSquare(player, Blocks.itemSource, -1..1)
         broadcastSkill("物品源")
     }
@@ -516,6 +519,7 @@ command("ecore", "管理员技能：E星核心".with(), commands = SkillCommands
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
+        spawnOverlapError(player, -1..1, "E星核心")?.let { returnReply(it.with()) }
         setBlockSquare(player, Blocks.coreBastion, -1..1)
         broadcastSkill("E星核心")
     }
