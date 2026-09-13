@@ -129,6 +129,11 @@
   另：socketInput 由启动器读 `server.properties` 生成启动参数，**改了配置要重启整个启动器**
   （只 kill java 不够——正在运行的 `start-server.ps1` 内存里还是旧配置，会把它写成 `false`）。
   测试实例仍走启动参数 `config socketInput true`（只传这一条，避免 socketConfigChanged 竞态）。
+- **reload 的静默特性（2026-09-13 实测）**：`sa load <module[/script]>` 只在**源码有变化时**才重编
+  （判据：`config/scripts/cache/<hash>.ktc` 的 mtime 更新）；源码没变则是缓存命中的**静默 no-op**，
+  socket 上没有任何回显——不要误判成"命令没生效"。命令只在出错/找不到目标时回显
+  （如 `sa load 不存在的模块` → `找不到模块或者脚本`）。完整链路：
+  `sa load <module>` → `sa load <依赖它的业务脚本>` → `sa listFailed` 确认无故障脚本。
 - 数据库/文件操作不要放游戏线程：现有模式 = 事件监听器只往 `ConcurrentLinkedQueue` 投递，
   `Dispatchers.IO` 协程单写者处理 + 内存态 `@Volatile` 快照给游戏线程读（参考
   `ext/serverStats.kts`、`reGrief/trafficMonitor.kts`）。

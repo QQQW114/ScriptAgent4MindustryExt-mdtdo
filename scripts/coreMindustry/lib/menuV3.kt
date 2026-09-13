@@ -579,3 +579,4 @@ inline fun <T> MenuV3.renderPaged(
         option("->") { selectedPage = page + 1; refresh() }
     }
 }
+// 尺寸口径速查：rootWidth 是桌面基准宽度，实际宽度 = rootWidth * uiScale（见 docs/custom-menu.md「客户端缩放与移动端」）。
