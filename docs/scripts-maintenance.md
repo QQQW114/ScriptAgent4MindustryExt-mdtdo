@@ -22,6 +22,32 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-13（第三批）：成就页改用 v160 服务端下发菜单（`MenuV3` 首个接入）
+
+类型：功能改造（用户要求："先拿成就页吧，做一下我看看效果，保守一点，依照原本，靠着中间，不需要填满整个屏幕"）
+
+- **改动文件**：`wayzer/user/achievement.kts`（新增 `showAchievementPage`，命令 `/achievements` 改调它）、
+  `coreMindustry/lib/menuV3.kt`（新增 `fillScreen` 开关）。
+- **内容零改动**：标题 `[yellow]成就系统`、进度 msg、6 条/页、分页三按钮、隐藏成就/已完成显示规则、
+  点击行为（已完成→全服展示、未完成→仅自己提示）、管理员"成就管理"入口，全部与旧聊天菜单版本逐字一致；
+  仅换渲染方式。旧实现 `showAchievementMenu`（`PagedMenuBuilder`）原样保留作回退路径。
+- **观感（按要求保守 / 靠中 / 不铺满屏幕）**：
+  - `fillScreen = false` —— v160 `MenuBuilder.fillScreen`，客户端 `setFillParent(false)` 后
+    `Dialog.show()` 会 `pack()` 并 `centerWindow()`，即**内容大小的对话框居中显示**；
+  - `wrapInPane = false` + `pane("achievementList", 300f)` —— 列表放进**固定高度**的可滚动区域，
+    对话框高度可控、小屏也不会超出，分页按钮在滚动内容末尾；
+  - `rootWidth = 440f`（MenuV3 默认 520，这里略窄）。
+  - 两个观感常量集中在文件顶部：`ACHIEVEMENT_PAGE_WIDTH`、`ACHIEVEMENT_PAGE_LIST_HEIGHT`，便于按实测调。
+- **新增 API**：`MenuV3.fillScreen`（默认 `true`，保持参考实现行为；为 false 时对话框按内容居中，
+  文档里也写明此时 `growY/growX` 没有可分配空间，内容高度要用 `pane(..., height)` 之类自己约束）。
+- **交互细节**：分页状态存在 `MenuV3.sessionState`（`send()` 只清 items/callbacks，不清 sessionState），
+  `refresh()` 重发后仍停在同一页；管理员入口先 `close()` 再打开原有旧式管理菜单，避免两种菜单叠加；
+  关闭方式为对话框返回键或页内"关闭"按钮，60 秒无操作自动关闭（与原菜单一致）。
+- **验证**：清空编译缓存全量重编译 X37 → **`共找到157脚本,加载成功153,启用成功148,出错0`**，
+  无异常、Socket 正常、端口全释放。**观感必须真实客户端确认**（本环境无法渲染菜单）。
+- **回退**：`/achievements` 命令体里 `showAchievementPage(player!!)` → `showAchievementMenu(player!!)`。
+- 机制与后续步骤见 [自定义菜单](custom-menu.md)，成就内容规则见 [成就系统](achievement-system.md)。
+
 ## 2026-09-13（第二批）：对照 ScriptAgent 上游最新 + 落地 `MenuV3` 菜单基础库
 
 类型：上游对照跟进 + 菜单基础设施（用户要求："把 sa 最新的仓库拉下来参考，对照脚本，把明显可更新的部分更新了"，并评估参考脚本 `menu.ui.kt`）

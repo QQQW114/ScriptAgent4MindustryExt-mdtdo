@@ -128,6 +128,22 @@
 未覆盖边界：**真实客户端的观感（缩放/适配/图标是否齐全）必须由玩家侧实测**，
 本轮只做到"编译通过 + 机制有源码依据"。
 
+### 首个接入：成就页（2026-09-13）
+
+`/achievements` 已改用 `MenuV3` 渲染（`wayzer/user/achievement.kts` 的 `showAchievementPage`）：
+
+- **内容与旧聊天菜单逐字一致**（标题、进度 msg、6 条/页、分页 `<-`/`页/总`/`->`、管理入口、隐藏成就规则都没动）；
+- **观感**按要求做成"保守 + 靠中 + 不铺满屏幕"：`fillScreen = false`（原版 `Dialog.show()` 会 `pack()` 后
+  `centerWindow()` 居中）、`wrapInPane = false` + 固定高度 `pane("achievementList", 300f)`（列表在内部滚动，
+  对话框高度可控）、`rootWidth = 440f`（比默认 520 略窄）；
+- 旧实现 `showAchievementMenu`（`PagedMenuBuilder` 聊天菜单）**原样保留**，
+  回退只需把命令体里的 `showAchievementPage(player!!)` 改回 `showAchievementMenu(player!!)`；
+- 分页状态靠 `MenuV3.sessionState` 保存（`send()` 只清 items/callbacks，不清 sessionState），
+  所以 `refresh()` 重发菜单后仍停在同一页；
+- 管理入口点击时先 `close()` 再打开原有的旧式管理菜单，避免两种菜单叠在一起。
+
+效果需要真实客户端确认（本环境只能验证编译与冷启动）。
+
 ## 若将来要重启这个方向（已按 2026-09-13 结论更新）
 
 1. **从单个只读页面起步**（wiki 最合适）：`MenuV3(player) { title/msg + 一个 pane + 若干 option }`，

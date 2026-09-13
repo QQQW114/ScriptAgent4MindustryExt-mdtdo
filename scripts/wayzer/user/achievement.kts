@@ -12,7 +12,9 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.MenuV3
 import coreMindustry.PagedMenuBuilder
+import coreMindustry.renderPaged
 import coreMindustry.lib.hasPermission
 import wayzer.lib.DatabaseFeature
 import wayzer.lib.DatabaseFeatureChangedEvent
@@ -32,6 +34,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.Instant
+import kotlin.time.Duration.Companion.seconds
 
 private data class AchievementTitleReward(
     val code: String,
@@ -507,6 +510,11 @@ private fun showAchievement(uid: String, player: Player, achievement: Achievemen
     broadcast("[gold]${player.name}[white]正在展示ta的[accent]${achievement.name}[gold]成就！[white] 奖励：${rewardText(achievement)}".with())
 }
 
+/**
+ * 旧版（聊天式 followup 菜单）成就页实现。
+ * 2026-09-13 起 `/achievements` 改走 [showAchievementPage]（v160 服务端下发菜单，MenuV3 试点），
+ * 这里**原样保留**作为回退路径：把 command 里的调用换回本函数即可整体回退。
+ */
 private suspend fun showAchievementMenu(player: Player) {
     if (!ensureAchievementEnabled(player)) return
     val uid = PlayerData[player].id
@@ -535,6 +543,51 @@ private suspend fun showAchievementMenu(player: Player) {
             super.build()
         }
     }.sendTo(player, 60_000)
+}
+
+// ---- 成就页：v160 服务端下发菜单（MenuV3 试点，2026-09-13）----
+// 口径：**内容与原聊天菜单逐字一致**，只换渲染方式；布局交给 MenuV3（不要自己算宽度）。
+// 观感：不铺满屏幕（原版会把对话框 pack 后居中），列表放在固定高度的 pane 里，屏幕小也能滚动。
+private val ACHIEVEMENT_PAGE_WIDTH = 440f
+private val ACHIEVEMENT_PAGE_LIST_HEIGHT = 300f
+
+private suspend fun showAchievementPage(player: Player) {
+    if (!ensureAchievementEnabled(player)) return
+    val uid = PlayerData[player].id
+    checkAchievements(uid, player)
+    val completed = completedAchievements(uid)
+    val defs = allAchievementDefinitions(includeDisabledCustom = false)
+    val knownCodes = defs.mapTo(hashSetOf()) { it.code }
+    val completedCount = completed.count { it in knownCodes }
+    val canAdmin = player.hasPermission("wayzer.admin.achievement")
+
+    MenuV3(player) {
+        title = "[yellow]成就系统"
+        msg = """
+            |[cyan]完成进度：[white]$completedCount/${defs.size}
+            |[gray]点击已完成成就可向全服展示；隐藏成就未完成前不显示名字和奖励。
+        """.trimMargin()
+
+        // 保守口径：靠中、不铺满整屏；内容宽度比默认 520 略窄
+        fillScreen = false
+        wrapInPane = false
+        rootWidth = ACHIEVEMENT_PAGE_WIDTH
+
+        if (canAdmin) {
+            option("[yellow]成就管理\n[gray]添加/删除/编辑自定义成就") {
+                close()
+                showAchievementAdminMenu(player)
+            }
+        }
+
+        pane("achievementList", ACHIEVEMENT_PAGE_LIST_HEIGHT) {
+            renderPaged(defs, initialPage = 1, prePage = 6) { item ->
+                option(optionText(completed, item)) { showAchievement(uid, player, item) }
+            }
+        }
+
+        option("关闭") { close() }
+    }.send().awaitWithTimeout(60.seconds)
 }
 
 private fun resolveTarget(text: String): AchievementTarget {
@@ -822,7 +875,8 @@ command("achievements", "打开成就系统") {
     attr(ClientOnly)
     body {
         if (!achievementEnabled()) returnReply(achievementDisabledMessage().with())
-        showAchievementMenu(player!!)
+        // 2026-09-13：改用 v160 服务端下发菜单（MenuV3 试点）。要回退成聊天菜单，把下行换成 showAchievementMenu(player!!)
+        showAchievementPage(player!!)
     }
 }
 

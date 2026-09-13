@@ -43,6 +43,14 @@
   - `xxx正在展示ta的xxx[gold]成就！ 奖励：xxx MDC+称号奖励*1`
 - 点击未完成成就只给自己提示，不全服广播；提示会包含该成就的达成要求。隐藏成就未完成前仍隐藏名字和奖励，但会显示达成要求。
 
+> **渲染方式（2026-09-13 起）**：`/achievements` 由聊天式菜单改为 **v160 服务端下发菜单**
+> （`coreMindustry.MenuV3`，见 [自定义菜单](custom-menu.md)）。**上面这些内容与交互规则逐字未变**，只是换渲染方式：
+> 不铺满屏幕、内容居中，列表放在固定高度的可滚动区域里，分页按钮固定在列表末尾。
+> 观感参数在 `wayzer/user/achievement.kts` 里：`ACHIEVEMENT_PAGE_WIDTH`（默认 440）、
+> `ACHIEVEMENT_PAGE_LIST_HEIGHT`（默认 300）。
+> **回退**：把 `/achievements` 命令体里的 `showAchievementPage(player!!)` 换回
+> `showAchievementMenu(player!!)` 即可整体回到聊天菜单（旧实现原样保留）。
+
 ## 管理指令与管理菜单
 
 - `/achadmin [menu]`

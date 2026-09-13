@@ -82,6 +82,14 @@ open class MenuV3(
     @MenuBuilderDsl
     var wrapInPane: Boolean = true
 
+    /**
+     * 是否让对话框铺满整个屏幕（v160 `MenuBuilder.fillScreen`）。
+     * `false` 时对话框按内容 `pack()` 并由原版 `Dialog.centerWindow()` **居中**显示，适合"小页面 / 不动整屏"的场合；
+     * 注意此时 `growY/growX` 没有可分配空间，内容高度请自己用 `pane(..., height)` 或固定高度约束。
+     */
+    @MenuBuilderDsl
+    var fillScreen: Boolean = true
+
     /** 内容宽度 */
     @MenuBuilderDsl
     var rootWidth: Float = 520f
@@ -345,6 +353,7 @@ open class MenuV3(
             .token(sessionToken)
             .title(title.ifEmpty { null })
             .hideOnClick(false)
+            .fillScreen(fillScreen)
             .show(player)
 
         return this
