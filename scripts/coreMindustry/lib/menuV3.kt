@@ -79,6 +79,13 @@ open class MenuV3(
     var msg = ""
     @MenuBuilderDsl
     var columnPreRow = 1
+
+    /**
+     * 把整页内容包进一层滚动区。
+     * 注意：**只在 `fillScreen=true` 时有意义**——`fillScreen=false` 时对话框按内容 `pack()`，
+     * `growY` 没有可分配空间，滚动区高度会退化成内容高度（读起来像"没限制"）。
+     * 当前三个接入页面都是 `wrapInPane=false` + 自己用 `pane(id, height)` 控制阅读区。
+     */
     @MenuBuilderDsl
     var wrapInPane: Boolean = true
 
@@ -221,10 +228,11 @@ open class MenuV3(
         newRow()
     }
 
+    /** 占位空格：高度与一行按钮一致，用于"本页条目不足时补齐行数"，避免翻页时下面的按钮上下跳动。 */
     @MenuBuilderDsl
     fun space() {
         ensureSpace()
-        addCell(UiBuilder.space().pad(cellPad), autoSize = true)
+        addCell(UiBuilder.space().height(optionHeight).pad(cellPad), autoSize = true)
     }
 
     @MenuBuilderDsl

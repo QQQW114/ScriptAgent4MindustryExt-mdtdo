@@ -49,6 +49,8 @@
 - `pane()` 内层内容表按 `tableWidth` 限宽（= `rootWidth - cellPad*2 - 24`，24px 留给滚动条）；
   `condition {}` 同样按 `rootWidth` 限宽；`wrapInPane` 分支的 pane 改 `width(rootWidth)`。
 - `fillScreen` **默认改为 `false`**；Wiki / 帖子页显式 `false`（成就页原本就是 `false`）。
+- `space()` 占位行改用 `height(optionHeight)`：原来占位行只有 8px，"本页条目不足补空行"反而让翻页时下方按钮上下跳动。
+- `wrapInPane` 补注释：它在 `fillScreen=false` 下没有可分配空间（`growY` 失效），三个接入页面都用 `wrapInPane=false` + 自控高度的 `pane`。
 
 ### 3. 版式尺寸（用户要求"这两项可以占的总面积大一些"）
 

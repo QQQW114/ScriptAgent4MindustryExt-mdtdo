@@ -155,6 +155,8 @@
 - `buildTable(source, tableWidth)`：宽度写在**每一行**的 cell 上（`UiBuilder.table().width(tableWidth)`），不再 `growX()`；
   行的横向居中靠根节点的 `align("center")`（唯一生效的根属性 → 落到 `dialog.cont.align`）。
 - `pane()` 的滚动内容宽度 = `tableWidth - cellPad*2 - 24`（给滚动条留位）；`condition {}` 同样按 `rootWidth` 限宽。
+- `space()` 占位行高度改为与按钮一致（`optionHeight`）：本页条目不足时补齐行的真实高度一致，
+  翻页时下方的按钮不再上下跳动（原来占位行只有 8px）。
 - `fillScreen` 默认改为 `false`；Wiki / 帖子页显式 `false`（成就页本来就是 `false`）。
 - 按"占的面积大一些"调尺寸：Wiki `780` / 正文 `400`；帖子 `860` / 正文 `340` / 评论 `380`。
 
