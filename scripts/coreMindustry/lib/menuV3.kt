@@ -1,0 +1,495 @@
+@file:Suppress("DSL_MARKER_APPLIED_TO_WRONG_TARGET")
+
+package coreMindustry
+
+import cf.wayzer.scriptAgent.thisContextScript
+import cf.wayzer.scriptAgent.util.DSLBuilder
+import coreLibrary.lib.CommandInfo
+import coreLibrary.lib.util.calPage
+import coreMindustry.lib.game
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import mindustry.gen.Call
+import mindustry.gen.Player
+import mindustry.ui.Menus
+import mindustry.ui.builder.MenuResult
+import mindustry.ui.builder.UiBuilder
+import mindustry.ui.builder.UiBuilder.NodeBuilder
+import kotlin.properties.ReadWriteProperty
+import kotlin.reflect.KProperty
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import mindustry.ui.builder.MenuBuilder as MTMenuBuilder
+
+/** 布局项：一个节点，或一个换行标记 */
+private sealed interface MenuItem {
+    object Row : MenuItem
+
+    /** 单元格,[columns] 为加入时的列数，[autoSize] 表示参与等宽分配 */
+    class Cell(val node: NodeBuilder<*>, val columns: Int, val autoSize: Boolean = false) : MenuItem
+}
+
+@Suppress("unused", "MemberVisibilityCanBePrivate")
+@MenuV3.MenuBuilderDsl
+open class MenuV3(
+    val player: Player,
+    private val block: suspend MenuV3.() -> Unit = { }
+) {
+    @DslMarker
+    annotation class MenuBuilderDsl
+
+    class RefreshReturn : Throwable("This method should only call in callback", null, false, false) {
+        private fun readResolve(): Any = RefreshReturn()
+    }
+
+    open class FlagOptionBuilder {
+        var name: String? = null
+        var action: suspend () -> Unit = { }
+
+        @MenuBuilderDsl
+        @Throws(CommandInfo.Return::class)
+        open fun option(name: String, action: suspend () -> Unit = { }) {
+            this.name = name
+            this.action = action
+            CommandInfo.Return()
+        }
+
+        @MenuBuilderDsl
+        fun refreshOption(name: String): Nothing {
+            option(name)
+            throw RefreshReturn()
+        }
+
+        object Dummy : FlagOptionBuilder() {
+            override fun option(name: String, action: suspend () -> Unit) = Unit
+        }
+    }
+
+    private var items = mutableListOf<MenuItem>()
+    private val callbacks = mutableMapOf<String, suspend (MenuResult) -> Unit>()
+    private var optionSeq = 0
+    private var colCount = 0
+    private var radioGroup: String? = null
+
+    @MenuBuilderDsl
+    var title = ""
+    @MenuBuilderDsl
+    var msg = ""
+    @MenuBuilderDsl
+    var columnPreRow = 1
+    @MenuBuilderDsl
+    var wrapInPane: Boolean = true
+
+    /** 内容宽度 */
+    @MenuBuilderDsl
+    var rootWidth: Float = 520f
+
+    /** 单元格内边距 */
+    @MenuBuilderDsl
+    var cellPad: Float = 4f
+
+    /** 按钮高度 */
+    @MenuBuilderDsl
+    var optionHeight: Float = 50f
+
+    val sessionState = mutableMapOf<String, Any?>()
+    var onCancel: suspend () -> Unit = { }
+    private var closed = false
+
+    @MenuBuilderDsl
+    inline fun <reified T> stateKey(
+        default: T,
+        keyPrefix: String = ""
+    ): DSLBuilder.NameGet<ReadWriteProperty<Any?, T>> =
+        DSLBuilder.NameGet { name ->
+            val key = keyPrefix + name
+            object : ReadWriteProperty<Any?, T> {
+                @Suppress("UNCHECKED_CAST")
+                override fun getValue(thisRef: Any?, property: KProperty<*>): T =
+                    (sessionState.getOrPut(key) { default }) as T
+
+                override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+                    sessionState[key] = value
+                }
+            }
+        }
+
+    private fun addCell(node: NodeBuilder<*>, autoSize: Boolean = false) {
+        items.add(MenuItem.Cell(node, columnPreRow, autoSize))
+        colCount++
+    }
+
+    @MenuBuilderDsl
+    fun newRow() {
+        if (colCount > 0) {
+            items.add(MenuItem.Row)
+            colCount = 0
+        }
+    }
+
+    private fun ensureSpace() {
+        if (colCount >= columnPreRow) {
+            items.add(MenuItem.Row)
+            colCount = 0
+        }
+    }
+
+    /** 把 [body] 内产生的布局项单独收集起来 交给容器使用 */
+    private fun capture(body: () -> Unit): List<MenuItem> {
+        val outerItems = items
+        val outerCount = colCount
+        val captured = mutableListOf<MenuItem>()
+        items = captured
+        colCount = 0
+        try {
+            body()
+        } finally {
+            items = outerItems
+            colCount = outerCount
+        }
+        return captured
+    }
+
+    @MenuBuilderDsl
+    fun label(text: String, align: String = "center") {
+        newRow()
+        items.add(
+            MenuItem.Cell(
+                UiBuilder.label(text).growX().labelAlign(align).align(align).pad(cellPad),
+                columnPreRow
+            )
+        )
+        items.add(MenuItem.Row)
+        colCount = 0
+    }
+
+    @MenuBuilderDsl
+    fun option(
+        label: String,
+        icon: String? = null,
+        style: String? = null,
+        growX: Boolean = true,
+        body: suspend (MenuResult) -> Unit
+    ) {
+        ensureSpace()
+        val id = "opt_${optionSeq++}"
+        callbacks[id] = body
+        val node = UiBuilder.button(label).clicked(id).height(optionHeight).pad(cellPad)
+        if (icon != null) node.icon(icon)
+        if (style != null) node.style(style)
+        radioGroup?.let { node.group(it) }
+        addCell(node, autoSize = growX)
+    }
+
+    @MenuBuilderDsl
+    fun image(region: String, size: Float = 64f) {
+        ensureSpace()
+        addCell(UiBuilder.image(region).size(size).pad(cellPad))
+    }
+
+    @MenuBuilderDsl
+    fun check(id: String, text: String, checked: Boolean = false) {
+        ensureSpace()
+        addCell(UiBuilder.check(text).id(id).checked(checked).pad(cellPad))
+    }
+
+    /** 输入框独占一行 任意按钮点击时都能通过 [MenuResult] 读到它的内容 */
+    @MenuBuilderDsl
+    fun field(id: String, hint: String = "", maxLength: Int = 0) {
+        newRow()
+        val node = UiBuilder.field("").id(id).growX().pad(cellPad)
+        if (hint.isNotEmpty()) node.hint(hint)
+        if (maxLength > 0) node.maxLength(maxLength)
+        addCell(node)
+        newRow()
+    }
+
+    @MenuBuilderDsl
+    fun space() {
+        ensureSpace()
+        addCell(UiBuilder.space().pad(cellPad), autoSize = true)
+    }
+
+    @MenuBuilderDsl
+    fun column(num: Int, body: () -> Unit) {
+        newRow()
+        val bakColumn = columnPreRow
+        columnPreRow = num
+        body()
+        columnPreRow = bakColumn
+        newRow()
+    }
+
+    /** 单选按钮组：同组按钮互斥 位于同一行且等宽 */
+    @MenuBuilderDsl
+    fun group(name: String, body: () -> Unit) {
+        newRow()
+        val bakGroup = radioGroup
+        val bakColumn = columnPreRow
+        radioGroup = name
+        columnPreRow = Int.MAX_VALUE
+        body()
+        radioGroup = bakGroup
+        columnPreRow = bakColumn
+        newRow()
+    }
+
+    @MenuBuilderDsl
+    fun pane(id: String = "", height: Float = 200f, body: () -> Unit) {
+        newRow()
+        val content = capture(body)
+        val node = UiBuilder.pane().height(height).growX().pad(cellPad)
+        if (id.isNotEmpty()) node.id(id)
+        node.add(buildTable(content, exactWidth = false))
+        addCell(node)
+        newRow()
+    }
+
+    @MenuBuilderDsl
+    fun condition(expr: String, body: () -> Unit) {
+        newRow()
+        val content = capture(body)
+        addCell(buildTable(content, exactWidth = false).condition(expr))
+        newRow()
+    }
+
+    /**
+     * 构建一张表格，每行单独包一层 table：
+     * 行内按钮按 rootWidth / 列数 均分宽度，行与行之间互不影响
+     */
+    private fun buildTable(source: List<MenuItem>, exactWidth: Boolean): UiBuilder.TableBuilder {
+        val table = UiBuilder.table().align("center")
+        if (exactWidth) table.width(rootWidth).fillX() else table.growX()
+
+        var cells = mutableListOf<MenuItem.Cell>()
+
+        fun flushRow() {
+            if (cells.isEmpty()) return
+            val declared = cells.filter { it.autoSize }.maxOfOrNull { it.columns } ?: 1
+            val columns = if (declared in 2..16) maxOf(declared, cells.size) else cells.size
+            val columnWidth = rootWidth / columns - cellPad * 2 - 1f
+
+            val row = UiBuilder.table().growX().align("center")
+            cells.forEach { cell ->
+                if (cell.autoSize) {
+                    if (columns > 1) cell.node.width(columnWidth).fillX() else cell.node.growX()
+                }
+                row.add(cell.node)
+            }
+            if (columns in 2..16 && cells.size < columns && cells.any { it.autoSize }) {
+                repeat(columns - cells.size) {
+                    row.add(UiBuilder.space().width(columnWidth).pad(cellPad))
+                }
+            }
+            table.add(row)
+            table.row()
+            cells = mutableListOf()
+        }
+
+        source.forEach { item ->
+            when (item) {
+                is MenuItem.Row -> flushRow()
+                is MenuItem.Cell -> cells.add(item)
+            }
+        }
+        flushRow()
+        return table
+    }
+
+    private fun buildRoot(): NodeBuilder<*> {
+        val source = if (msg.isEmpty()) items else buildList {
+            add(MenuItem.Cell(UiBuilder.label(msg).growX().wrap().labelAlign("center").align("center").pad(cellPad), 1))
+            add(MenuItem.Row)
+            addAll(items)
+        }
+        val content = buildTable(source, exactWidth = true)
+        if (!wrapInPane) return content
+        return UiBuilder.table()
+            .growY()
+            .fillX()
+            .add(UiBuilder.pane().growY().growX().add(content))
+    }
+
+    protected open suspend fun build() = block()
+
+    private var closedSignal: CompletableDeferred<Unit>? = null
+    /** 本次下发的会话令牌：客户端会在 [MenuResult.token] 里原样回传，用于把点击路由回本会话。 */
+    private var sessionToken: Long = 0L
+
+    suspend fun send(rebuild: Boolean = true): MenuV3 {
+        closed = false
+        if (rebuild) {
+            items.clear()
+            callbacks.clear()
+            optionSeq = 0
+            colCount = 0
+            radioGroup = null
+            build()
+        }
+
+        // 路由说明（2026-09-13 改动）：
+        // v160 的 `Menus.registerMenuBuilder` 只往 `menuBuilderListeners` 数组尾部追加、**从不移除**，
+        // 返回的下标就是回调 id。参考实现是"每个 MenuV3 实例注册一次"，会话结束后监听器仍被数组强引用，
+        // 长期运行（每次开菜单都新建实例）会无界增长。而 `MenuBuilder` 的字段注释明确写着
+        // "id 可以复用，只要按钮结果键唯一"，并且 `token` 就是给回调识别会话用的，
+        // 因此这里改为**全局只注册一次** + 每会话唯一 token 路由。
+        sessionToken = nextSessionToken()
+        activeSessions[sessionToken] = this
+        // 同一玩家的旧会话已被新菜单顶掉（hideExisting 默认为 true），及时回收，避免路由表堆积。
+        activeSessions.entries.removeAll { it.value !== this && it.value.player === player }
+
+        MTMenuBuilder.of(buildRoot())
+            .id(sharedMenuId)
+            .token(sessionToken)
+            .title(title.ifEmpty { null })
+            .hideOnClick(false)
+            .show(player)
+
+        return this
+    }
+
+    private fun releaseSession() {
+        if (sessionToken != 0L) activeSessions.remove(sessionToken, this)
+        sessionToken = 0L
+    }
+
+    private fun dispatch(result: MenuResult) {
+        for ((id, cb) in callbacks) {
+            if (result.`is`(id)) {
+                script.launch(Dispatchers.game) {
+                    try {
+                        cb(result)
+                    } catch (_: RefreshReturn) {
+                        send()
+                    } catch (_: CommandInfo.Return) {
+                    }
+                }
+                return
+            }
+        }
+        script.launch(Dispatchers.game) {
+            onCancel()
+            closedSignal?.complete(Unit)
+        }
+    }
+
+    /** 局部替换某个 id 的节点 */
+    fun update(id: String, node: NodeBuilder<*>) {
+        val menuId = sharedMenuId
+        if (menuId == -1) return
+        MTMenuBuilder.of(node).id(menuId).update(player, id)
+    }
+
+    fun update(id: String, nodeDsl: String) = update(id, UiBuilder.parse(nodeDsl))
+
+    fun MenuResult.stringOrNull(id: String): String? =
+        try {
+            getString(id)
+        } catch (_: Exception) {
+            null
+        }
+
+    fun MenuResult.floatOrNull(id: String): Float? =
+        try {
+            getFloat(id)
+        } catch (_: Exception) {
+            null
+        }
+
+    fun MenuResult.booleanOrNull(id: String): Boolean? =
+        try {
+            getBool(id)
+        } catch (_: Exception) {
+            null
+        }
+
+    suspend fun await() {
+        closedSignal = CompletableDeferred()
+        try {
+            closedSignal!!.await()
+        } finally {
+            closedSignal = null
+        }
+    }
+
+    suspend fun awaitWithTimeout(chooseTimeout: Duration = 60.seconds) {
+        closedSignal = CompletableDeferred()
+        try {
+            withTimeoutOrNull(chooseTimeout) { closedSignal!!.await() }
+        } finally {
+            closedSignal = null
+            if (!closed) {
+                script.launch(Dispatchers.game) { onCancel() }
+                close()
+            }
+        }
+    }
+
+    fun close() {
+        if (closed) return
+        closed = true
+        closedSignal?.complete(Unit)
+        releaseSession()
+        if (sharedMenuId != -1) {
+            Call.hideMenuBuilder(player.con, sharedMenuId)
+        }
+    }
+
+    /** 只隐藏界面、保留会话（下次 [send] 会重新下发同一会话）。 */
+    fun hide() = Call.hideMenuBuilder(player.con, sharedMenuId)
+
+    fun refresh(): Nothing = throw RefreshReturn()
+
+    companion object {
+        private val script = thisContextScript()
+
+        private val tokenSeq = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+
+        /** token -> 会话。回调按 token 路由，因此全局只需要一个监听器。 */
+        private val activeSessions = java.util.concurrent.ConcurrentHashMap<Long, MenuV3>()
+
+        private fun nextSessionToken(): Long = tokenSeq.incrementAndGet()
+
+        /**
+         * 全局唯一的回调 id。v160 的监听器数组只增不删，所以这里**绝不能**按会话注册。
+         * [sharedMenuId] 为 -1 表示当前环境没有该 API（例如更旧的游戏版本）。
+         */
+        private val sharedMenuId: Int by lazy {
+            runCatching {
+                Menus.registerMenuBuilder { p, result ->
+                    val session = activeSessions[result.token] ?: return@registerMenuBuilder
+                    if (session.player !== p) return@registerMenuBuilder
+                    session.dispatch(result)
+                }
+            }.getOrDefault(-1)
+        }
+    }
+}
+
+@Suppress("DuplicatedCode")
+@MenuV3.MenuBuilderDsl
+inline fun <T> MenuV3.renderPaged(
+    list: List<T>,
+    initialPage: Int = 1,
+    prePage: Int = 9,
+    columns: Int = 1,
+    key: String = "",
+    crossinline itemRender: (T) -> Unit
+) {
+    var selectedPage by stateKey(initialPage, keyPrefix = "renderPaged@$key-")
+    val (page, totalPage) = calPage(selectedPage, prePage, list.size)
+    val renderItems: () -> Unit = {
+        repeat(prePage) {
+            val i = (page - 1) * prePage + it
+            if (i >= list.size) space() else itemRender(list[i])
+        }
+    }
+    if (columns > 1) column(columns) { renderItems() } else renderItems()
+    column(3) {
+        option("<-") { selectedPage = page - 1; refresh() }
+        option("$page/$totalPage") { refresh() }
+        option("->") { selectedPage = page + 1; refresh() }
+    }
+}

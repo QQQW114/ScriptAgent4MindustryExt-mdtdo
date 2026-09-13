@@ -18,10 +18,10 @@ private fun saveSlotLine(id: Int, label: String): VarString? {
     val file = SaveIO.fileFor(id)
     if (!file.exists()) return null
     return if (SaveIO.isSaveValid(file)) {
-        "[red]{id}[]: [yellow]{label}[] / [white]Save on {date hh:mm}".with(
+        "[red]{id}[]: [yellow]{label}[] / [white]Save on {t | date \"HH:mm\"}".with(
             "id" to id,
             "label" to label,
-            "date" to Date(file.lastModified())
+            "t" to Date(file.lastModified())
         )
     } else {
         "[red]{id}[]: [scarlet]{label}[] / 存档损坏".with("id" to id, "label" to label)

@@ -24,6 +24,12 @@ val msg
         "cK" to "[gray]", "cV" to "[lightgray]", "cA" to "[slate]",
     )
 
+/**
+ * 带 id 下发的信息弹窗（2026-09-13 跟进上游 c2823c1）：
+ * 带 id 时客户端是**更新同一条弹窗**而不是每轮新建，避免 2 秒一轮的循环不断堆叠 UI 元素。
+ */
+val scoreboardLabelId = "scoreboard"
+
 val disabled = mutableSetOf<String>()
 
 command("board", "开关积分板显示") {
@@ -81,7 +87,7 @@ onEnable {
             if (disabled.contains(it.uuid())) return@forEach
             val mobile = it.con?.mobile == true
             Call.infoPopup(
-                it.con, msg.with().toPlayer(it), 2.013f,
+                it.con, msg.with().toPlayer(it), scoreboardLabelId, 2.013f,
                 Align.topLeft, if (mobile) 210 else 155, 0, 0, 0
             )
         }

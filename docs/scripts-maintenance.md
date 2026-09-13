@@ -22,6 +22,78 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-13（第二批）：对照 ScriptAgent 上游最新 + 落地 `MenuV3` 菜单基础库
+
+类型：上游对照跟进 + 菜单基础设施（用户要求："把 sa 最新的仓库拉下来参考，对照脚本，把明显可更新的部分更新了"，并评估参考脚本 `menu.ui.kt`）
+
+### 1. 上游对照（ScriptAgent `origin/8.0`）
+
+- 参考仓库 `参考项目/ScriptAgent-latest` 从 `680bdb6` 快进到 **`ad56edc`**（`v3.4.0-11-g`）；
+  期间上游只有**一个**提交：`ad56edc 🔥(wayzer/reGrief/limitFire) v160 接口变动，无法快速计数` ——
+  **就是删除 `wayzer/reGrief/limitFire.kts`**，与本轮任务 (B) 的处理完全一致（理由也相同）。
+- 机械对照（LF 归一 blob 哈希，历史覆盖全部 ref）：上游 168 个文件、我们 209 个，重合 114 个 →
+  **39 个与上游 HEAD 完全一致**、**75 个我们本地改过**、**0 个"未改但落后"**；上游独有 54 个、我们独有 95 个。
+- 以 v3.4.0 为基线看，上游此后共动过 17 个文件。逐一核对后，其中 3 个是我们的**纯旧版**（从未改过）：
+  `coreLibrary/lib/util/coroutine.kt`、`coreLibrary/lib/util/menu.kt`、`wayzer/maps.registry.kt`，
+  但上游对它们的改动只是 `delay(10000)`→`delay(10.seconds)`、`PlaceHoldString`→`cf.wayzer.placehold.VarString`
+  （我们本地 `coreLibrary/lib/PlaceHoldApi.kt` 里 `PlaceHoldString` 本来就是它的 `@Deprecated HIDDEN` typealias）、
+  `@Suppress` 名称更新 —— **纯写法，无功能收益，故不动**（符合"最小改动"原则）。
+- 上游独有文件 54 个，绝大多数是我们**有意移除**的（`kcp/`、`coreLibrary/db/h2db.kts`/`postgres.kts`、
+  `coreLibrary/extApi/*`（Mongo/Redis/RemoteEvent/RpcService）、上游示例地图脚本 `mapScript/999·1001-1009·13545·14562`、
+  `mapScript/shared/hexed*`、`coreMindustry/util/*.api.kt` 中我们未启用的部分、
+  `wayzer/user/ban.kts`/`ban.api.kt`/`ban.store.kt`（被我们的 `banStore.kts` 取代）、`wayzer/store/*`、
+  `wayzer/cmds/share.kts`、`wayzer/reGrief/warnNewPlayer.kts` 等），**不盲目回灌**。
+
+### 2. 实际应用的上游更新（3 处真实修复）
+
+| 文件 | 上游提交 | 改动 |
+| --- | --- | --- |
+| `coreLibrary/commands/control.kts` | `36db79f 🚑️ unload/disable: No transaction available` | `/unload`、`/disable` 由裸调 `ScriptManager.unloadScript/disableScript` 改为 `ScriptManager.transactionV2 { unload(script)/disable(script) }.printResult()`（与本文件其它 4 处保持一致） |
+| `wayzer/map/autoSave.kts` | `680bdb6 🐛 slots 时间格式化错误` | `/slots` 行内时间由 `{date hh:mm}` 改为 `{t \| date "HH:mm"}`（占位符语法写错，之前显示不出正确时间） |
+| `coreMindustry/scoreboard.kts` | `c2823c1 ⚡️ infoPopup with id` | 新增 `scoreboardLabelId = "scoreboard"`，改用带 id 的 `Call.infoPopup(con, msg, id, …)` 重载 → 客户端是**更新同一条弹窗**而不是每 2 秒新建，避免 UI 元素堆叠 |
+
+- 已核对 `PlaceHoldLib-v7.3.jar`（`mdtserver/libs/`）：`StdVariable` 里注册了 `date` 这个 `DynamicVar`
+  （`resolve(VarString, List<Any>)`，接受格式参数），所以 `{t | date "HH:mm"}` 在本运行时可用；
+  `Call.infoPopup` 的 9 参 String-id 重载在 X37 中存在。
+- 未采纳的：上游 `scoreboard.kts` 同时删掉了模板开头的 `{magic}`（MDTX 识别标记）。
+  我们保留该标记 —— 它影响客户端观感，属于只有真实客户端才能确认的改动，不在本轮范围内。
+
+### 3. 落地 `MenuV3`（菜单基础设施）
+
+- 新增 `coreMindustry/lib/menuV3.kt`：用户提供的参考实现（原文件 `menu.ui.kt`），
+  即 v160 `mindustry.ui.builder` 的 DSL 封装（`MenuV3` + `MenuV3.renderPaged`），
+  与既有 `coreMindustry/menu.new.kt`（MenuV2，旧 `Call.menu` 体系）**并存不冲突**。
+- **位置很关键**：先放在模块根目录 `coreMindustry/menuV3.kt` 时，探针报 `Unresolved reference 'MenuV3'`
+  —— 模块根 `.kt` 只对声明了 `+DEPENDS <module> module` 的脚本可见；`lib/**` 才是全脚本可见的公共库。
+  移到 `coreMindustry/lib/menuV3.kt` 后编译通过。
+- **修掉参考实现的一个真实隐患**：v160 `Menus.registerMenuBuilder` 只增不删（下标即回调 id），
+  参考实现每个 `MenuV3` 实例注册一次 → 每次开菜单都永久占一个监听器并持有整个会话状态。
+  现改为**全局只注册一次**（`sharedMenuId`，`lazy` + `runCatching` 兜底 `-1`）+ 每会话唯一 `token` 路由
+  （`MenuBuilder.token(...)` → `MenuResult.token`），`close()` 时 `releaseSession()`，
+  同一玩家新开会话时回收旧会话；副作用是过期点击会被忽略（更安全）。
+- 机制、为什么能解决"按钮缩放/错位/比例失调"、缺失贴图的回退链、以及后续接入步骤，
+  全部写入 [自定义菜单（尝试与回退记录）](custom-menu.md)。
+- 该库文件目前**未被任何业务脚本使用**（不改变现有菜单行为），等选定试点页面再接。
+
+### 4. 验证（X37 基线，每次都清空编译缓存做全量重编译）
+
+- 探针验证（探针只存在于测试副本 `.tmp-160test`，不入库）：
+  - `coreMindustry` 模块探针 + `lib/menuV3.kt` → `共找到158脚本,加载成功154,启用成功149,出错0`；
+  - 再加 `wayzer/cmds` 模块探针（跨模块使用）→ `共找到159脚本,加载成功155,启用成功150,出错0`；
+  - 两个探针把 `MenuV3` 的全部公开 API（`label/column/option/space/group/field/check/image/pane/condition/renderPaged`
+    与 `MenuResult.stringOrNull·floatOrNull·booleanOrNull`）都写了一遍。
+- 真实脚本集（去掉探针）全量重编译：**`共找到157脚本,加载成功153,启用成功148,出错0`**，
+  `Server loaded`、命令 Socket 正常、无异常输出、退出后 6567/6859/10099 端口全释放。
+- **重要教训**：`test160.ps1` 的编译缓存会命中——若不清 `config/scripts/cache`，
+  改动过的脚本可能直接用旧产物加载，"0 错误"并不代表新代码编译过。本轮即因此先拿到一次误导性结果，
+  之后所有验证都改为"先清缓存再冷启动"。
+
+### 5. 未覆盖边界
+
+- `MenuV3` 只验证到编译与调用姿势；**真实客户端的缩放/适配/图标完整性必须由玩家实测**。
+- 三处上游更新只做了编译与冷启动验证：`/unload`、`/disable`、`/slots` 的实际行为与
+  `infoPopup` 带 id 后的观感需要控制台/客户端实测。
+
 ## 2026-09-13（第一批）：跟进 MindustryX X37 + 移除"遍历全部实体找火焰"的全部代码 + 热循环全量扫描审查
 
 类型：上游版本跟进 + 性能治理（用户要求）
