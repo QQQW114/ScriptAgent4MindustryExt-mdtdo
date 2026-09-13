@@ -22,6 +22,50 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-13（第五批）：`MenuV3` 宽度根因修正（宽度必须写在"行"上）+ Wiki/帖子版式放大
+
+类型：缺陷修复 + 版式调整（用户实测截图反馈："没变化，还是会随着游戏窗口的变化而自动填满到窗口边上"）
+
+### 1. 根因（源码级，推翻第四批的 `fillX` 判断）
+
+- 第四批把"关闭按钮 2524px 宽 / 正文贴屏幕最左不换行"归因于根表的 `fillX()`，改成根表 `width(rootWidth)`——
+  **实测毫无变化**，因为：`Menus.menuBuilder` 执行的是 `UiTreeBuilder.build(dialog.cont, 根节点)`，
+  它把根节点的**子项直接加进 `dialog.cont`**；根节点自己的标量属性只走 `applyTableProp`，
+  而该方法**只认 `background` / `margin` / `align`**
+  （`参考项目/Mindustry-master/core/src/mindustry/ui/builder/UiTreeBuilder.java` 第 40-75、270-277 行）。
+  → **根节点上的 `width()` / `fillX()` / `growX()` 全部被静默丢弃**，改根节点等于没改。
+- 真正的"铺满"来自对话框铺满窗口：`fillScreen=true` → `Menus.java:51` 的 `setFillParent(true)` → 对话框 = 整个窗口；
+  每行用的是 `growX()` → 行宽 = 窗口宽 → 单列按钮（`growX`）被拉成整屏宽按钮，
+  而显式 `width()` 的多列按钮不受影响、由 Table 默认的居中排布。
+  这正好解释截图里"三列翻页行居中正常、单列按钮却铺满屏幕"的割裂现象。
+- 另用 `javap` 反汇编 `arc.scene.ui.Dialog` 确认：`show(Scene)` → `show(scene, action)`（内部 `pack()`）→ `centerWindow()`，
+  所以 `fillScreen=false` 得到的是**尺寸跟着内容、居中、不随窗口大小变化**的面板。
+
+### 2. 修正（`coreMindustry/lib/menuV3.kt`）
+
+- `buildTable(source, exactWidth: Boolean)` → `buildTable(source, tableWidth: Float)`：宽度写在**每一行**的 cell 上
+  （`UiBuilder.table().width(tableWidth)`），不再 `growX()`；横向居中靠根节点的 `align("center")`
+  （唯一生效的根属性，落到 `dialog.cont.align`）。
+- `pane()` 内层内容表按 `tableWidth` 限宽（= `rootWidth - cellPad*2 - 24`，24px 留给滚动条）；
+  `condition {}` 同样按 `rootWidth` 限宽；`wrapInPane` 分支的 pane 改 `width(rootWidth)`。
+- `fillScreen` **默认改为 `false`**；Wiki / 帖子页显式 `false`（成就页原本就是 `false`）。
+
+### 3. 版式尺寸（用户要求"这两项可以占的总面积大一些"）
+
+- Wiki：`WIKI_MENU_WIDTH` 620 → **780**，`WIKI_READ_PANE_HEIGHT` 300 → **400**。
+- 帖子：`FORUM_MENU_WIDTH` 640 → **860**，正文滚动区 300 → **340**，评论滚动区 300 → **380**。
+- 新增**高度预算**口径：`fillScreen=false` 时对话框按内容 `pack()` 且不会自动收缩，
+  一行按钮 ≈ 58（按钮 50 + 内边距 8）、标题条 ≈ 40、`msg` 每行 ≈ 24，总高控制在 **900 以内**
+  （当前实测窗口 2560×961）。最高的页面是帖子阅读页（管理员视角）≈ 774。
+
+### 4. 验证与边界
+
+- 本轮改动只有"调用点 + 宽度落点"两处语义，`buildTable` 的 3 个调用点已逐一核对（`pane`/`condition`/`buildRoot`）。
+- **未做冷启动复验**：生产服务器正在运行（占 6567/6859/10099），隔离实例无法同时启动；
+  新版脚本进入运行中的服务器需要控制台执行 `sa reload coreMindustry` 后再 `sa reload wayzer/user/wiki`、
+  `sa reload wayzer/user/forumPosts`（`menuV3.kt` 在 `coreMindustry/lib/` 下，不在文件监视器的监视范围内）。
+- 观感仍待玩家实测；回退口径：把 `fillScreen` 改回 `true`、行宽改回 `growX()` 即回到旧行为。
+
 ## 2026-09-13（第四批）：成就页按实测反馈调整 + Wiki/帖子系统接入 `MenuV3`
 
 类型：功能改造（用户要求：成就页去掉滚动、全显示当页 + 换页；补上成就管理入口；超时拉高；把帖子与 Wiki 接入新菜单，

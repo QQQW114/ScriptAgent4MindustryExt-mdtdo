@@ -84,11 +84,17 @@ open class MenuV3(
 
     /**
      * 是否让对话框铺满整个屏幕（v160 `MenuBuilder.fillScreen`）。
-     * `false` 时对话框按内容 `pack()` 并由原版 `Dialog.centerWindow()` **居中**显示，适合"小页面 / 不动整屏"的场合；
-     * 注意此时 `growY/growX` 没有可分配空间，内容高度请自己用 `pane(..., height)` 或固定高度约束。
+     *
+     * `false`（默认）：`Dialog.show()` 会 `pack()` 到内容尺寸并由 `centerWindow()` 居中，
+     * 得到的是一块**尺寸跟着内容走、居中、不随窗口大小变化**的面板，内容不会贴到窗口边上。
+     * `true`：`setFillParent(true)`，对话框=整个窗口，内容仍按 [rootWidth] 限宽居中，
+     * 但对话框背景会铺满窗口。
+     *
+     * 无论哪种取值，都要保证"标题 + 正文 + 按钮"的总高度不超过常见窗口高度
+     * （`pane()` 的高度不会自动收缩），否则底部按钮会被挤出屏幕。参考预算见 docs/custom-menu.md。
      */
     @MenuBuilderDsl
-    var fillScreen: Boolean = true
+    var fillScreen: Boolean = false
 
     /** 内容宽度 */
     @MenuBuilderDsl
@@ -251,26 +257,42 @@ open class MenuV3(
         val content = capture(body)
         val node = UiBuilder.pane().height(height).growX().pad(cellPad)
         if (id.isNotEmpty()) node.id(id)
-        node.add(buildTable(content, exactWidth = false))
+        // 2026-09-13 修复：滚动区里的内容必须**显式限宽**。
+        // ScrollPane 是按内容的"首选宽度"排布的，不设宽度时 `wrap` 的 Label 会按整行铺开，
+        // 文字会横跨整屏且不换行（实测单行 2246px）。这里限到内容宽度，并给滚动条留 24px，
+        // 避免文字被滚动条压住。
+        node.add(buildTable(content, contentWidth()))
         addCell(node)
         newRow()
     }
+
+    /** 内容列可用宽度（已扣除单元格内边距与滚动条位置） */
+    private fun contentWidth(): Float = (rootWidth - cellPad * 2f - 24f).coerceAtLeast(120f)
 
     @MenuBuilderDsl
     fun condition(expr: String, body: () -> Unit) {
         newRow()
         val content = capture(body)
-        addCell(buildTable(content, exactWidth = false).condition(expr))
+        addCell(buildTable(content, rootWidth).condition(expr))
         newRow()
     }
 
     /**
-     * 构建一张表格，每行单独包一层 table：
-     * 行内按钮按 rootWidth / 列数 均分宽度，行与行之间互不影响
+     * 构建一张内容表：每行单独包一层 table，行内按钮按 `tableWidth / 列数` 均分，行与行互不影响。
+     *
+     * **宽度必须写在"行"上（2026-09-13 第二次修正，源码级结论）**：
+     * `Menus.menuBuilder` 执行的是 `UiTreeBuilder.build(dialog.cont, 根节点)`，
+     * 它把根节点的**子项直接加进 `dialog.cont`**；根节点自己的属性只会走
+     * `applyTableProp`，而该方法只认 `background` / `margin` / `align` 三个键。
+     * 也就是说，写在根节点上的 `width()` / `fillX()` / `growX()` **全部被静默丢弃**。
+     * 旧实现把 `width(rootWidth)` 写在根表上 → 无效 → 每行仍是 `growX()`，
+     * 于是 `fillScreen=true`（对话框铺满窗口）时行被撑到整个窗口宽，
+     * 单列按钮就变成"整屏宽按钮"（实测：关闭按钮 x18→2542，屏幕才 2560）。
+     * 现在把宽度写到**每一行**的 cell 上；横向位置由 `dialog.cont` 的
+     * `align("center")`（根节点的 `align` 是唯一生效的根属性）居中。
      */
-    private fun buildTable(source: List<MenuItem>, exactWidth: Boolean): UiBuilder.TableBuilder {
-        val table = UiBuilder.table().align("center")
-        if (exactWidth) table.width(rootWidth).fillX() else table.growX()
+    private fun buildTable(source: List<MenuItem>, tableWidth: Float): UiBuilder.TableBuilder {
+        val table = UiBuilder.table().align("center").width(tableWidth)
 
         var cells = mutableListOf<MenuItem.Cell>()
 
@@ -278,9 +300,10 @@ open class MenuV3(
             if (cells.isEmpty()) return
             val declared = cells.filter { it.autoSize }.maxOfOrNull { it.columns } ?: 1
             val columns = if (declared in 2..16) maxOf(declared, cells.size) else cells.size
-            val columnWidth = rootWidth / columns - cellPad * 2 - 1f
+            val columnWidth = tableWidth / columns - cellPad * 2 - 1f
 
-            val row = UiBuilder.table().growX().align("center")
+            // 行宽 = 内容宽（而不是 growX 撑满对话框）；行内子元素默认居中
+            val row = UiBuilder.table().width(tableWidth).align("center")
             cells.forEach { cell ->
                 if (cell.autoSize) {
                     if (columns > 1) cell.node.width(columnWidth).fillX() else cell.node.growX()
@@ -313,12 +336,12 @@ open class MenuV3(
             add(MenuItem.Row)
             addAll(items)
         }
-        val content = buildTable(source, exactWidth = true)
+        val content = buildTable(source, if (wrapInPane) contentWidth() else rootWidth)
         if (!wrapInPane) return content
+        // 根节点属性会被丢弃，所以"整页包一层滚动区"时，宽度必须写在 pane 自己的 cell 上。
         return UiBuilder.table()
-            .growY()
-            .fillX()
-            .add(UiBuilder.pane().growY().growX().add(content))
+            .align("center")
+            .add(UiBuilder.pane().width(rootWidth).growY().add(content))
     }
 
     protected open suspend fun build() = block()

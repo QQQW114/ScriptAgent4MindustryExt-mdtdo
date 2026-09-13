@@ -39,8 +39,8 @@ private val WIKI_MAX_TITLE_LENGTH = 60
 private val WIKI_MAX_BODY_LENGTH = 6000
 private val WIKI_MENU_TIMEOUT_MILLIS = 30 * 60_000
 // 菜单版式（2026-09-13 MenuV3 接入）：内容限宽、正文区高度；阅读区滚动条只影响正文，不影响按钮
-private val WIKI_MENU_WIDTH = 620f
-private val WIKI_READ_PANE_HEIGHT = 300f
+private val WIKI_MENU_WIDTH = 780f
+private val WIKI_READ_PANE_HEIGHT = 400f
 private val WIKI_EDIT_INPUT_TIMEOUT_MILLIS = 30 * 60_000
 private val WIKI_HISTORY_LIMIT = 10
 private val WIKI_DELETE_DAILY_LIMIT = 2
@@ -497,8 +497,8 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
     var selectedPage = initialPage
 
     MenuV3(player) {
-        // 阅读/列表类页面：占满屏幕但内容限宽居中，比成就页更大一些
-        fillScreen = true
+        // 阅读/列表类页面：内容按 rootWidth 限宽居中，对话框按内容 pack（不铺满窗口）
+        fillScreen = false
         wrapInPane = false
         rootWidth = WIKI_MENU_WIDTH
 
@@ -551,7 +551,7 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
     var selectedPage = initialPage
 
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = WIKI_MENU_WIDTH
 
@@ -621,7 +621,7 @@ private suspend fun shareWikiPageToChat(player: Player, id: String) {
 private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {
     if (!ensureWikiEnabled(player)) return
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = WIKI_MENU_WIDTH
         title = "Wiki格式帮助"
@@ -644,7 +644,7 @@ private suspend fun openWikiHistoryMenu(player: Player, id: String) {
     val historyText = data.second
     val canEdit = canManageWiki(player) && (!db { isWikiProtected(page.id) } || canAdminWiki(player))
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = WIKI_MENU_WIDTH
         title = "Wiki最近修改：${page.title}"

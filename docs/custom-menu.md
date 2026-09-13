@@ -133,11 +133,40 @@
 | 页面 | 文件 | 版式口径 |
 | --- | --- | --- |
 | 成就页 | `wayzer/user/achievement.kts`（`showAchievementPage`） | 小页：`fillScreen=false` 居中、**无滚动**（整页一次渲染 + 翻页）、`rootWidth=440`、超时 300 秒 |
-| Wiki 列表 / 阅读页 / 最近修改 / 格式帮助 | `wayzer/user/wiki.kts` | 阅读风：`fillScreen=true` 但内容限宽 `620`；**只有正文进滚动区**（滚动条不再挤压按钮）、正文左对齐 + 自动换行；按钮按行分组；超时 30 分钟 |
-| 帖子分区 / 列表 / 阅读页 / 评论 | `wayzer/user/forumPosts.kts` | 同 Wiki，内容限宽 `640`；正文/评论进滚动区；点赞·评论·管理按钮分行分组、按钮变小；超时 30 分钟 |
+| Wiki 列表 / 阅读页 / 最近修改 / 格式帮助 | `wayzer/user/wiki.kts` | 阅读风：`fillScreen=false` + 内容限宽 `780`（正文滚动区高 `400`）；**只有正文进滚动区**（滚动条不再挤压按钮）、正文左对齐 + 自动换行；按钮按行分组；超时 30 分钟 |
+| 帖子分区 / 列表 / 阅读页 / 评论 | `wayzer/user/forumPosts.kts` | 内容限宽 `860`（正文滚动区 `340`、评论滚动区 `380`）；正文/评论进滚动区；点赞·评论·管理按钮分行分组、按钮变小；超时 30 分钟 |
+
+### 2026-09-13 第二次修正：宽度必须写在"行"上（源码级结论）
+
+玩家截图实测"关闭按钮 2524px 宽（屏幕才 2560）、正文贴屏幕最左且不换行"的根因**不是** `fillX`：
+
+1. `Menus.menuBuilder` 执行的是 `UiTreeBuilder.build(dialog.cont, 根节点)`——它把根节点的**子项直接加进 `dialog.cont`**，
+   根节点自己的属性只会走 `applyTableProp`，而该方法**只认 `background` / `margin` / `align`**
+   （`参考项目/Mindustry-master/core/src/mindustry/ui/builder/UiTreeBuilder.java` 第 40-75、270-277 行）。
+   → **写在根节点上的 `width()` / `fillX()` / `growX()` 全部被静默丢弃**；第一轮"去掉根表 fillX"的改动因此毫无效果。
+2. `fillScreen=true` → `Menus` 里 `dialog.setFillParent(true)` → 对话框 = 整个窗口；于是每行 `growX()` 被撑到窗口宽，
+   单列按钮（`growX`）变成整屏宽按钮，而显式 `width()` 的按钮（多列行）不受影响、由行的默认居中排布——
+   这正好解释了截图里"三列翻页行居中正常、单列按钮却铺满屏幕"的割裂现象。
+3. `arc.scene.ui.Dialog.show(Scene)` 会 `pack()` + `centerWindow()`（javap 反汇编确认），
+   所以 `fillScreen=false` 得到的是**尺寸跟着内容走、居中、不随窗口大小变化**的面板。
+
+修正（`coreMindustry/lib/menuV3.kt`）：
+
+- `buildTable(source, tableWidth)`：宽度写在**每一行**的 cell 上（`UiBuilder.table().width(tableWidth)`），不再 `growX()`；
+  行的横向居中靠根节点的 `align("center")`（唯一生效的根属性 → 落到 `dialog.cont.align`）。
+- `pane()` 的滚动内容宽度 = `tableWidth - cellPad*2 - 24`（给滚动条留位）；`condition {}` 同样按 `rootWidth` 限宽。
+- `fillScreen` 默认改为 `false`；Wiki / 帖子页显式 `false`（成就页本来就是 `false`）。
+- 按"占的面积大一些"调尺寸：Wiki `780` / 正文 `400`；帖子 `860` / 正文 `340` / 评论 `380`。
+
+**高度预算（写新页面必看）**：`fillScreen=false` 时对话框按内容 `pack()` 且**不会自动收缩**。
+成本估算：一行按钮 ≈ 58（按钮 50 + 内边距 8），标题条 ≈ 40，`msg` 每行 ≈ 24。
+总高控制在 **900 以内**（当前实测窗口 2560×961），否则底部按钮会被挤出屏幕。
+当前最高的页面是帖子阅读页（管理员视角）：40 + 96 + 348 + 5 行按钮 290 ≈ 774。
 
 要点与坑：
 
+- **根节点属性会被丢弃**：菜单根节点上写 `width/fillX/growX` 一律无效（只有 `align/background/margin` 生效），
+  宽度必须写在行 / 子节点上。详见下一节"第二次修正"。
 - **滚动条会吃宽度**：`ScrollPane` 的滚动条占在内容右侧，凡是"按钮和正文在同一个滚动容器里"的写法都会让按钮左右不对称。
   正确做法是**只把正文/评论放进 `pane(...)`**，按钮放在 `pane` 外面。
 - **长文本必须 `wrap`**：`MenuV3.label(text, align, wrap = true)`（2026-09-13 新增该参数）。不换行的 Label 会按整行宽度撑开布局。

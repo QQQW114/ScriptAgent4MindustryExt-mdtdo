@@ -73,9 +73,9 @@ private val FORUM_MAX_NORMAL_POSTS = 500
 private val FORUM_CLEANUP_MIN_AGE_DAYS = 30L
 private val FORUM_MENU_TIMEOUT_MILLIS = 30 * 60_000
 // 菜单版式（2026-09-13 MenuV3 接入）：内容限宽、正文/评论阅读区高度
-private val FORUM_MENU_WIDTH = 640f
-private val FORUM_READ_PANE_HEIGHT = 300f
-private val FORUM_COMMENT_PANE_HEIGHT = 300f
+private val FORUM_MENU_WIDTH = 860f
+private val FORUM_READ_PANE_HEIGHT = 340f
+private val FORUM_COMMENT_PANE_HEIGHT = 380f
 private val FORUM_INPUT_TIMEOUT_MILLIS = 30 * 60_000
 private val FORUM_CLEANUP_DATE_KEY = "forum.cleanup.lastDate"
 private val FORUM_POST_HISTORY_KEY = "forum.postChangeHistory"
@@ -503,8 +503,8 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
     var selectedPage = initialPage
 
     MenuV3(player) {
-        // 帖子/阅读类页面：占满屏幕但内容限宽居中，比成就页更大
-        fillScreen = true
+        // 帖子/阅读类页面：内容按 rootWidth 限宽居中，对话框按内容 pack（不铺满窗口）
+        fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
 
@@ -690,7 +690,7 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
     var selectedPage = initialPage
 
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
 
@@ -751,7 +751,7 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
     var selectedPage = initialPage
 
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
 
@@ -868,7 +868,7 @@ private suspend fun openForumComments(player: Player, postId: Int, sectionCode: 
     var selectedPage = initialPage
 
     MenuV3(player) {
-        fillScreen = true
+        fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
 
