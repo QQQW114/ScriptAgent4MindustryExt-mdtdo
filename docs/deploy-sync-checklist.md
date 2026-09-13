@@ -73,6 +73,34 @@
 > 2026-09-13 核对口径：`git log --name-only` 最近 22 个提交里，落在例程集之外的改动只有 `README.md`、
 > `mdtserver\启动说明.md`、`.gitignore` 与 `docs\**`，**没有一次涉及启动器、插件包或 `libs\`**。
 
+### 4.1 Web 端（`stats-web\`）：第二类同步目标
+
+**Web 改动 = 同步 `stats-web\` 目录**（**无构建、无 npm 依赖**，纯静态页面 + PowerShell 静态服务）：
+
+| 文件 | 是否要同步 | 说明 |
+|---|---|---|
+| `index.html` | ✅ 要 | 26KB 单文件页面（HTML/CSS/JS 全内联），改动后**刷新页面**即可（静态服务每次请求读盘） |
+| `start-web.ps1` | ✅ 要 | 静态 HTTP 服务；改动后必须**重启服务** |
+| `start-web.bat` | ✅ 要 | 双击启动入口（参数透传给 ps1） |
+| `web-config.ps1` | ⚠️ **不要覆盖** | **机器相关配置**：`$WebBind` / `$WebPort` / `$WebStatsJson`。公网那台通常是 `0.0.0.0`、端口可能不同、JSON 可能是绝对路径——按目标机器实际值合并 |
+| `README.md` | 可带 | 说明与口径 |
+
+三条必须注意的连带关系：
+
+1. **数据契约**：页面读的是 `mdtserver\config\stats\server-status.json`，由服务器脚本
+   `wayzer/ext/serverStats.kts` 写出（config key `statsOutputPath`，默认 `stats/server-status.json`，60 秒刷新）。
+   凡涉及**新增/改名 JSON 字段**的 Web 改动（例如 2026-09-11 的 schema 2 改版），必须**同时同步服务器脚本**
+   ——脚本本来就在例程集里，一起上即可；只更新 web 会出现新字段空/显示 0。
+2. **生效方式**：`index.html` 刷新即可；`web-config.ps1`、端口或绑定变更需重启服务。
+   公网访问还有三个**不在仓库里**的前置条件：`$WebBind=0.0.0.0`、管理员执行一次
+   `.\start-web.ps1 -InstallAcl -Port <端口>`（换端口/换机器要重做）、VPS 防火墙放行。
+3. **备份缺口**：`stats-web\` 只存在于本地 `mdtdo` 仓库（该仓库**没有远程**），插件仓库
+   `ScriptAgent4MindustryExt-mdtdo` 只镜像 `docs/` 与 `scripts/`，**不包含 stats-web**。
+   即"推送一轮"不会把它推到任何远程，异地备份需要另行安排。
+
+> 因此 Web 改动同样属于"需要显式声明生产同步范围"的一类：提交信息里写清是同步 `stats-web\`
+> 还是脚本、还是两者都要（字段契约变更时两者都要）。
+
 ## 5. 已知风险 / 未验证项
 
 - 当前脚本集**只在 160.x（B491/X37/B495）上验证过**；"只把新脚本推到仍在 159 的生产、不动 JAR"属于**未验证组合**
