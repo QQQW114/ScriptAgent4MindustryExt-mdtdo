@@ -68,6 +68,66 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 **该口径已于 2026-09-13 撤回**，见 [性能保护](performance-guard.md#火焰处理2026-09-13移除全部实体遍历)），
 但已作为"160 下需重点回归"的项记录：真实多人 + 运行中卸载 DP 仍需受控观察。
 
+## 局内热重载可行性核对（2026-09-13，Mindustry 160.3 源码）
+
+**问题**：杂交 / 音乐 / 小音效 / CP-DP 这几套系统在让客户端同步改动时统一走
+`worldResyncCoordinator.resyncWorldAndAssets()`（= `Call.worldDataBegin(con)` + `sendWorldAndAssets(player)`），
+客户端表现为**重新加载地图**（等价原版 `/sync`）。是否存在"局内热重载、不重载地图"的更优雅方案？
+
+**结论：内容/音频类改动做不到——这是 v160.3 协议强制的，不是脚本写法问题。** 依据（全部为 v160.3 源码）：
+
+| 环节 | 源码事实 | 后果 |
+|---|---|---|
+| 服务端发起资产协商 | `core/.../NetServer.java:330-339`：`state.data.hasExternalAssets()` 为真时只置 `determiningAssets=true / receivingAssets=false / hasConnected=false` 并 `sendAssetRequirements(player)` | 资产阶段本身**不**重载世界 |
+| 客户端报缺 | `core/.../NetClient.java:156-166`：读需求清单 → 缺的资产索引 → `Call.requestAssets(missing)` | — |
+| 服务端回缺 | `core/.../NetServer.java:962-994`：`ids.length == 0`（客户端**全都有**）→ **依然 `sendWorldData(player)`**；否则 `AssetStream` 流式下发 | "已缓存"也照样发整份世界 |
+| 客户端收资产 | `core/.../NetClient.java:187-215`：`StreamBegin(isAssets)` → `NetworkIO.loadAssets(...)` → **`Core.app.post(Call::requestWorld)`** | 客户端加载完资产**必定**主动要世界 |
+| 服务端回世界 | `core/.../NetServer.java:954-960`：`requestWorld` → `sendWorldData(player)` | — |
+| 客户端收世界 | `core/.../NetClient.java:149-154`：`WorldStream` → `NetworkIO.loadWorld(...)` + `finishConnecting()` | **这就是"重新加载地图"** |
+
+即：**只要触发一次资产协商回合，最终一定走到 `sendWorldData` + 客户端 `loadWorld`**，与客户端是否已缓存无关
+（`NetServer.java:969` 的注释就是 "no assets required, all cached"，紧接着仍然是 `sendWorldData`）。
+
+### 为什么内容类改动绕不开
+
+- 动态内容（DP/CP 装卸、基因杂交改 `UnitType` 字段）会改变**内容 id 空间**：`DataPatcher.apply(..., reloadContentWorld)` /
+  `unapply(...)` 之后要 `fixContentArrays()`（`mod/DataPatcher.java:88-93, 221, 277-303`），客户端也要
+  `DataManager.reloadContent(boolean)`（`mod/DataManager.java:29`）重建内容数组；客户端旧世界里的实体/建筑仍引用旧 id，
+  **必须重读世界**才能对齐。
+- 音频同样是**位置化 id**：`io/TypeIO.java:1223-1229` 声音按 `Sounds.getSoundId(sound)` 的 short id 传输，
+  注释明确"只支持 `Sounds` 里的标准常量，mod 音频不支持"。所以客户端的音频/内容表必须和服务端一致，
+  不能靠"少同步一次"糊过去。
+- 顺带核对：MindustryX 的 patch 列表里**没有**改动这条资产回合的补丁（`patches/` 下无
+  `sendAssetRequirements`/`requestAssets`/`AssetStream` 相关改动），只有 `0063` 的"v146 协议与内容兼容模式"
+  （跨版本加入时的内容重映射）与 `0075` 的 DataPatcher 图标刷新。
+
+### 唯一存在的"不重载"通道：纹理
+
+- `NetClient.java:168-185` 的 `TextureStream` 处理器直接 `state.data.addTexture(name, png)` / `removeTexture(name)`，
+  **完全不碰世界**；服务端 API 是 `mindustry.core.NetServer.sendTexture(String, byte[])` /
+  `sendTexture(NetConnection, String, byte[])` / `removeTexture(...)`，配套 `DataManager.addTexture/removeTexture`。
+  本项目的服务端下发菜单已经在用它（`Menus`/`MenuDialog` 的 `TextureStreamEvent`）。
+- 也就是说：**纯贴图/图标类改动可以不重载**；一旦涉及 content JSON、音频或 bundle，就必须走资产回合 → 重载。
+
+### 真正的"局内热重载"只有客户端补丁一条路
+
+需要改客户端（我们的 MindustryX patch-first 仓库），要点：
+1. `NetClient` 的 `StreamBegin(isAssets)` 分支**不再**无条件 `Call::requestWorld`，改为就地应用：
+   `NetworkIO.loadAssets(...)` 后按需 `DataManager.reloadContent(false)` / `reloadImages()` / `reloadAudio()`
+   + `DataPatcher.fixContentArrays()`，然后不请求世界；
+2. 服务端要能区分"仅资产回合"与"内容回合"（新增标志/包），内容回合照旧重载；
+3. `NetServer.requestAssets` 的 `ids.length == 0` 分支不能再无条件 `sendWorldData`。
+   风险：客户端内容 id 与旧世界实体可能错位，只能严格限定在"只追加、不删除、不重排"的场景；收益范围仅限使用
+   我们客户端构建的玩家。
+
+### 现状口径（本项目选择）
+
+`worldResyncCoordinator` 的串行 + 去抖 + 恢复间隔 + 等 `PlayerConnectionConfirmed`，是**协议允许范围内的正确缓解**，
+本轮不改脚本。后续可评估（都需真实多人实测，且不要绕过 id 一致性）：
+- 纯贴图类 CP 改动优先走 `sendTexture` 快路径（前提：确认该改动不含 content/音频）；
+- 逐玩家"已确认拥有当前资产清单"的记账，用来跳过完全不必要的回合
+  （只有"清单完全相同"才安全；"少发一部分"因 id 位置化而不安全）。
+
 ## B485 构建与部署
 
 - 基线：MindustryX `prerelease-2026.08.12.B485` / Mindustry `v159.7`。

@@ -22,6 +22,30 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
+
+类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）
+
+- **结论：内容/音频类改动做不到——是 v160.3 协议强制的，不是我们脚本的写法问题。**
+  完整证据链（源码行号）见 [v159 网络同步与完整重同步](v159-network-sync.md) 新增的
+  "局内热重载可行性核对"一节，要点：资产协商回合里，客户端加载完资产**必定** `Call::requestWorld`
+  （`NetClient.java:206`），服务端 `requestWorld` → `sendWorldData`（`NetServer.java:954-960`），
+  更关键的是**即使客户端一个资产都不缺**（`ids.length == 0`）服务端也照样 `sendWorldData`
+  （`NetServer.java:969-971`）；客户端收到 `WorldStream` 就 `NetworkIO.loadWorld`
+  （`NetClient.java:149-154`）= 重新加载地图。所以"客户端已缓存就跳过重载"在原版协议下不成立。
+- 内容类改动绕不开的原因：动态内容会改变**内容 id 空间**，需要 `DataPatcher.fixContentArrays()` +
+  客户端 `DataManager.reloadContent(...)` 重建内容数组，客户端旧世界的实体引用的是旧 id，必须重读世界对齐；
+  音频同理是**位置化 id**（`TypeIO.java:1223-1229` 用 `Sounds.getSoundId` 的 short id 传输，且不支持 mod 音频）。
+- **唯一的"不重载"通道是纹理**：`NetClient.java:168-185` 的 `TextureStream` 直接
+  `state.data.addTexture/removeTexture`，不碰世界；服务端 API 为
+  `mindustry.core.NetServer.sendTexture(...)` / `removeTexture(...)`（服务端下发菜单已在用这条通道）。
+  纯贴图类改动可以不重载，涉及 content JSON / 音频 / bundle 就必须重载。
+- **真正的局内热重载只有客户端补丁一条路**（改 MindustryX 客户端的 `StreamBegin(isAssets)` 分支不再
+  `requestWorld`、就地 `reloadContent(false)` + `fixContentArrays()`；服务端区分"仅资产回合"）。
+  风险与收益范围已写入上述文档；MindustryX 现有 patch 列表里没有改动这条回合的补丁。
+- **本轮不改脚本**：`worldResyncCoordinator` 的串行/去抖/恢复间隔/等确认仍是协议范围内正确的缓解；
+  后续可选改进（纯贴图 CP 走快路径、逐玩家资产记账跳过完全相同的回合）都需真实多人实测，已记入文档。
+
 ## 2026-09-13（第七批）：跟进 Mindustry 160.3 / MindustryX 预览版 B495
 
 类型：上游版本跟进（用户要求"可以跟一下最新的 mindustryX 预览版"；Mindustry 一天内连发 160.2 / 160.3）
