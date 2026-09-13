@@ -7,6 +7,9 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.MenuV3
+import coreMindustry.lib.hasPermission
+import kotlin.time.Duration.Companion.milliseconds
 import cf.wayzer.placehold.PlaceHoldApi.with
 import mindustry.gen.Groups
 import wayzer.lib.DatabaseFeature
@@ -35,6 +38,9 @@ private val WIKI_MAX_ID_LENGTH = 32
 private val WIKI_MAX_TITLE_LENGTH = 60
 private val WIKI_MAX_BODY_LENGTH = 6000
 private val WIKI_MENU_TIMEOUT_MILLIS = 30 * 60_000
+// 菜单版式（2026-09-13 MenuV3 接入）：内容限宽、正文区高度；阅读区滚动条只影响正文，不影响按钮
+private val WIKI_MENU_WIDTH = 620f
+private val WIKI_READ_PANE_HEIGHT = 300f
 private val WIKI_EDIT_INPUT_TIMEOUT_MILLIS = 30 * 60_000
 private val WIKI_HISTORY_LIMIT = 10
 private val WIKI_DELETE_DAILY_LIMIT = 2
@@ -489,21 +495,19 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
     if (!ensureWikiEnabled(player)) return
     val manager = canManageWiki(player)
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            if (!wikiEnabled()) {
-                title = "Wiki已关闭"
-                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
-                option("关闭") {}
-                return
-            }
-            val pageData = db { listWikiSummariesPagedCached(selectedPage, WIKI_LIST_PAGE_SIZE) }
-            if (!wikiEnabled()) {
-                title = "Wiki已关闭"
-                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
-                option("关闭") {}
-                return
-            }
+
+    MenuV3(player) {
+        // 阅读/列表类页面：占满屏幕但内容限宽居中，比成就页更大一些
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = WIKI_MENU_WIDTH
+
+        val pageData = db { listWikiSummariesPagedCached(selectedPage, WIKI_LIST_PAGE_SIZE) }
+        if (!wikiEnabled()) {
+            title = "Wiki已关闭"
+            msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+            option("关闭") { close() }
+        } else {
             selectedPage = pageData.page
             val totalPage = pageData.totalPage
             val pageItems = pageData.items
@@ -516,24 +520,19 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
             }
 
             pageItems.forEach { item ->
-                option("[gold]${item.title}\n[gray]${item.preview}") {
-                    openWikiPage(player, item.id)
-                }
-                newRow()
+                option("[gold]${item.title}\n[gray]${item.preview}") { openWikiPage(player, item.id) }
             }
-            repeat(WIKI_LIST_PAGE_SIZE - pageItems.size) {
-                option("") { refresh() }
-                newRow()
-            }
+            repeat(WIKI_LIST_PAGE_SIZE - pageItems.size) { space() }
 
-            option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
-            option("$selectedPage/$totalPage") { refresh() }
-            option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
-            newRow()
-            if (manager) option("管理Wiki") { openWikiManageMenu(player) }
-            option("关闭") {}
+            column(3) {
+                option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
+                option("$selectedPage/$totalPage") { refresh() }
+                option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
+            }
+            if (manager) option("管理Wiki") { close(); openWikiManageMenu(player) }
+            option("关闭") { close() }
         }
-    }.sendTo(player, WIKI_MENU_TIMEOUT_MILLIS)
+    }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 1) {
@@ -550,44 +549,55 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
     val canEdit = manager && (!protected || adminWiki)
     val bodyPages = splitWikiBody(MdtTextFormat.render(page.body))
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            if (!wikiEnabled()) {
-                title = "Wiki已关闭"
-                msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
-                option("关闭") {}
-                return
-            }
+
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = WIKI_MENU_WIDTH
+
+        if (!wikiEnabled()) {
+            title = "Wiki已关闭"
+            msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
+            option("关闭") { close() }
+        } else {
             selectedPage = selectedPage.coerceIn(1, bodyPages.size)
             title = page.title
             msg = """
                 |[gray]Wiki ID: [white]${page.id}[]  [gray]页数: [white]$selectedPage/${bodyPages.size}
                 |${if (protected) "[red]保护锁：[white]已开启，仅4级/admin可编辑或删除" else "[gray]保护锁：未开启"}
-                |
-                |${bodyPages[selectedPage - 1]}
             """.trimMargin()
-            option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
-            option("$selectedPage/${bodyPages.size}") { refresh() }
-            option("->") { selectedPage = (selectedPage + 1).coerceAtMost(bodyPages.size); refresh() }
-            newRow()
-            option("返回列表") { openWikiIndex(player) }
-            option("最近修改") { openWikiHistoryMenu(player, page.id) }
-            option("分享到聊天") { shareWikiPageToChat(player, page.id) }
-            newRow()
-            if (canEdit) option("编辑此页") { openWikiEditMenu(player, page.id) }
-            if (adminWiki) option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
-                if (!ensureWikiEnabled(player)) return@option
-                if (db { setWikiProtected(page.id, !protected) }) {
-                    player.sendMessage(if (protected) "[green]已解除Wiki保护锁" else "[green]已设置Wiki保护锁，4级以下不可编辑/删除")
-                } else {
-                    player.sendMessage("[yellow]保护锁操作失败，页面可能不存在")
-                }
-                openWikiPage(player, page.id, selectedPage)
+            // 阅读区：**只有正文**放进滚动区域（滚动条不会挤压下面的按钮宽度），左对齐 + 自动换行
+            pane("wikiBody", WIKI_READ_PANE_HEIGHT) {
+                label(bodyPages[selectedPage - 1], align = "left", wrap = true)
             }
-            newRow()
-            option("关闭") {}
+
+            column(3) {
+                option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
+                option("$selectedPage/${bodyPages.size}") { refresh() }
+                option("->") { selectedPage = (selectedPage + 1).coerceAtMost(bodyPages.size); refresh() }
+            }
+            column(3) {
+                option("返回列表") { openWikiIndex(player) }
+                option("最近修改") { openWikiHistoryMenu(player, page.id) }
+                option("分享到聊天") { shareWikiPageToChat(player, page.id) }
+            }
+            if (canEdit || adminWiki) {
+                column(2) {
+                    if (canEdit) option("编辑此页") { close(); openWikiEditMenu(player, page.id) }
+                    if (adminWiki) option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
+                        if (!ensureWikiEnabled(player)) return@option
+                        if (db { setWikiProtected(page.id, !protected) }) {
+                            player.sendMessage(if (protected) "[green]已解除Wiki保护锁" else "[green]已设置Wiki保护锁，4级以下不可编辑/删除")
+                        } else {
+                            player.sendMessage("[yellow]保护锁操作失败，页面可能不存在")
+                        }
+                        openWikiPage(player, page.id, selectedPage)
+                    }
+                }
+            }
+            option("关闭") { close() }
         }
-    }.sendTo(player, WIKI_MENU_TIMEOUT_MILLIS)
+    }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun shareWikiPageToChat(player: Player, id: String) {
@@ -610,12 +620,16 @@ private suspend fun shareWikiPageToChat(player: Player, id: String) {
 
 private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {
     if (!ensureWikiEnabled(player)) return
-    MenuBuilder<Unit>("Wiki格式帮助") {
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = WIKI_MENU_WIDTH
+        title = "Wiki格式帮助"
         msg = MdtTextFormat.helpText
-        if (backId != null) option("返回编辑") { openWikiEditMenu(player, backId) }
+        if (backId != null) option("返回编辑") { close(); openWikiEditMenu(player, backId) }
         option("返回Wiki列表") { openWikiIndex(player) }
-        option("关闭") {}
-    }.sendTo(player, WIKI_MENU_TIMEOUT_MILLIS)
+        option("关闭") { close() }
+    }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun openWikiHistoryMenu(player: Player, id: String) {
@@ -628,16 +642,21 @@ private suspend fun openWikiHistoryMenu(player: Player, id: String) {
     if (!ensureWikiEnabled(player)) return
     val page = data.first
     val historyText = data.second
-    MenuBuilder<Unit>("Wiki最近修改：${page.title}") {
+    val canEdit = canManageWiki(player) && (!db { isWikiProtected(page.id) } || canAdminWiki(player))
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = WIKI_MENU_WIDTH
+        title = "Wiki最近修改：${page.title}"
         msg = """
             |[cyan]仅记录最近${WIKI_HISTORY_LIMIT}次新增/编辑。
             |
             |$historyText
         """.trimMargin()
         option("返回此页") { openWikiPage(player, page.id) }
-        if (canManageWiki(player) && (!db { isWikiProtected(page.id) } || canAdminWiki(player))) option("编辑此页") { openWikiEditMenu(player, page.id) }
-        option("关闭") {}
-    }.sendTo(player, WIKI_MENU_TIMEOUT_MILLIS)
+        if (canEdit) option("编辑此页") { close(); openWikiEditMenu(player, page.id) }
+        option("关闭") { close() }
+    }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun createWikiFlow(player: Player) {

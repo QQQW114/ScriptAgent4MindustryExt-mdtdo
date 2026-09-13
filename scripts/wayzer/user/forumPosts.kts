@@ -8,6 +8,8 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.MenuV3
+import kotlin.time.Duration.Companion.milliseconds
 import wayzer.lib.ForumPostCreatedEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.MdtTextFormat
@@ -70,6 +72,10 @@ private val FORUM_DAILY_POST_LIMIT = 3
 private val FORUM_MAX_NORMAL_POSTS = 500
 private val FORUM_CLEANUP_MIN_AGE_DAYS = 30L
 private val FORUM_MENU_TIMEOUT_MILLIS = 30 * 60_000
+// 菜单版式（2026-09-13 MenuV3 接入）：内容限宽、正文/评论阅读区高度
+private val FORUM_MENU_WIDTH = 640f
+private val FORUM_READ_PANE_HEIGHT = 300f
+private val FORUM_COMMENT_PANE_HEIGHT = 300f
 private val FORUM_INPUT_TIMEOUT_MILLIS = 30 * 60_000
 private val FORUM_CLEANUP_DATE_KEY = "forum.cleanup.lastDate"
 private val FORUM_POST_HISTORY_KEY = "forum.postChangeHistory"
@@ -493,44 +499,49 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
     if (!ensureForumEnabled(player)) return
     db { cleanupForumPostsIfNeeded() }
     val manager = canManageForum(player)
+    val canTrash = canAdminForum(player)
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            val (sections, stats) = db { forumSectionsCached() to forumStatsCached() }
-            val totalPage = maxOf(1, (sections.size + FORUM_SECTION_LIST_PAGE_SIZE - 1) / FORUM_SECTION_LIST_PAGE_SIZE)
-            selectedPage = selectedPage.coerceIn(1, totalPage)
-            val pageItems = sections.drop((selectedPage - 1) * FORUM_SECTION_LIST_PAGE_SIZE).take(FORUM_SECTION_LIST_PAGE_SIZE)
 
-            title = "帖子分区"
-            msg = "[cyan]当前帖子总数：[white]${stats.currentPosts}[]，[cyan]总发帖数：[white]${stats.totalPosts}"
+    MenuV3(player) {
+        // 帖子/阅读类页面：占满屏幕但内容限宽居中，比成就页更大
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = FORUM_MENU_WIDTH
 
-            pageItems.forEach { section ->
-                option(sectionOptionText(section)) {
-                    if (canViewForumSection(player, section.code)) {
-                        openForumPostList(player, section.code)
-                    } else {
-                        player.sendMessage(deniedSectionMessage(section.code))
-                        openForumIndex(player, selectedPage)
-                    }
+        val (sections, stats) = db { forumSectionsCached() to forumStatsCached() }
+        val totalPage = maxOf(1, (sections.size + FORUM_SECTION_LIST_PAGE_SIZE - 1) / FORUM_SECTION_LIST_PAGE_SIZE)
+        selectedPage = selectedPage.coerceIn(1, totalPage)
+        val pageItems = sections.drop((selectedPage - 1) * FORUM_SECTION_LIST_PAGE_SIZE).take(FORUM_SECTION_LIST_PAGE_SIZE)
+
+        title = "帖子分区"
+        msg = "[cyan]当前帖子总数：[white]${stats.currentPosts}[]，[cyan]总发帖数：[white]${stats.totalPosts}"
+
+        pageItems.forEach { section ->
+            option(sectionOptionText(section)) {
+                if (canViewForumSection(player, section.code)) {
+                    openForumPostList(player, section.code)
+                } else {
+                    player.sendMessage(deniedSectionMessage(section.code))
+                    openForumIndex(player, selectedPage)
                 }
-                newRow()
             }
-            repeat(FORUM_SECTION_LIST_PAGE_SIZE - pageItems.size) {
-                option("") { refresh() }
-                newRow()
-            }
+        }
+        repeat(FORUM_SECTION_LIST_PAGE_SIZE - pageItems.size) { space() }
 
+        column(3) {
             option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
             option("$selectedPage/$totalPage") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
-            newRow()
-            if (manager) option("管理分区") { openForumSectionManageMenu(player) }
-            if (canAdminForum(player)) option("回收站") { openForumTrashMenu(player) }
-            option("最近变更") { openForumPostHistoryMenu(player) }
-            option("格式帮助") { openForumFormatHelp(player) }
-            option("关闭") {}
         }
-    }.sendTo(player, FORUM_MENU_TIMEOUT_MILLIS)
+
+        column(2) {
+            if (manager) option("管理分区") { close(); openForumSectionManageMenu(player) }
+            if (canTrash) option("回收站") { close(); openForumTrashMenu(player) }
+            option("最近变更") { close(); openForumPostHistoryMenu(player) }
+            option("格式帮助") { close(); openForumFormatHelp(player) }
+        }
+        option("关闭") { close() }
+    }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun openForumFormatHelp(player: Player, backPostId: Int? = null, sectionCode: String = "all") {
@@ -677,42 +688,45 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
     }
     val canPost = canUseForum(player)
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_LIST_PAGE_SIZE
-            val hiddenSections = hiddenForumSectionCodes(player)
-            val page = db { forumPostListPageCached(section.code, offset, FORUM_LIST_PAGE_SIZE, hiddenSections) }
-            val pageItems = page.items
-            val totalPosts = page.total
-            val totalPage = maxOf(1, (totalPosts + FORUM_LIST_PAGE_SIZE - 1) / FORUM_LIST_PAGE_SIZE)
-            selectedPage = selectedPage.coerceIn(1, totalPage)
 
-            title = "帖子：${section.name}"
-            msg = if (totalPosts == 0) {
-                "[yellow]当前分区暂无帖子。\n[gray]${section.description}"
-            } else {
-                "[cyan]${section.description}\n[gray]仅加载当前页 ${pageItems.size} 条 / 共 $totalPosts 条"
-            }
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = FORUM_MENU_WIDTH
 
-            pageItems.forEach { item ->
-                option(item.text) { openForumPost(player, item.post.id, section.code) }
-                newRow()
-            }
-            repeat(FORUM_LIST_PAGE_SIZE - pageItems.size) {
-                option("") { refresh() }
-                newRow()
-            }
+        val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_LIST_PAGE_SIZE
+        val hiddenSections = hiddenForumSectionCodes(player)
+        val page = db { forumPostListPageCached(section.code, offset, FORUM_LIST_PAGE_SIZE, hiddenSections) }
+        val pageItems = page.items
+        val totalPosts = page.total
+        val totalPage = maxOf(1, (totalPosts + FORUM_LIST_PAGE_SIZE - 1) / FORUM_LIST_PAGE_SIZE)
+        selectedPage = selectedPage.coerceIn(1, totalPage)
 
+        title = "帖子：${section.name}"
+        msg = if (totalPosts == 0) {
+            "[yellow]当前分区暂无帖子。\n[gray]${section.description}"
+        } else {
+            "[cyan]${section.description}\n[gray]仅加载当前页 ${pageItems.size} 条 / 共 $totalPosts 条"
+        }
+
+        pageItems.forEach { item ->
+            option(item.text) { openForumPost(player, item.post.id, section.code) }
+        }
+        repeat(FORUM_LIST_PAGE_SIZE - pageItems.size) { space() }
+
+        column(3) {
             option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
             option("$selectedPage/$totalPage") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
-            newRow()
-            if (canPost) option("发布帖子") { createForumPostFlow(player, section.code) }
-            option("格式帮助") { openForumFormatHelp(player) }
-            option("返回分区") { openForumIndex(player) }
-            option("关闭") {}
         }
-    }.sendTo(player, FORUM_MENU_TIMEOUT_MILLIS)
+
+        column(3) {
+            if (canPost) option("发布帖子") { close(); createForumPostFlow(player, section.code) }
+            option("格式帮助") { close(); openForumFormatHelp(player) }
+            option("返回分区") { openForumIndex(player) }
+        }
+        option("关闭") { close() }
+    }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun openForumPost(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
@@ -733,26 +747,36 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
     val canEdit = canEditForumPost(player, post, protected)
     val canManage = canManageForum(player)
     val canAdmin = canAdminForum(player)
+    val social = socialActionsEnabled()
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            selectedPage = selectedPage.coerceIn(1, pages.size)
-            val time = FORUM_TIME_FORMATTER.format(post.createdAt)
-            title = post.title
-            msg = """
-                |[gray]帖子 #[white]${post.id}[]  [gray]作者：[white]${post.authorName}[]  [gray]$time
-                |[gray]分区：[white]${postSection.name}
-                |${if (protected) "[red]保护锁：[white]已开启，仅4级/admin可编辑或删除" else "[gray]保护锁：未开启"}
-                |[gray]页数：[white]$selectedPage/${pages.size}[]${if (socialActionsEnabled()) "  [gray]通过此页可直接为作者点赞/点踩。" else ""}
-                |
-                |${pages[selectedPage - 1]}
-            """.trimMargin()
 
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = FORUM_MENU_WIDTH
+
+        selectedPage = selectedPage.coerceIn(1, pages.size)
+        val time = FORUM_TIME_FORMATTER.format(post.createdAt)
+        title = post.title
+        msg = """
+            |[gray]帖子 #[white]${post.id}[]  [gray]作者：[white]${post.authorName}[]  [gray]$time
+            |[gray]分区：[white]${postSection.name}
+            |${if (protected) "[red]保护锁：[white]已开启，仅4级/admin可编辑或删除" else "[gray]保护锁：未开启"}
+            |[gray]页数：[white]$selectedPage/${pages.size}[]${if (social) "  [gray]通过此页可直接为作者点赞/点踩。" else ""}
+        """.trimMargin()
+
+        // 阅读区：**只有正文**在滚动区域内（滚动条不影响下面按钮的宽度），左对齐 + 自动换行
+        pane("forumBody", FORUM_READ_PANE_HEIGHT) {
+            label(pages[selectedPage - 1], align = "left", wrap = true)
+        }
+
+        column(3) {
             option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
             option("$selectedPage/${pages.size}") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(pages.size); refresh() }
-            newRow()
-            if (socialActionsEnabled()) {
+        }
+        if (social) {
+            column(2) {
                 option("为作者点赞") {
                     val ok = with(reputation) { likePlayer(player, post.authorUid, post.authorName) }
                     if (ok && db { MdtStorage.incrementForumPostAuthorReaction(post.id, "like") }) clearForumCache()
@@ -764,23 +788,25 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
                     openForumPost(player, post.id, sectionCode, selectedPage)
                 }
             }
-            newRow()
-            option("发布评论") { createForumCommentFlow(player, post.id, sectionCode) }
+        }
+        column(3) {
+            option("发布评论") { close(); createForumCommentFlow(player, post.id, sectionCode) }
             option("查看评论（${post.commentCount}条）") { openForumComments(player, post.id, sectionCode) }
             option("分享到聊天") { shareForumPostToChat(player, post.id, sectionCode) }
-            newRow()
-            if (canAdmin) {
-                option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
+        }
+        if (canEdit || canAdmin) {
+            column(2) {
+                if (canEdit) option("修改帖子") { close(); editForumPostFlow(player, post.id, sectionCode) }
+                if (canAdmin) option(if (protected) "解除保护锁（4）" else "设置保护锁（4）") {
                     if (db { MdtStorage.setForumPostProtected(post.id, !protected) }) clearForumCache()
                     player.sendMessage(if (protected) "[green]已解除帖子保护锁" else "[green]已设置保护锁，4级以下不可编辑/删除")
                     openForumPost(player, post.id, sectionCode, selectedPage)
                 }
-                newRow()
             }
-            if (canEdit) option("修改帖子") { editForumPostFlow(player, post.id, sectionCode) }
-            option("格式帮助") { openForumFormatHelp(player, post.id, sectionCode) }
-            if (canManage) {
-                val locked = db { post.id in lockedForumPostIdsCached() }
+        }
+        if (canManage) {
+            val locked = db { post.id in lockedForumPostIdsCached() }
+            column(3) {
                 option(if (post.pinned) "取消置顶" else "置顶此帖") {
                     if (db { MdtStorage.setForumPostPinned(post.id, !post.pinned) }) clearForumCache()
                     player.sendMessage(if (post.pinned) "[green]已取消置顶" else "[green]已置顶此帖")
@@ -791,16 +817,15 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
                     player.sendMessage(if (locked) "[green]已解除帖子自动清理锁定" else "[green]已锁定此帖，自动清理不会删除它")
                     openForumPost(player, post.id, sectionCode, selectedPage)
                 }
-                newRow()
-                if (!protected || canAdmin) option("删除此帖") { confirmDeleteForumPost(player, post.id, sectionCode) }
-                newRow()
-            } else if (canEdit) {
-                newRow()
+                if (!protected || canAdmin) option("删除此帖") { close(); confirmDeleteForumPost(player, post.id, sectionCode) }
             }
-            option("返回列表") { openForumPostList(player, sectionCode) }
-            option("关闭") {}
         }
-    }.sendTo(player, FORUM_MENU_TIMEOUT_MILLIS)
+        column(3) {
+            option("格式帮助") { close(); openForumFormatHelp(player, post.id, sectionCode) }
+            option("返回列表") { openForumPostList(player, sectionCode) }
+            option("关闭") { close() }
+        }
+    }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun shareForumPostToChat(player: Player, postId: Int, sectionCode: String = "all") {
@@ -841,36 +866,52 @@ private suspend fun openForumComments(player: Player, postId: Int, sectionCode: 
         return
     }
     var selectedPage = initialPage
-    object : MenuBuilder<Unit>(false) {
-        override suspend fun build() {
-            val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_COMMENT_PAGE_SIZE
-            val commentPage = db { forumCommentPageCached(post.id, offset, FORUM_COMMENT_PAGE_SIZE) }
-            val comments = commentPage.items
-            val totalComments = commentPage.total
-            val totalPage = maxOf(1, (totalComments + FORUM_COMMENT_PAGE_SIZE - 1) / FORUM_COMMENT_PAGE_SIZE)
-            selectedPage = selectedPage.coerceIn(1, totalPage)
-            title = "评论：${post.title}"
-            msg = if (totalComments == 0) {
-                "[yellow]当前暂无评论。"
-            } else {
-                buildString {
-                    appendLine("[gray]帖子 #[white]${post.id}[] / 评论 $totalComments 条 / 当前页加载 ${comments.size} 条")
-                    comments.forEach { comment ->
-                        appendLine()
-                        appendLine("[cyan]#${comment.id} [white]${comment.authorName}[] [gray]${FORUM_TIME_FORMATTER.format(comment.createdAt)}")
-                        appendLine(MdtTextFormat.render(comment.body))
-                    }
-                }
+
+    MenuV3(player) {
+        fillScreen = true
+        wrapInPane = false
+        rootWidth = FORUM_MENU_WIDTH
+
+        val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_COMMENT_PAGE_SIZE
+        val commentPage = db { forumCommentPageCached(post.id, offset, FORUM_COMMENT_PAGE_SIZE) }
+        val comments = commentPage.items
+        val totalComments = commentPage.total
+        val totalPage = maxOf(1, (totalComments + FORUM_COMMENT_PAGE_SIZE - 1) / FORUM_COMMENT_PAGE_SIZE)
+        selectedPage = selectedPage.coerceIn(1, totalPage)
+        title = "评论：${post.title}"
+        msg = if (totalComments == 0) {
+            "[yellow]当前暂无评论。"
+        } else {
+            "[gray]帖子 #[white]${post.id}[] / 评论 $totalComments 条 / 当前页加载 ${comments.size} 条"
+        }
+        if (totalComments > 0) {
+            // 评论正文同样放进阅读区（滚动条只影响正文）
+            pane("forumComments", FORUM_COMMENT_PANE_HEIGHT) {
+                label(
+                    buildString {
+                        comments.forEach { comment ->
+                            appendLine("[cyan]#${comment.id} [white]${comment.authorName}[] [gray]${FORUM_TIME_FORMATTER.format(comment.createdAt)}")
+                            appendLine(MdtTextFormat.render(comment.body))
+                            appendLine()
+                        }
+                    }.trimEnd(),
+                    align = "left",
+                    wrap = true,
+                )
             }
+        }
+
+        column(3) {
             option("<-") { selectedPage = (selectedPage - 1).coerceAtLeast(1); refresh() }
             option("$selectedPage/$totalPage") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
-            newRow()
-            option("发布评论") { createForumCommentFlow(player, post.id, sectionCode) }
-            option("返回帖子") { openForumPost(player, post.id, sectionCode) }
-            option("关闭") {}
         }
-    }.sendTo(player, FORUM_MENU_TIMEOUT_MILLIS)
+        column(3) {
+            option("发布评论") { close(); createForumCommentFlow(player, post.id, sectionCode) }
+            option("返回帖子") { openForumPost(player, post.id, sectionCode) }
+            option("关闭") { close() }
+        }
+    }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
 private suspend fun createForumPostFlow(player: Player, sectionCode: String = "all") {

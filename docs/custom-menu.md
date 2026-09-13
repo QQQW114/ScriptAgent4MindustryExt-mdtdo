@@ -128,21 +128,35 @@
 未覆盖边界：**真实客户端的观感（缩放/适配/图标是否齐全）必须由玩家侧实测**，
 本轮只做到"编译通过 + 机制有源码依据"。
 
-### 首个接入：成就页（2026-09-13）
+### 已接入的页面（2026-09-13）
 
-`/achievements` 已改用 `MenuV3` 渲染（`wayzer/user/achievement.kts` 的 `showAchievementPage`）：
+| 页面 | 文件 | 版式口径 |
+| --- | --- | --- |
+| 成就页 | `wayzer/user/achievement.kts`（`showAchievementPage`） | 小页：`fillScreen=false` 居中、**无滚动**（整页一次渲染 + 翻页）、`rootWidth=440`、超时 300 秒 |
+| Wiki 列表 / 阅读页 / 最近修改 / 格式帮助 | `wayzer/user/wiki.kts` | 阅读风：`fillScreen=true` 但内容限宽 `620`；**只有正文进滚动区**（滚动条不再挤压按钮）、正文左对齐 + 自动换行；按钮按行分组；超时 30 分钟 |
+| 帖子分区 / 列表 / 阅读页 / 评论 | `wayzer/user/forumPosts.kts` | 同 Wiki，内容限宽 `640`；正文/评论进滚动区；点赞·评论·管理按钮分行分组、按钮变小；超时 30 分钟 |
 
-- **内容与旧聊天菜单逐字一致**（标题、进度 msg、6 条/页、分页 `<-`/`页/总`/`->`、管理入口、隐藏成就规则都没动）；
-- **观感**按要求做成"保守 + 靠中 + 不铺满屏幕"：`fillScreen = false`（原版 `Dialog.show()` 会 `pack()` 后
-  `centerWindow()` 居中）、`wrapInPane = false` + 固定高度 `pane("achievementList", 300f)`（列表在内部滚动，
-  对话框高度可控）、`rootWidth = 440f`（比默认 520 略窄）；
-- 旧实现 `showAchievementMenu`（`PagedMenuBuilder` 聊天菜单）**原样保留**，
-  回退只需把命令体里的 `showAchievementPage(player!!)` 改回 `showAchievementMenu(player!!)`；
-- 分页状态靠 `MenuV3.sessionState` 保存（`send()` 只清 items/callbacks，不清 sessionState），
-  所以 `refresh()` 重发菜单后仍停在同一页；
-- 管理入口点击时先 `close()` 再打开原有的旧式管理菜单，避免两种菜单叠在一起。
+要点与坑：
 
-效果需要真实客户端确认（本环境只能验证编译与冷启动）。
+- **滚动条会吃宽度**：`ScrollPane` 的滚动条占在内容右侧，凡是"按钮和正文在同一个滚动容器里"的写法都会让按钮左右不对称。
+  正确做法是**只把正文/评论放进 `pane(...)`**，按钮放在 `pane` 外面。
+- **长文本必须 `wrap`**：`MenuV3.label(text, align, wrap = true)`（2026-09-13 新增该参数）。不换行的 Label 会按整行宽度撑开布局。
+- **文本输入流程前必须先 `close()`**：菜单弹窗是模态的，会挡住聊天输入框。所以所有"点了要打字"的入口
+  （发帖/发评论/改帖/删除确认/Wiki 编辑/成就管理…）都是 `close()` 之后再进入原有聊天流程。
+- **同一玩家开新菜单会顶掉旧菜单**：所有会话共用同一个 `menuId`（`hideExisting` 默认 true）。
+  因此 `MenuV3.send()` 里会把该玩家的旧会话**回收并唤醒其 `await`**，否则每次翻页/跳转都会留下一个挂到超时的协程；
+  同时旧会话不能再调 `close()`（会把玩家当前菜单一起关掉）。
+- 权限按钮照旧按条件 `if (xxx) option(...)` 添加——权限不足就不渲染该按钮；
+  成就管理入口的口径从"仅 `wayzer.admin.achievement`"放宽为"该权限 **或** 信任系统管理员"（与 Wiki 一致）。
+- 未接入（仍是聊天菜单，进入前会先 `close()` 弹窗）：Wiki 的编辑/管理/回收站确认，帖子的新建/编辑/分区管理/回收站确认。
+  这些是**管理流程**，版式收益小、改动风险大，等页面观感定稿后再决定是否一并迁移。
+
+### 首个接入：成就页（2026-09-13，已按实测反馈调整）
+
+- 初版把列表放进了固定高度 `pane`，实测**右侧滚动条占位导致按钮不对称** → 已改为**整页渲染 + 翻页**，无滚动区域；
+- 超时从 60 秒提到 **300 秒**；
+- 内容与旧聊天菜单逐字一致；旧实现 `showAchievementMenu` 原样保留，
+  回退只需把命令体里的 `showAchievementPage(player!!)` 改回 `showAchievementMenu(player!!)`。
 
 ## 若将来要重启这个方向（已按 2026-09-13 结论更新）
 

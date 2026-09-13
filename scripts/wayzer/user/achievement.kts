@@ -547,9 +547,11 @@ private suspend fun showAchievementMenu(player: Player) {
 
 // ---- 成就页：v160 服务端下发菜单（MenuV3 试点，2026-09-13）----
 // 口径：**内容与原聊天菜单逐字一致**，只换渲染方式；布局交给 MenuV3（不要自己算宽度）。
-// 观感：不铺满屏幕（原版会把对话框 pack 后居中），列表放在固定高度的 pane 里，屏幕小也能滚动。
+// 观感：不铺满屏幕（原版会把对话框 pack 后居中）；**不用滚动区域**——整页一次渲染出来 + 翻页，
+// 因为 ScrollPane 右侧滚动条会占掉宽度，让滚动范围内的按钮与外面的按钮左右不对称。
 private val ACHIEVEMENT_PAGE_WIDTH = 440f
-private val ACHIEVEMENT_PAGE_LIST_HEIGHT = 300f
+// 超时：原来 60 秒太短（成就页会被人开着看），适当拉高；玩家没有任何操作才会自动关。
+private val ACHIEVEMENT_PAGE_TIMEOUT_SECONDS = 300
 
 private suspend fun showAchievementPage(player: Player) {
     if (!ensureAchievementEnabled(player)) return
@@ -560,6 +562,10 @@ private suspend fun showAchievementPage(player: Player) {
     val knownCodes = defs.mapTo(hashSetOf()) { it.code }
     val completedCount = completed.count { it in knownCodes }
     val canAdmin = player.hasPermission("wayzer.admin.achievement")
+    // 成就管理入口的可见性（2026-09-13 调整）：原口径只看 `wayzer.admin.achievement`
+    // （注册给 @admin，即玩家的"服务器 admin 标志"），而 MDT 的 4级/运维是按**信任系统**判定的
+    // （wiki 那边用的是 isTrustAdmin），结果 4级在菜单里看不到管理入口。这里放宽为"权限 或 信任管理员"。
+    val canAdminEntry = canAdmin || with(trustLevel) { isTrustAdmin(player) }
 
     MenuV3(player) {
         title = "[yellow]成就系统"
@@ -573,21 +579,20 @@ private suspend fun showAchievementPage(player: Player) {
         wrapInPane = false
         rootWidth = ACHIEVEMENT_PAGE_WIDTH
 
-        if (canAdmin) {
+        if (canAdminEntry) {
             option("[yellow]成就管理\n[gray]添加/删除/编辑自定义成就") {
                 close()
                 showAchievementAdminMenu(player)
             }
         }
 
-        pane("achievementList", ACHIEVEMENT_PAGE_LIST_HEIGHT) {
-            renderPaged(defs, initialPage = 1, prePage = 6) { item ->
-                option(optionText(completed, item)) { showAchievement(uid, player, item) }
-            }
+        // 整页渲染（每页 6 条）+ 末尾翻页，不放进滚动区域
+        renderPaged(defs, initialPage = 1, prePage = 6) { item ->
+            option(optionText(completed, item)) { showAchievement(uid, player, item) }
         }
 
         option("关闭") { close() }
-    }.send().awaitWithTimeout(60.seconds)
+    }.send().awaitWithTimeout(ACHIEVEMENT_PAGE_TIMEOUT_SECONDS.seconds)
 }
 
 private fun resolveTarget(text: String): AchievementTarget {

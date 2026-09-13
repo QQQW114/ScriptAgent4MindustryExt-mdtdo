@@ -160,15 +160,16 @@ open class MenuV3(
         return captured
     }
 
+    /**
+     * 一行文本。[wrap] 为 true 时按容器宽度自动换行——**长文章必须开**，
+     * 否则 Label 会按整行宽度撑开布局（阅读类页面务必用 `label(..., align = "left", wrap = true)`）。
+     */
     @MenuBuilderDsl
-    fun label(text: String, align: String = "center") {
+    fun label(text: String, align: String = "center", wrap: Boolean = false) {
         newRow()
-        items.add(
-            MenuItem.Cell(
-                UiBuilder.label(text).growX().labelAlign(align).align(align).pad(cellPad),
-                columnPreRow
-            )
-        )
+        val node = UiBuilder.label(text).growX().labelAlign(align).align(align).pad(cellPad)
+        if (wrap) node.wrap()
+        items.add(MenuItem.Cell(node, columnPreRow))
         items.add(MenuItem.Row)
         colCount = 0
     }
@@ -345,8 +346,17 @@ open class MenuV3(
         // 因此这里改为**全局只注册一次** + 每会话唯一 token 路由。
         sessionToken = nextSessionToken()
         activeSessions[sessionToken] = this
-        // 同一玩家的旧会话已被新菜单顶掉（hideExisting 默认为 true），及时回收，避免路由表堆积。
-        activeSessions.entries.removeAll { it.value !== this && it.value.player === player }
+        // 同一玩家的旧会话会被新菜单顶掉（hideExisting 默认 true）：回收路由表项，并**唤醒旧会话的 await**，
+        // 否则每次翻页/跳转都会留下一个等到超时才结束的协程。
+        // 注意：这里不能调用旧会话的 close()——所有会话共用同一个 menuId，close() 会把玩家当前的菜单一起关掉。
+        activeSessions.entries.removeAll { entry ->
+            val old = entry.value
+            if (old !== this && old.player === player) {
+                old.closed = true
+                old.closedSignal?.complete(Unit)
+                true
+            } else false
+        }
 
         MTMenuBuilder.of(buildRoot())
             .id(sharedMenuId)
