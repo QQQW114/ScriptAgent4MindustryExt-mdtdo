@@ -1,8 +1,9 @@
-# 官方 Mindustry 兼容层说明（v160.x / MindustryX X37 起，含 B493/B491/B485 历史）
+# 官方 Mindustry 兼容层说明（v160.x / MindustryX B495 起，含 X37/B493/B491/B485 历史）
 
-> 当前生产候选基线为 MindustryX **正式发行版 `v2026.09.X37`** / Mindustry **v160.1**（2026-09-13 跟进；
-> `v2026.09.X37` 与预发行 tag `prerelease-2026.09.12.B493` 指向同一提交 `dc388e9`），
-> 上一基线为 `prerelease-2026.09.11.B491`，再往前为 `prerelease-2026.08.12.B485` / v159.7。
+> 当前生产候选基线为 MindustryX **预览版 `prerelease-2026.09.13.B495`** / Mindustry **v160.3**（2026-09-13 跟进；
+> `prerelease-2026.09.13.B495` 对应提交 `92471dd`，其 `work` 子模块即 Mindustry `v160.3` 提交 `254fd3e`），
+> 上一基线为正式发行版 `v2026.09.X37` / v160.1（= 预发行 `prerelease-2026.09.12.B493`，提交 `dc388e9`），
+> 再往前为 `prerelease-2026.09.11.B491`（v160.1）与 `prerelease-2026.08.12.B485` / v159.7。
 > ScriptAgent 仍按项目当前版本独立维护，不与游戏版本混合升级。
 >
 > **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。本基线只是当前候选快照，跟进新版本由用户拍板后更新本文档与候选构建物。
@@ -13,6 +14,26 @@
 - 官方端缺少的 X API 不直接引用，改为反射检测；缺失时只降级对应边缘功能，避免整条依赖链加载失败。
 - 不为官方端硬造高风险同步/网络 Hook；无法稳定兼容的实验功能直接 no-op，并打印明确警告。
 - 兼容层集中使用 `*Compat`、运行时 `Class.forName(...)`、`javaClass.getField/getDeclaredField(...)` 等方式，方便搜索和切除。
+
+## 2026-09-13（第二批）：跟进 Mindustry 160.3 / MindustryX 预览版 B495
+
+- **上游节奏**：Mindustry 一天内连发 **v160.2（09-12）** 与 **v160.3（09-13）**，MindustryX 同步给出
+  `prerelease-2026.09.13.B495`（提交 `92471dd`，其 `work` 子模块 = Mindustry `v160.3` 提交 `254fd3e`）。
+  用户要求跟进该预览版。注意 MindustryX **正式发行版仍是 X37（v160.1）**，160.3 目前只有预览通道。
+- 构建物：`mdtserver/server-2026.09.13.B495.jar`，SHA-256
+  `D2872D30598BFC2557A8122BF1A622F7263AF783B3636E09CFF5BCF2778E4C09`；
+  JAR 内 `version.properties` 为 `build=160.3 / modifier=release / number=7 / type=official`，
+  `mod.hjson` 为 `version="2026.09.13.B495" / minGameVersion="160.3"`。
+- B493→B495 的 MindustryX 侧只有 3 个提交：两个网络健壮性修复
+  （世界未加载时收到单位生成包不再崩溃；加载中玩家跳过低优先级包）与 v160.3 合并，**无接口破坏**。
+- **与插件有重叠的上游改动**（详见 [脚本维护总览](scripts-maintenance.md) 同日条目）：
+  v160.2 的 "data patch sounds only use streaming when above 100kb"、v160.3 的
+  "requiredPlanets in data patches" 与 "data patch maps crashing after adding items" 都落在
+  **Data Patch / 数据资产**这条链上——正是我们 CP/DP 内容补丁与音乐资产同步依赖的能力。
+- 验证：清空 `config/scripts/cache` 后用 `server-2026.09.13.B495.jar` 冷启动，
+  `共找到157脚本,加载成功153,启用成功148,出错0`、无异常、6567/6859/10099 正常、命令 Socket 可用。
+- 基线保留：X37 / B491 / B485 的 JAR 都留在 `mdtserver/`，回滚只改 `server.properties` 的 `jar=` 一个键
+  （`server.properties.bak-x37` 保留了切换前的整份配置）。
 
 ## 2026-09-13：跟进 MindustryX X37（正式发行版，v160.1）
 
