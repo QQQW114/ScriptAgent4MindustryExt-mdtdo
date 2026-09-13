@@ -148,6 +148,13 @@
 - 控制台/指令能验证的：权限拦截、状态展示、开关往返、脚本加载——用命令 Socket 实测；
   需要真实客户端的（加入/等级变化/菜单点击）标记为"未覆盖边界"写进维护文档。
 - 大改动先跑一次"加载计数"基线，任何回归立刻在计数上暴露。
+- **隔离测试实例（`.agents/test160.ps1` + `.tmp-160test`）的两个坑（2026-09-13 核实）**：
+  ① runner 的 `-Runner xxx.cmd` **写死了 JAR 文件名**（`test160-run.cmd`=B491、`test160-x37-run.cmd`=X37、
+  `test160-b495-run.cmd`=当前基线 B495），所以**换基线后要同步加/改 runner，并把对应 JAR 放进 `.tmp-160test`**，
+  否则 `-SkipSync` 跑的是旧版本；`test160.ps1` 只 robocopy 同步 `config/scripts`（排除 `cache/data/external-cp`），
+  **不会**同步 JAR 或 `server.properties`。
+  ② 该脚本收尾会 `Get-Process java | Kill` **杀掉本机所有 java 进程**，且启动期间要独占 6567/6859/10099——
+  **正式服务端在跑时绝对不能执行**（会一起被杀、端口也会撞）。
 
 ---
 
