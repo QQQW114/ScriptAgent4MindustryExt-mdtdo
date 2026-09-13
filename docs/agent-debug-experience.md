@@ -119,8 +119,16 @@
 - 脚本加载完成标志：控制台 **`共找到N脚本,加载成功N,启用成功N,出错N`**；编译耗时约 6~35s，
   "编译脚本 xxx 失败"两行里第一行是错误位置（行号 : 列号）。
 - 命令 Socket 交互：TCP 6859，**发 UTF-8 原始字节 + `\n`**（不要用 StreamWriter，会带 BOM 导致"无效指令"）；回复用 `DataAvailable + Read` 循环读。
-- `server.properties` 保持 `socketInput=false`；测试只通过启动参数 `config socketInput true`，
-  测完还原/确认（生产用 `start-server.ps1` 的参数化启动，不落盘）。
+- **本机开发服务端（2026-09-13 起，用户授权"这不是生产服，怎么方便怎么来"）**：`server.properties` 已置
+  `socketInput=true`（备份 `server.properties.bak-menu`，还原=换回该文件并重启启动器）。
+  于是 Agent **可以直接用 6859 命令 Socket 发控制台命令**，不必再麻烦用户手敲。
+  菜单/脚本改动的最小热重载链路：`sa reload coreMindustry`（`lib/**` 属于模块，改了必须重编模块）
+  → 再 reload 依赖它的业务脚本（`sa reload wayzer/user/wiki`、`sa reload wayzer/user/forumPosts`）。
+  注意 `coreLibrary/commands/hotReload.kts` 的文件监视器**默认不开**，且 `onEnter` 跳过了 `lib` 目录，
+  所以"存盘自动重载"对 `lib/**` 无效——改了 `lib` 下文件必须显式 reload 模块。
+  另：socketInput 由启动器读 `server.properties` 生成启动参数，**改了配置要重启整个启动器**
+  （只 kill java 不够——正在运行的 `start-server.ps1` 内存里还是旧配置，会把它写成 `false`）。
+  测试实例仍走启动参数 `config socketInput true`（只传这一条，避免 socketConfigChanged 竞态）。
 - 数据库/文件操作不要放游戏线程：现有模式 = 事件监听器只往 `ConcurrentLinkedQueue` 投递，
   `Dispatchers.IO` 协程单写者处理 + 内存态 `@Volatile` 快照给游戏线程读（参考
   `ext/serverStats.kts`、`reGrief/trafficMonitor.kts`）。

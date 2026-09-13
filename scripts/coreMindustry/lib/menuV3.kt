@@ -115,6 +115,28 @@ open class MenuV3(
     @MenuBuilderDsl
     var optionHeight: Float = 50f
 
+    /**
+     * 界面缩放：所有尺寸（[rootWidth] / [optionHeight] / [cellPad] / `pane` 高度 / `image` 尺寸）都乘上它。
+     *
+     * 为什么需要它：菜单尺寸是**服务端下发的原始像素**，`UiTreeBuilder.applyCellProp` 直接
+     * `cell.width/pad(...)`，**不像原版 UI 那样经过客户端的 `Scl.scl()`**。
+     * 于是同一份 `rootWidth` 在不同 UI 缩放的设备上比例完全不同：安卓手机 scl 常见 0.45~1.2、
+     * 桌面约 1.0~1.6；窄屏上 860px 甚至可能超过物理宽度（手机竖屏只剩 720px 的情况）。
+     * 默认值来自 [defaultScale]：移动端（`player.con.mobile`，X37 的 `NetConnection.mobile`）用
+     * [MOBILE_SCALE]，其余 1.0；页面 DSL 里可显式覆盖（`uiScale = 0.9f`）。
+     */
+    @MenuBuilderDsl
+    var uiScale: Float = defaultScale(player).coerceIn(MIN_SCALE, MAX_SCALE)
+
+    /** 本页生效的内容宽度（已应用 [uiScale]） */
+    private val effRootWidth: Float get() = rootWidth * uiScale
+
+    /** 本页生效的单元格内边距（已应用 [uiScale]） */
+    private val pad: Float get() = cellPad * uiScale
+
+    /** 本页生效的按钮高度（已应用 [uiScale]） */
+    private val btnHeight: Float get() = optionHeight * uiScale
+
     val sessionState = mutableMapOf<String, Any?>()
     var onCancel: suspend () -> Unit = { }
     private var closed = false
@@ -180,7 +202,7 @@ open class MenuV3(
     @MenuBuilderDsl
     fun label(text: String, align: String = "center", wrap: Boolean = false) {
         newRow()
-        val node = UiBuilder.label(text).growX().labelAlign(align).align(align).pad(cellPad)
+        val node = UiBuilder.label(text).growX().labelAlign(align).align(align).pad(pad)
         if (wrap) node.wrap()
         items.add(MenuItem.Cell(node, columnPreRow))
         items.add(MenuItem.Row)
@@ -198,7 +220,7 @@ open class MenuV3(
         ensureSpace()
         val id = "opt_${optionSeq++}"
         callbacks[id] = body
-        val node = UiBuilder.button(label).clicked(id).height(optionHeight).pad(cellPad)
+        val node = UiBuilder.button(label).clicked(id).height(btnHeight).pad(pad)
         if (icon != null) node.icon(icon)
         if (style != null) node.style(style)
         radioGroup?.let { node.group(it) }
@@ -208,20 +230,20 @@ open class MenuV3(
     @MenuBuilderDsl
     fun image(region: String, size: Float = 64f) {
         ensureSpace()
-        addCell(UiBuilder.image(region).size(size).pad(cellPad))
+        addCell(UiBuilder.image(region).size(size * uiScale).pad(pad))
     }
 
     @MenuBuilderDsl
     fun check(id: String, text: String, checked: Boolean = false) {
         ensureSpace()
-        addCell(UiBuilder.check(text).id(id).checked(checked).pad(cellPad))
+        addCell(UiBuilder.check(text).id(id).checked(checked).pad(pad))
     }
 
     /** 输入框独占一行 任意按钮点击时都能通过 [MenuResult] 读到它的内容 */
     @MenuBuilderDsl
     fun field(id: String, hint: String = "", maxLength: Int = 0) {
         newRow()
-        val node = UiBuilder.field("").id(id).growX().pad(cellPad)
+        val node = UiBuilder.field("").id(id).growX().pad(pad)
         if (hint.isNotEmpty()) node.hint(hint)
         if (maxLength > 0) node.maxLength(maxLength)
         addCell(node)
@@ -232,7 +254,7 @@ open class MenuV3(
     @MenuBuilderDsl
     fun space() {
         ensureSpace()
-        addCell(UiBuilder.space().height(optionHeight).pad(cellPad), autoSize = true)
+        addCell(UiBuilder.space().height(btnHeight).pad(pad), autoSize = true)
     }
 
     @MenuBuilderDsl
@@ -263,7 +285,7 @@ open class MenuV3(
     fun pane(id: String = "", height: Float = 200f, body: () -> Unit) {
         newRow()
         val content = capture(body)
-        val node = UiBuilder.pane().height(height).growX().pad(cellPad)
+        val node = UiBuilder.pane().height(height * uiScale).growX().pad(pad)
         if (id.isNotEmpty()) node.id(id)
         // 2026-09-13 修复：滚动区里的内容必须**显式限宽**。
         // ScrollPane 是按内容的"首选宽度"排布的，不设宽度时 `wrap` 的 Label 会按整行铺开，
@@ -274,14 +296,14 @@ open class MenuV3(
         newRow()
     }
 
-    /** 内容列可用宽度（已扣除单元格内边距与滚动条位置） */
-    private fun contentWidth(): Float = (rootWidth - cellPad * 2f - 24f).coerceAtLeast(120f)
+    /** 内容列可用宽度（已扣除内边距与滚动条位置） */
+    private fun contentWidth(): Float = (effRootWidth - pad * 2f - 24f).coerceAtLeast(120f)
 
     @MenuBuilderDsl
     fun condition(expr: String, body: () -> Unit) {
         newRow()
         val content = capture(body)
-        addCell(buildTable(content, rootWidth).condition(expr))
+        addCell(buildTable(content, effRootWidth).condition(expr))
         newRow()
     }
 
@@ -308,7 +330,7 @@ open class MenuV3(
             if (cells.isEmpty()) return
             val declared = cells.filter { it.autoSize }.maxOfOrNull { it.columns } ?: 1
             val columns = if (declared in 2..16) maxOf(declared, cells.size) else cells.size
-            val columnWidth = tableWidth / columns - cellPad * 2 - 1f
+            val columnWidth = tableWidth / columns - pad * 2 - 1f
 
             // 行宽 = 内容宽（而不是 growX 撑满对话框）；行内子元素默认居中
             val row = UiBuilder.table().width(tableWidth).align("center")
@@ -320,7 +342,7 @@ open class MenuV3(
             }
             if (columns in 2..16 && cells.size < columns && cells.any { it.autoSize }) {
                 repeat(columns - cells.size) {
-                    row.add(UiBuilder.space().width(columnWidth).pad(cellPad))
+                    row.add(UiBuilder.space().width(columnWidth).pad(pad))
                 }
             }
             table.add(row)
@@ -340,16 +362,16 @@ open class MenuV3(
 
     private fun buildRoot(): NodeBuilder<*> {
         val source = if (msg.isEmpty()) items else buildList {
-            add(MenuItem.Cell(UiBuilder.label(msg).growX().wrap().labelAlign("center").align("center").pad(cellPad), 1))
+            add(MenuItem.Cell(UiBuilder.label(msg).growX().wrap().labelAlign("center").align("center").pad(pad), 1))
             add(MenuItem.Row)
             addAll(items)
         }
-        val content = buildTable(source, if (wrapInPane) contentWidth() else rootWidth)
+        val content = buildTable(source, if (wrapInPane) contentWidth() else effRootWidth)
         if (!wrapInPane) return content
         // 根节点属性会被丢弃，所以"整页包一层滚动区"时，宽度必须写在 pane 自己的 cell 上。
         return UiBuilder.table()
             .align("center")
-            .add(UiBuilder.pane().width(rootWidth).growY().add(content))
+            .add(UiBuilder.pane().width(effRootWidth).growY().add(content))
     }
 
     protected open suspend fun build() = block()
@@ -494,6 +516,20 @@ open class MenuV3(
 
     companion object {
         private val script = thisContextScript()
+
+        /**
+         * 移动端默认缩放。安卓/平板客户端的 `Scl.scl()` 普遍小于桌面，而定宽菜单不吃 scl，
+         * 所以按 ~0.85 收一档；窄屏竖屏手机（720px 宽）也能塞下 860*0.85≈731。
+         * 需要整体再调时改这里即可。
+         */
+        const val MOBILE_SCALE = 0.85f
+
+        /** [uiScale] 的允许区间（防止页面写出极端值把版面搞坏）。 */
+        const val MIN_SCALE = 0.6f
+        const val MAX_SCALE = 1.4f
+
+        /** 按客户端平台给默认缩放：移动端（`NetConnection.mobile`）用 [MOBILE_SCALE]，其余 1.0。 */
+        fun defaultScale(player: Player): Float = if (player.con.mobile) MOBILE_SCALE else 1f
 
         private val tokenSeq = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
 

@@ -136,6 +136,23 @@
 | Wiki 列表 / 阅读页 / 最近修改 / 格式帮助 | `wayzer/user/wiki.kts` | 阅读风：`fillScreen=false` + 内容限宽 `780`（正文滚动区高 `400`）；**只有正文进滚动区**（滚动条不再挤压按钮）、正文左对齐 + 自动换行；按钮按行分组；超时 30 分钟 |
 | 帖子分区 / 列表 / 阅读页 / 评论 | `wayzer/user/forumPosts.kts` | 内容限宽 `860`（正文滚动区 `340`、评论滚动区 `380`）；正文/评论进滚动区；点赞·评论·管理按钮分行分组、按钮变小；超时 30 分钟 |
 
+### 客户端缩放与移动端（2026-09-13 第三次补充）
+
+- **菜单尺寸不吃客户端的 `Scl.scl()`**：`UiTreeBuilder.applyCellProp` 把下发的数值直接填进
+  `cell.width/pad/height`，原版 UI 的 `Scl` 缩放只作用于组件内部（字体、按钮样式）。
+  所以同一份 `rootWidth` 在不同 UI 缩放的设备上比例完全不同：玩家实测窗口 2560×961 的 scl≈1.07，
+  安卓手机常见 0.45~1.2；窄屏（手机竖屏 720px 宽）下 860px 甚至会超过物理宽度。
+- **DSL 里没有"按 scl 缩放"的键**：`UiKey` 无 scaledWidth 之类；`scaling` 键是 `Image.setScaling`
+  （fit/fill/stretch/none），与 UI 缩放无关。
+- **两个可用的客户端钩子**：①服务端可读的 `NetConnection.mobile`（判断安卓/移动端）；
+  ②`condition("portrait"|"landscape"|"width>=N")`——**在客户端求值**，
+  其中 `width/height` = `场景尺寸 / Scl.scl(1f)`（逻辑值，见 `UiTreeBuilder.evalCondition`）。
+- 落地：`MenuV3.uiScale`（默认 = `defaultScale(player)`：移动端 `MOBILE_SCALE = 0.85f`、桌面 1.0），
+  乘到 `rootWidth` / `optionHeight` / `cellPad` / `pane` 高度 / `image` 尺寸上；页面 DSL 可覆盖，取值区间 0.6~1.4。
+  手机竖屏 720px 宽时 860→731，仍能塞下。
+- 若要更强的自适应（按屏幕宽窄下发两套尺寸）：`condition` 可行，但两套的按钮回调 id 必须互不冲突
+  （`option()` 生成的是递增 id），需要给每套加前缀并分别注册回调——成本明显更高，暂未做。
+
 ### 2026-09-13 第二次修正：宽度必须写在"行"上（源码级结论）
 
 玩家截图实测"关闭按钮 2524px 宽（屏幕才 2560）、正文贴屏幕最左且不换行"的根因**不是** `fillX`：
