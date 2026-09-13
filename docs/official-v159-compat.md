@@ -30,6 +30,9 @@
   v160.2 的 "data patch sounds only use streaming when above 100kb"、v160.3 的
   "requiredPlanets in data patches" 与 "data patch maps crashing after adding items" 都落在
   **Data Patch / 数据资产**这条链上——正是我们 CP/DP 内容补丁与音乐资产同步依赖的能力。
+  注意第一条容易读错：它指的是**本地解码策略**（`DataAudioLoader.java:34`：>100KB 用 `Sound.createStream`，
+  否则 `createLazy`），**不是**"音频可以网络流式推送"；网络侧没有任何音频推送通道，
+  详见 [v159 网络同步](v159-network-sync.md) 的"局内热重载可行性核对"一节。
 - 验证：清空 `config/scripts/cache` 后用 `server-2026.09.13.B495.jar` 冷启动，
   `共找到157脚本,加载成功153,启用成功148,出错0`、无异常、6567/6859/10099 正常、命令 Socket 可用。
 - 基线保留：X37 / B491 / B485 的 JAR 都留在 `mdtserver/`，回滚只改 `server.properties` 的 `jar=` 一个键

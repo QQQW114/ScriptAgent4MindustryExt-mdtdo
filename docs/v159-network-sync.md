@@ -87,8 +87,21 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 
 即：**只要触发一次资产协商回合，最终一定走到 `sendWorldData` + 客户端 `loadWorld`**，与客户端是否已缓存无关
 （`NetServer.java:969` 的注释就是 "no assets required, all cached"，紧接着仍然是 `sendWorldData`）。
+另外"重载地图"的**即刻来源**是协调器先发的 `Call.worldDataBegin(con)`：客户端处理它时会
+`Groups.clear` + `logic.reset`（`NetClient.java:484-499`），随后 `WorldStream` 里的 `loadWorld` 才重建世界。
 
-### 为什么内容类改动绕不开
+### 资产的传输形态（决定"哪些改动必须重载"）
+
+`NetworkIO.writeDataPatches`（`net/NetworkIO.java` 的世界流写入段，对应 `io/SaveVersion.java:604-625`）规定：
+**patch / content 两类资产（`DataAssetType` 中标 `embedded=true`）每次世界流都内嵌全文**；
+image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户端只 `Log.warn` 并保持为空
+（`SaveVersion.java:555-602`、`DataAssetType.java:8-13`）。
+而客户端**建立内容对象的唯一入口**是 `state.data.load(assets)` ← `readDataPatches` ← `loadWorld`
+（`SaveVersion.java:596-598`）——所以"新增内容"必然要重载世界（但**不必重连**，连接会被复用）。
+附带结论：**没有音频推送通道**（运行期只有 `TextureStream` 这一条推送通道，仅 PNG 且落在 `net-` 前缀区），
+缺音频在客户端表现为"静默无声"。
+
+### 唯一存在的"不重载"通道：纹理
 
 - 动态内容（DP/CP 装卸、基因杂交改 `UnitType` 字段）会改变**内容 id 空间**：`DataPatcher.apply(..., reloadContentWorld)` /
   `unapply(...)` 之后要 `fixContentArrays()`（`mod/DataPatcher.java:88-93, 221, 277-303`），客户端也要
@@ -127,6 +140,39 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 - 纯贴图类 CP 改动优先走 `sendTexture` 快路径（前提：确认该改动不含 content/音频）；
 - 逐玩家"已确认拥有当前资产清单"的记账，用来跳过完全不必要的回合
   （只有"清单完全相同"才安全；"少发一部分"因 id 位置化而不安全）。
+
+### 独立复核（只读审计子代理，结论一致）
+
+- **协议里不存在"资产已同步但世界未重发"的合法终态**：`sendWorldAndAssets` 一次性把
+  `hasConnected=false / determiningAssets=true / receivingAssets=false`（`NetServer.java:330-339`），
+  这四个标志只能由 `connectConfirm`（`:996-1006`）走完；资产相关包穷举只有
+  `AssetRequirementStream / AssetStream / TextureStream / WorldStream`（B495 JAR + `NetClient.java:149/156/168/187`），
+  **没有 content/patch 包**；MindustryX 对 `DataManager|state.data|sendTexture|AssetStream` 零改动，
+  没有独有能力绕过这条链。
+- **协议外 hack 是死路**：在客户端发出 `Call.requestWorld` 之前把 `con.hasConnected` 置回 `true`，
+  能让服务端早退、不再发世界流；但客户端 `NetworkIO.loadAssets` 只做 `assetCache.add`
+  （`NetClient.java:164-176`），**不会** `state.data.load`，音频/内容依旧不可用；而且客户端不会再发
+  `connectConfirm`，本项目的协调器等 `PlayerConnectionConfirmed` 会一路挂到超时。不要走这条路。
+- **缺资产是静默失败**：缺 hash 只 `Log.warn`（`SaveVersion.java:587-590`），音频用 `file==null` 建空
+  `Sound()/Music()`（`DataAudioLoader.java:34/55`），未知内容 id 回退 `contentMap[0]`（`ContentLoader.java:249-251`）
+  ⇒ 现场表现是"静默无声 / 静默错内容"而不是报错。**这正是不能靠"跳过同步"随手省事的根本原因**：
+  一旦判断错，没有任何报错可查。
+- 澄清一处上游更新日志：v160.2 的 "data patch sounds only use streaming when above 100kb" 指的是
+  **本地解码策略**（`DataAudioLoader.java:34`：`file.length() > 100_000 ? Sound.createStream : Sound.createLazy`），
+  与网络流式无关——不要在文档里把它当成"音频可流式推送"的依据。
+
+### 替代改进清单（按性价比排序，均未实施，待用户拍板）
+
+1. **常驻热门曲目 + 按清单跳过回合**（收益最大）：把少量热门曲目在**换图/进服窗口**注册进 `state.data`，
+   它们会随进服资产协商被客户端顺手下载；此后点歌时若"当前资产清单指纹 == 该玩家上次完成的指纹"，
+   协调器可直接跳过回合（不 `worldDataBegin`）→ **不重载地图**。需要：给常驻曲目设下载量上限
+   （`musicJukebox.kts:407-413` 已有该顾虑）、逐玩家记账并在 `PlayerConnectionConfirmed` 时重新播种。
+2. **小音效改为窗口期注册**：同样在进服/换图时注册，只有新增/变更时才手动同步（`soundEffectMenu.kts:436-486`）。
+3. **外部 CP 择时批量**：内容变更无法避免重载，但可固定在换图/世界加载窗口批量应用，
+   而不是游戏中途逐玩家重载（`externalCpHotReload.kts:1136-1155`、`worldProcessorAdmin.kts:217-243`）。
+4. **杂交**：短期做法是"服务端改内容 + 不主动重载，等下次自然世界流"（`skillsHybrid.kts` 已有
+   `hybridAutoWorldSync` 开关可关掉自动同步）；真正零重载要客户端 Mod。
+5. **图片走纹理流**：`sendTexture` + `net-` UI 菜单可替代 `pixelPicture.kts` 的逐格 `setNet`（省上行、显示更稳）。
 
 ## B485 构建与部署
 

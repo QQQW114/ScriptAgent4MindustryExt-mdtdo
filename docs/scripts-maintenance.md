@@ -45,6 +45,13 @@
   风险与收益范围已写入上述文档；MindustryX 现有 patch 列表里没有改动这条回合的补丁。
 - **本轮不改脚本**：`worldResyncCoordinator` 的串行/去抖/恢复间隔/等确认仍是协议范围内正确的缓解；
   后续可选改进（纯贴图 CP 走快路径、逐玩家资产记账跳过完全相同的回合）都需真实多人实测，已记入文档。
+- **独立复核（只读审计子代理）结论一致**，并补充三条关键事实：①协议里**不存在**"资产已同步但世界未重发"
+  的合法终态（四个连接标志只能由 `connectConfirm` 走完）；②"手工抑制 `requestWorld`"这类协议外 hack 是死路
+  （`NetworkIO.loadAssets` 只写 `assetCache`、不 `state.data.load`，且协调器会等不到确认而超时）；
+  ③缺资产是**静默失败**（只 `Log.warn`、建空 `Sound/Music`、未知内容 id 回退 `contentMap[0]`），
+  所以不能随便跳过同步。另澄清：v160.2 的 "data patch sounds … 100kb" 是本地解码策略而非网络流式。
+- 改进清单（5 项，见 `v159-network-sync.md` 同名小节）按性价比排序：常驻热门曲目+按清单跳过回合、
+  小音效窗口期注册、外部 CP 择时批量、杂交改为等自然世界流、图片走纹理流替代逐格 `setNet`。
 
 ## 2026-09-13（第七批）：跟进 Mindustry 160.3 / MindustryX 预览版 B495
 
