@@ -145,6 +145,19 @@
   `sa listFailed` 为空。
 - 未覆盖：面板→技能/商店/成就→返回 的实际脚印仍需真实客户端复测（本机无客户端）。
 
+## 2026-09-19（第十批）：定位并移除压力措施的 unitCap 条目（"人多时核心机无法复活"根因）
+
+类型：缺陷修复（用户假设"上行压力等级是否一并限制了核心机上限、阻止复活"→ 排查确认成立）
+
+- **证据链**：队伍单位上限 `Units.getCap(team)`（`Units.java:124`）；复活 `checkSpawn → bestCore → requestSpawn → Call.playerSpawn`
+  （`PlayerComp.java:248-253`、`CoreBlock.java:639-644`）；超编清杀 `unitCapDeath`（`Units.java:50-53`、`UnitComp.java:605`）。
+- **本项目副作用**：`serverPressureActions.kts` 的 L2 措施 `applyUnitCap()` 先把 `disableUnitCap` 置回 false
+  （让上限生效）再把 `rules.unitCap` 压到 `min(当前, level2UnitCap=100)` → 人多时队伍早已超编 →
+  死亡后拿不到名额 → **复活不了**（只在人多/高上行时出现，与现象吻合）。此前只修了单位引用恢复链路，故仅缓解。
+- **改动（用户决定直接取消）**：删 `applyUnitCap()` 函数 + L2 调用点 + config key `level2UnitCap`；
+  保留压力快照/恢复中的 `unitCap`/`disableUnitCap` 两行（等价写回、并可自愈历史残留）；
+  出波暂停、逻辑处理器禁用、单位清理（含 L4 前三单位清理）不变。
+- 验证：冷启动 `157/153/148/出错0`。详见 `performance-guard.md` 同名小节。
 ## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
 
 类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）

@@ -89,6 +89,30 @@ if (state.wavetime > savedWavetime && savedWavetime > 0f) state.wavetime = saved
 3. 同一处旧守卫也存在于 `/vote pauseWave`（`wayzer/cmds/vote.kts`）：其快照记录"推到的值"，
    恢复时按同一规则回退，避免暂停结束后同样卡住。
 
+## 压力措施：unitCap 条目已移除（2026-09-19）
+
+**背景**：用户报"服务器玩家多的时候核心机无法复活，修了很久只缓解没根治"。
+排查后确认根因就在这条措施上：
+
+- 原版队伍单位上限 = `Units.getCap(team)` = `max(0, rules.unitCapVariable ? rules.unitCap + team.data().unitCap : rules.unitCap)`
+  （`核心/Units.java:124`，`unitCapVariable` 默认 true，核心块另有 `unitCapModifier` 加成）。
+- 复活链路：`player.checkSpawn()` → `bestCore()` → `core.requestSpawn(player)` → `Call.playerSpawn(tile, player)`
+  （`PlayerComp.java:248-253`、`CoreBlock.java:639-644`）；**名额（单位上限）不足时复活失败**是原版既知行为。
+- 本项目的 L2 措施 `applyUnitCap()` 会**先把 `disableUnitCap` 置回 false（让上限生效）再把 `rules.unitCap` 压到
+  `min(当前值, level2UnitCap=100)`**；超编单位还会被原版 `unitCapDeath` 清杀（`Units.java:50-53`、`UnitComp.java:605`）。
+- 于是"玩家多 → 上行压力高 → 进 L2 → 单位上限被压到 100 → 队伍单位数早已超编 → 玩家死亡后复活不了"，
+  与"只在人多时出现"的现象完全吻合。此前修的 `coreUnitRespawnCompat`/`worldResyncCoordinator` 只处理
+  单位引用恢复，**不涉及名额**，所以只能缓解。
+
+**处置（用户决定：直接取消这条措施，它与清理单位部分重叠）**：
+
+- 删除 `serverPressureActions.kts` 的 `applyUnitCap()` 函数、其调用点（L2 分支）与 config key `level2UnitCap`；
+- **保留**压力快照/恢复里的 `unitCap`/`disableUnitCap` 两行（不再改动这两个值，恢复写入等价值无副作用，
+  还能自愈历史版本留下的残留值）；
+- 出波暂停（`pushWaveTimeFloor`）、逻辑处理器禁用、单位清理（含 L4 的"数量前三单位清理"）**保持不变**——
+  省上行的主力是这几条，unitCap 只是重叠手段。
+- 验证：冷启动 `共找到157脚本,加载成功153,启用成功148,出错0` ✓。
+- 仍待实测：需要一次"多人/低压复现"确认复活恢复正常（并观察上行是否因此变差——预计影响很小，因为清理措施仍在）。
 ## 火焰处理（2026-09-13：移除全部实体遍历）
 
 160 移除了 `Groups.fire`，9-12 的适配曾把火焰相关逻辑统一改成 `Groups.all.count { it is Fire }`。

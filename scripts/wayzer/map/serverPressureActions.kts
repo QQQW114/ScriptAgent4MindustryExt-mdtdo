@@ -36,7 +36,6 @@ private val FORCE_MAP_BYPASS_KEY = "performanceGuard.experimental.forceChangingM
 private val DISABLED_LOGIC_POSITIONS_KEY = "performanceGuard.experimental.disabledLogicPositions"
 
 private val actionIntervalMillis by config.key(5_000L, "压力措施执行间隔(ms)")
-private val level2UnitCap by config.key(100, "压力等级2临时单位上限")
 private val level1RemovePerPass by config.key(30, "压力等级1每轮最多清理单位")
 private val level2RemovePerPass by config.key(80, "压力等级2每轮最多清理单位")
 private val level3RemovePerPass by config.key(240, "压力等级3每轮最多清理单位")
@@ -409,13 +408,6 @@ private fun cleanupTopUnitTypesIfNeeded(level: Int) {
     logger.info("[压力措施] 清理：$summary；移除 $removed 个")
 }
 
-private fun applyUnitCap(): Boolean {
-    var changed = setDisableUnitCapRule(false)
-    val target = level2UnitCap.coerceAtLeast(10)
-    val next = if (state.rules.unitCap <= 0) target else minOf(state.rules.unitCap, target)
-    changed = setUnitCapRule(next) || changed
-    return changed
-}
 
 /**
  * 记录"由压力措施人为抬高"的 wavetime（单位：游戏刻）。
@@ -548,7 +540,6 @@ private fun applyLevel(level: Int, reason: String) {
             // 出波暂停被关闭时，恢复波次规则，避免压力期间一直卡住出波。
             restoreWaveRules()
         }
-        applyUnitCap()
     }
     if (level >= 3) {
         setDisableWorldProcessorsRule(true)
