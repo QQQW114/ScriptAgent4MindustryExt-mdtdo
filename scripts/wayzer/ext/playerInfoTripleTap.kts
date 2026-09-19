@@ -831,7 +831,12 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
             }
         }
         newRow()
-        option("返回") { }
+        // 2026-09-19：独占一行的"返回上一菜单"。有上一页就回上一页（独立协程执行，避免本菜单收尾被挂住）；
+        // 没有上一页时保持原行为（回调直接返回 = 关闭菜单）。
+        option("返回上一菜单") {
+            val navTarget = MenuNav.take(viewer)
+            if (navTarget != null) launch(Dispatchers.game) { runCatching { navTarget.action() } }
+        }
     }.sendTo(viewer, 60_000)
 }
 

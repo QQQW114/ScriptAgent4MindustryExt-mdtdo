@@ -1126,7 +1126,7 @@ private suspend fun openTrackActionMenu(player: Player, track: MusicTrack, canAd
     MenuBuilder<Unit>("点歌：${track.title}") {
         msg = "[cyan]${track.display}\n[gray]来源：${track.source}；大小：${formatBytes(track.sizeBytes)}"
         option("投票点歌") { startMusicVote(track, player) }
-        option("返回") { openMusicMenu(player, canAdmin) }
+        option("返回上一菜单") { openMusicMenu(player, canAdmin) }
         option("关闭") {}
     }.sendTo(player, 60_000)
 }
@@ -1135,7 +1135,7 @@ private suspend fun openTrackListMenu(player: Player, title: String, tracks: Lis
     if (tracks.isEmpty()) {
         MenuBuilder<Unit>(title) {
             msg = trackListText(title, tracks)
-            option("返回") { openMusicMenu(player, canAdmin) }
+            option("返回上一菜单") { openMusicMenu(player, canAdmin) }
             option("关闭") {}
         }.sendTo(player, 60_000)
         return
@@ -1151,7 +1151,7 @@ private suspend fun openTrackListMenu(player: Player, title: String, tracks: Lis
             this.title = title
             msg = "[gray]点击音乐可发起点歌投票；同意者会进入排队同步队列。"
             super.build()
-            option("返回") { openMusicMenu(player, canAdmin) }
+            option("返回上一菜单") { openMusicMenu(player, canAdmin) }
         }
     }.sendTo(player, 60_000)
 }
@@ -1167,7 +1167,7 @@ private suspend fun openSyncedTrackActionMenu(player: Player, track: MusicTrack,
             stopMusicFor(player)
             player.sendMessage("[green]已停止你的点歌音乐。")
         }
-        option("返回") { openSyncedMusicMenu(player, canAdmin) }
+        option("返回上一菜单") { openSyncedMusicMenu(player, canAdmin) }
         option("关闭") {}
     }.sendTo(player, 60_000)
 }
@@ -1177,7 +1177,7 @@ private suspend fun openSyncedMusicMenu(player: Player, canAdmin: Boolean) {
     if (tracks.isEmpty()) {
         MenuBuilder<Unit>("我的已同步音乐") {
             msg = "[yellow]你本次连接中还没有完成同步的点歌。\n[gray]同意点歌并完成下载后，会显示在这里。"
-            option("返回") { openMusicMenu(player, canAdmin) }
+            option("返回上一菜单") { openMusicMenu(player, canAdmin) }
             option("关闭") {}
         }.sendTo(player, 60_000)
         return
@@ -1193,7 +1193,7 @@ private suspend fun openSyncedMusicMenu(player: Player, canAdmin: Boolean) {
             title = "我的已同步音乐"
             msg = "[gray]这些歌曲已在你本次连接中完成同步，播放不会再次占用歌曲同步上行。"
             super.build()
-            option("返回") { openMusicMenu(player, canAdmin) }
+            option("返回上一菜单") { openMusicMenu(player, canAdmin) }
         }
     }.sendTo(player, 60_000)
 }

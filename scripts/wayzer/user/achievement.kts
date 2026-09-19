@@ -596,7 +596,7 @@ private suspend fun showAchievementPage(player: Player) {
         // （`Menus.menuBuilder` 无条件 addCloseButton，服务端去不掉，故此处不再重复放"关闭"）
         val navBack = MenuNav.peek(player)
         if (navBack != null) {
-            option("返回上一页") {
+            option("返回上一菜单") {
                 val navTarget = MenuNav.take(player)
                 // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
                 close()

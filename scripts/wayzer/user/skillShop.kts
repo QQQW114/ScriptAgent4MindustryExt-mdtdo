@@ -713,7 +713,7 @@ private suspend fun openFaceDoctorTeamMenu(caster: Player, wager: Int) {
             option("[red]赌本局失败/换图\n[gray]失败、投降或中途换图时发起者赢得赌池") {
                 openFaceDoctorTargetMenu(caster, wager, FaceDoctorBetKind.GameFailure, null)
             }
-            option("返回") { openFaceDoctorWagerMenu(caster) }
+            option("返回上一菜单") { openFaceDoctorWagerMenu(caster) }
         }.sendTo(caster, 60_000)
         return
     }

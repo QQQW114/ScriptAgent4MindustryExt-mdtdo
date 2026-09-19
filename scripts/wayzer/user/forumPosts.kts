@@ -632,7 +632,7 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
         // 因此这里**不再重复放"关闭"**，退出统一用原版那个；按钮也改名"返回上一页"以免两个"返回"混淆。
         val navBack = MenuNav.peek(player)
         if (navBack != null) {
-            option("返回上一页") {
+            option("返回上一菜单") {
                 val navTarget = MenuNav.take(player)
                 // 必须先关掉当前菜单：打开旧式聊天菜单不会自动收掉 v160 的服务端对话框，
                 // 否则旧菜单（已失效）会留在屏幕上与新菜单叠加（2026-09-19 用户实测反馈）

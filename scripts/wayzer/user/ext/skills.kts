@@ -139,7 +139,7 @@ suspend fun openSkillMainMenu(player: Player) {
         }
         // 从玩家面板等入口进入时才有"上一页"（2026-09-19：入口记父页，本菜单加一行）
         if (MenuNav.peek(player) != null) {
-            option("返回") { MenuNav.take(player)?.let { it.action() } }
+            option("返回上一菜单") { MenuNav.take(player)?.let { it.action() } }
         }
         option("关闭") {}
     }.sendTo(player, 60_000)
@@ -186,7 +186,7 @@ suspend fun openSkillCategoryMenu(player: Player, category: SkillMenuCategory, s
     MenuBuilder<Unit>(skillCategoryMenuTitle(category)) {
         if (entries.isEmpty()) {
             msg = "[yellow]当前分类暂无你可用的技能。"
-            option("返回") { openSkillMainMenu(player) }
+            option("返回上一菜单") { openSkillMainMenu(player) }
             option("关闭") {}
         } else {
             val totalPage = ((entries.size + skillCategoryPageSize - 1) / skillCategoryPageSize).coerceAtLeast(1)
@@ -207,7 +207,7 @@ suspend fun openSkillCategoryMenu(player: Player, category: SkillMenuCategory, s
             option("$page/$totalPage") { openSkillCategoryMenu(player, category, page) }
             option("->") { openSkillCategoryMenu(player, category, page + 1) }
             newRow()
-            option("返回") { openSkillMainMenu(player) }
+            option("返回上一菜单") { openSkillMainMenu(player) }
             option("关闭") {}
         }
     }.sendTo(player, 60_000)

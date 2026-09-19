@@ -125,7 +125,7 @@ private suspend fun openRankCategory(player: Player, category: RankCategory, for
             |${formatEntries(entries)}
         """.trimMargin()
         option("刷新") { openRankCategory(player, category, forceRefresh = true) }
-        option("返回") { openLeaderboard(player) }
+        option("返回上一菜单") { openLeaderboard(player) }
         option("关闭") {}
     }.sendTo(player, 60_000)
 }

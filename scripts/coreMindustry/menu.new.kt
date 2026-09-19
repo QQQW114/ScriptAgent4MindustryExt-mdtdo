@@ -120,7 +120,7 @@ open class MenuV2(
             menu.clear(); callback.clear()
             builder.invoke(this)
             var back = false
-            newRow(); option("返回") { back = true }
+            newRow(); option("返回上一菜单") { back = true }
 
             send(rebuild = false)
             if (chooseTimeout == null) await()

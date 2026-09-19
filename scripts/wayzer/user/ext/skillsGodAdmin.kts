@@ -339,7 +339,7 @@ private suspend fun openGodGlobalMenu(player: Player) {
             }
             newRow()
         }
-        option("返回") { openGodMenu(player) }
+        option("返回上一菜单") { openGodMenu(player) }
         option("关闭") {}
     }.sendTo(player, 60_000)
 }

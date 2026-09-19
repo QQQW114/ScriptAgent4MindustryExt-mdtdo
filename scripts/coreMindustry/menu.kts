@@ -660,7 +660,7 @@ private suspend fun openHelpEntryList(
             option("$page/$totalPage") { refresh() }
             option("->") { selectedPage = page + 1; refresh() }
             newRow()
-            option("返回") {
+            option("返回上一菜单") {
                 // 2026-09-19：有"上一页"记录时优先回上一页（如玩家面板 → /help → 本列表）；
                 // 没有记录时维持旧口径：回到帮助首页。
                 val navTarget = MenuNav.take(player)
@@ -707,7 +707,7 @@ private suspend fun openPagedHelpEntryList(
             option("${pageData.page}/${pageData.totalPage}") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(pageData.totalPage); refresh() }
             newRow()
-            option("返回") {
+            option("返回上一菜单") {
                 // 2026-09-19：有"上一页"记录时优先回上一页（如玩家面板 → /help → 本列表）；
                 // 没有记录时维持旧口径：回到帮助首页。
                 val navTarget = MenuNav.take(player)
