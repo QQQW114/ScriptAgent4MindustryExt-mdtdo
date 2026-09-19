@@ -356,7 +356,12 @@ private suspend fun runHelpCommandWithReturn(
     command: String,
 ) {
     MenuNav.push(player, label) { reopen() }
-    runHelpCommand(player, command)
+    // 关键（2026-09-19 用户实测反馈）：**不要在菜单回调里同步等待目标菜单**。
+    // `MenuBuilder.sendTo` 是在回调返回后才走 `finally { close() }`，而 `/posts`、`/wiki`、`/achievements`
+    // 这些命令会一直 await 自己发下的服务端对话框；回调被挂住 → 旧式菜单永不收掉 →
+    // 屏幕上同时出现"旧聊天菜单的返回"和"新对话框的返回"两个按钮，旧的那个点了也没用。
+    // 丢到独立协程执行后，回调立刻返回，旧菜单正常收掉，只剩目标菜单。
+    launch(Dispatchers.game) { runHelpCommand(player, command) }
 }
 
 private suspend fun noopHelpBack() {}

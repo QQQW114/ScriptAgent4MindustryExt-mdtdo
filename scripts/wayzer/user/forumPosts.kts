@@ -631,7 +631,11 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
         if (navBack != null) {
             column(2) {
                 option("返回") {
-                    MenuNav.take(player)?.let { target ->
+                    val navTarget = MenuNav.take(player)
+                    // 必须先关掉当前菜单：打开旧式聊天菜单不会自动收掉 v160 的服务端对话框，
+                    // 否则旧菜单（已失效）会留在屏幕上与新菜单叠加（2026-09-19 用户实测反馈）
+                    close()
+                    navTarget?.let { target ->
                         runCatching { target.action() }.onFailure {
                             logger.warning("帖子系统返回上一页失败: ${it.message}")
                         }
@@ -794,6 +798,7 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
         fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
+        uiScale = forumUiScale(player)
 
         val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_LIST_PAGE_SIZE
         val hiddenSections = hiddenForumSectionCodes(player)
@@ -861,6 +866,7 @@ private suspend fun openForumPost(
         fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
+        uiScale = forumUiScale(player)
 
         selectedPage = selectedPage.coerceIn(1, pages.size)
         val time = FORUM_TIME_FORMATTER.format(post.createdAt)
@@ -987,6 +993,7 @@ private suspend fun openForumComments(
         fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
+        uiScale = forumUiScale(player)
 
         val offset = (selectedPage - 1).coerceAtLeast(0) * FORUM_COMMENT_PAGE_SIZE
         val commentPage = db { forumCommentPageCached(post.id, offset, FORUM_COMMENT_PAGE_SIZE) }

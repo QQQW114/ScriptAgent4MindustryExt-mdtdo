@@ -536,7 +536,10 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
             if (navBack != null) {
                 column(2) {
                     option("返回") {
-                        MenuNav.take(player)?.let { target ->
+                        val navTarget = MenuNav.take(player)
+                        // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
+                        close()
+                        navTarget?.let { target ->
                             runCatching { target.action() }.onFailure {
                                 logger.warning("Wiki返回上一页失败: ${it.message}")
                             }

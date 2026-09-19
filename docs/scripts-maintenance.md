@@ -69,6 +69,24 @@
 - 未覆盖边界：**菜单缩放后的实际观感、返回脚印、翻页记忆都需要真实客户端点击验证**（本机无客户端）；
   数据库写入的正确性只验证到"表已创建 + 编译加载通过 + 落盘路径有 try/catch 记录"。
 
+### 5. 后续修正（同日，用户第二次实测反馈）
+
+- **"缩放只作用于首页"**：上一版只把 `uiScale` 加进了分区页（`replace_all` 的旧字符串带了注释，只匹配到那一块），
+  帖子列表 / 帖子阅读 / 评论三页漏加 → 现在 **4 个页面都有** `uiScale = forumUiScale(player)`（grep 已确认 4 处）。
+- **"两个不同样式的返回"根因**：从旧式聊天菜单（`coreMindustry/menu.kts` 的 `MenuBuilder` → `Call.menu`）跳转
+  `/posts`、`/wiki`、`/achievements` 时，选项回调里会**一直 await 目标的服务端对话框**；
+  而 `MenuBuilder.sendTo` 是在回调返回后才走 `finally { close() }`（`menu.lib.kt:146-148`），
+  于是**旧聊天菜单永不收掉**、连同它自己的"返回"一起留在屏幕上（按了也没意义），新对话框又叠上去。
+  本项目这一侧此前也没先关掉当前对话框，叠加更明显。两处修法：
+  ① `runHelpCommandWithReturn` 把命令丢到 `launch(Dispatchers.game)` 执行、回调立刻返回 → 旧菜单正常收掉；
+  ② 帖子/Wiki/成就的"返回"按钮改为**先 `close()` 当前菜单、再执行回归动作**。
+- 补充结论：v160 的旧式 `Call.menu`（非 follow-up）在服务端**没有隐藏接口**——`Menus.hideFollowUpMenu` 只认
+  follow-up 菜单（`Menus.java:160-162` 会先查 `followUpMenus`），所以只能靠"让回调不挂住"避免残留，
+  无法事后收掉；这也是为什么必须用上面的①而不是单纯加个隐藏调用。
+- 验证：`sa load coreMindustry`（`coreMindustry/menu` 编译 18.3s 成功）+ 三个业务脚本重载 →
+  `sa listFailed` 为空、无异常；`uiScale` 出现 4 次。
+- 仍未覆盖：叠加是否彻底消失、返回脚印是否顺畅，需真实客户端再复测一次。
+
 ## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
 
 类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）
