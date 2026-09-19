@@ -626,25 +626,23 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
                 option("重置") { resetForumScale(player); refresh() }
             }
         }
-        // 返回上一页（如从 MDT帮助 进入帖子系统时回到帮助菜单）；没有来源菜单时保持原来的"关闭"
+        // 返回上一页（从 MDT帮助 等入口进入时才有）。
+        // 注意：v160 的 `Menus.menuBuilder` 会**无条件**给对话框加一个原版"返回"大按钮
+        // （`Menus.java:58` → `BaseDialog.addCloseButton()` = `@back` + Icon.left + 210x64），服务端无法移除，
+        // 因此这里**不再重复放"关闭"**，退出统一用原版那个；按钮也改名"返回上一页"以免两个"返回"混淆。
         val navBack = MenuNav.peek(player)
         if (navBack != null) {
-            column(2) {
-                option("返回") {
-                    val navTarget = MenuNav.take(player)
-                    // 必须先关掉当前菜单：打开旧式聊天菜单不会自动收掉 v160 的服务端对话框，
-                    // 否则旧菜单（已失效）会留在屏幕上与新菜单叠加（2026-09-19 用户实测反馈）
-                    close()
-                    navTarget?.let { target ->
-                        runCatching { target.action() }.onFailure {
-                            logger.warning("帖子系统返回上一页失败: ${it.message}")
-                        }
+            option("返回上一页") {
+                val navTarget = MenuNav.take(player)
+                // 必须先关掉当前菜单：打开旧式聊天菜单不会自动收掉 v160 的服务端对话框，
+                // 否则旧菜单（已失效）会留在屏幕上与新菜单叠加（2026-09-19 用户实测反馈）
+                close()
+                navTarget?.let { target ->
+                    runCatching { target.action() }.onFailure {
+                        logger.warning("帖子系统返回上一页失败: ${it.message}")
                     }
                 }
-                option("关闭") { close() }
             }
-        } else {
-            option("关闭") { close() }
         }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
@@ -831,7 +829,6 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
             option("格式帮助") { close(); openForumFormatHelp(player) }
             option("返回分区") { openForumIndex(player) }
         }
-        option("关闭") { close() }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
@@ -938,7 +935,6 @@ private suspend fun openForumPost(
         column(3) {
             option("格式帮助") { close(); openForumFormatHelp(player, post.id, sectionCode) }
             option("返回列表") { openForumPostList(player, sectionCode, listPage) }
-            option("关闭") { close() }
         }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
@@ -1032,7 +1028,6 @@ private suspend fun openForumComments(
         column(3) {
             option("发布评论") { close(); createForumCommentFlow(player, post.id, sectionCode) }
             option("返回帖子") { openForumPost(player, post.id, sectionCode, postPage, listPage) }
-            option("关闭") { close() }
         }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }

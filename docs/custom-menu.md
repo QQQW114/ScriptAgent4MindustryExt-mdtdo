@@ -23,6 +23,16 @@
 >    注意 v160 的旧式 `Call.menu`（非 follow-up）在服务端没有隐藏接口（`Menus.hideFollowUpMenu` 只认 follow-up），
 >    事后收不掉，只能避免叠加。
 > 2. **MenuV3 的"返回"必须先 `close()` 当前菜单再打开上一页**，否则新菜单会叠在旧对话框上（旧对话框已失效但仍在画面里）。
+>
+> **⚠️ 原版对话框自带的"返回"大按钮（去不掉，别重复放）**：`Menus.menuBuilder` 在客户端建对话框时**无条件**执行
+> `dialog.addCloseButton()`（`mindustry/ui/Menus.java:58`），而 `BaseDialog.addCloseButton()` =
+> `buttons.button("@back", Icon.left, this::hide).size(210f, 64f)`（`mindustry/ui/dialogs/BaseDialog.java:73-82`）——
+> 就是每个 MenuV3 页面底部那个左箭头大按钮。服务端能下发的 `MenuBuilder` 字段只有
+> title/hideOnClick/hideExisting/fillScreen/token/id/ui（见 `ui/builder/MenuBuilder.java`），**没有任何开关能关掉它**；
+> MindustryX 的 patch 列表也没有改动这一行。所以约定：**MenuV3 页面不要再自己加"关闭"按钮**，
+> 退出统一用原版那个；跨菜单跳转的按钮命名为 **"返回上一页"**，避免两个按钮都叫"返回"。
+> 玩家点原版大按钮时，客户端会回传一个只带 token 的 `MenuResult`（`Menus.java:66-74`），
+> 本项目 `MenuV3.dispatch` 会走"无匹配 id → onCancel + 结束会话"分支，所以会话能正常收尾。
 > 3. **反向同理：MenuV3 页面里打开旧式菜单（`MenuBuilder`/`Call.menu`）也必须先 `close()`**——旧式菜单不会顶掉
 >    服务端对话框，两个菜单会同屏，旧菜单自带的"返回"就成了"堆叠之外的多余按钮"。
 >    2026-09-19 实测中招的是 `wiki.kts` 阅读页的"最近修改"；论坛各入口此前已写 `close()` 所以没露出。

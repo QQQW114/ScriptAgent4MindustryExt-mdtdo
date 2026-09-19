@@ -592,24 +592,20 @@ private suspend fun showAchievementPage(player: Player) {
             option(optionText(completed, item)) { showAchievement(uid, player, item) }
         }
 
-        // 返回上一页（如从 MDT帮助 进入成就系统）；没有来源菜单时保持原来的"关闭"（2026-09-13）
+        // 返回上一页（从 MDT帮助 等入口进入时才有）；退出统一用原版对话框自带的"返回"大按钮
+        // （`Menus.menuBuilder` 无条件 addCloseButton，服务端去不掉，故此处不再重复放"关闭"）
         val navBack = MenuNav.peek(player)
         if (navBack != null) {
-            column(2) {
-                option("返回") {
-                    val navTarget = MenuNav.take(player)
-                    // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
-                    close()
-                    navTarget?.let { target ->
-                        runCatching { target.action() }.onFailure {
-                            logger.warning("成就系统返回上一页失败: ${it.message}")
-                        }
+            option("返回上一页") {
+                val navTarget = MenuNav.take(player)
+                // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
+                close()
+                navTarget?.let { target ->
+                    runCatching { target.action() }.onFailure {
+                        logger.warning("成就系统返回上一页失败: ${it.message}")
                     }
                 }
-                option("关闭") { close() }
             }
-        } else {
-            option("关闭") { close() }
         }
     }.send().awaitWithTimeout(ACHIEVEMENT_PAGE_TIMEOUT_SECONDS.seconds)
 }

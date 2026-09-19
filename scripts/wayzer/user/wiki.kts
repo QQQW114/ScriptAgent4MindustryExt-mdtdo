@@ -507,7 +507,6 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
         if (!wikiEnabled()) {
             title = "Wiki已关闭"
             msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
-            option("关闭") { close() }
         } else {
             selectedPage = pageData.page
             val totalPage = pageData.totalPage
@@ -531,24 +530,20 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
                 option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
             }
             if (manager) option("管理Wiki") { close(); openWikiManageMenu(player) }
-            // 返回上一页（如从 MDT帮助 进入 Wiki）；没有来源菜单时保持原来的"关闭"（2026-09-13）
+            // 返回上一页（从 MDT帮助 等入口进入时才有）；退出统一用原版对话框自带的"返回"大按钮
+            // （`Menus.menuBuilder` 无条件 addCloseButton，服务端去不掉，故此处不再重复放"关闭"）
             val navBack = MenuNav.peek(player)
             if (navBack != null) {
-                column(2) {
-                    option("返回") {
-                        val navTarget = MenuNav.take(player)
-                        // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
-                        close()
-                        navTarget?.let { target ->
-                            runCatching { target.action() }.onFailure {
-                                logger.warning("Wiki返回上一页失败: ${it.message}")
-                            }
+                option("返回上一页") {
+                    val navTarget = MenuNav.take(player)
+                    // 先关掉当前菜单，避免旧对话框留在屏幕上与新菜单叠加（2026-09-19 用户反馈）
+                    close()
+                    navTarget?.let { target ->
+                        runCatching { target.action() }.onFailure {
+                            logger.warning("Wiki返回上一页失败: ${it.message}")
                         }
                     }
-                    option("关闭") { close() }
                 }
-            } else {
-                option("关闭") { close() }
             }
         }
     }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
@@ -577,7 +572,6 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
         if (!wikiEnabled()) {
             title = "Wiki已关闭"
             msg = "[yellow]Wiki系统已被关闭，请联系管理员。"
-            option("关闭") { close() }
         } else {
             selectedPage = selectedPage.coerceIn(1, bodyPages.size)
             title = page.title
@@ -616,7 +610,6 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
                     }
                 }
             }
-            option("关闭") { close() }
         }
     }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
@@ -649,7 +642,6 @@ private suspend fun openWikiFormatHelp(player: Player, backId: String? = null) {
         msg = MdtTextFormat.helpText
         if (backId != null) option("返回编辑") { close(); openWikiEditMenu(player, backId) }
         option("返回Wiki列表") { openWikiIndex(player) }
-        option("关闭") { close() }
     }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
@@ -676,7 +668,6 @@ private suspend fun openWikiHistoryMenu(player: Player, id: String) {
         """.trimMargin()
         option("返回此页") { openWikiPage(player, page.id) }
         if (canEdit) option("编辑此页") { close(); openWikiEditMenu(player, page.id) }
-        option("关闭") { close() }
     }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 

@@ -102,6 +102,23 @@
 - 验证：`coreMindustry/menu` 重编 3.3s、`wayzer/user/wiki` 重编 5.1s 均成功，`sa listFailed` 为空。
 - 仍未覆盖：需要用户再复测 Wiki 的"最近修改/格式帮助"以及搜索列表进入三条系统的路径。
 
+### 7. 第三轮实测：底部"巨大的返回"是原版自带的，服务端删不掉 → 改为只保留一个默认退出
+
+- **来源（源码级）**：`Menus.menuBuilder` 在客户端建对话框时**无条件** `dialog.addCloseButton()`
+  （`mindustry/ui/Menus.java:58`），`BaseDialog.addCloseButton()` =
+  `buttons.button("@back", Icon.left, this::hide).size(210f, 64f)`（`mindustry/ui/dialogs/BaseDialog.java:73-82`）
+  —— 正是截图里那个左箭头 + "返回"的大按钮。服务端能下发的 `MenuBuilder` 只有
+  title/hideOnClick/hideExisting/fillScreen/token/id/ui 七个字段（`ui/builder/MenuBuilder.java`），**没有关闭按钮开关**；
+  MindustryX 的 `patches/` 里也没有动过这一行。→ **服务端无法移除**；唯一途径是给客户端打补丁（MindustryX patch-first），
+  成本高且只对使用我们客户端构建的玩家生效，本轮不做。
+- **按"保留一个默认退出按钮"落地**：把本项目 MenuV3 页面里自己加的 `option("关闭") { close() }` **全部移除**
+  （`forumPosts` 3 处、`wiki` 5 处，成就页上一轮已改），退出统一用原版那个大按钮；
+  跨菜单跳转的按钮改名 **"返回上一页"**，避免与它同名混淆。
+  旧式聊天菜单里的 `option("关闭") {}`（27 处、空动作）**保持不变**——那是聊天菜单选项，不涉及对话框退出。
+- 正确性说明：玩家点原版大按钮时，客户端回传只带 token 的 `MenuResult`（`Menus.java:66-74`），
+  本项目 `MenuV3.dispatch` 走"无匹配 id → onCancel + 结束会话"分支，会话正常收尾，不会留下悬挂会话。
+- 验证：三个脚本重编（3.95s / 2.64s / 2.05s）成功，`sa listFailed` 为空。
+
 ## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
 
 类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）
