@@ -597,7 +597,9 @@ private suspend fun openWikiPage(player: Player, id: String, initialPage: Int = 
             }
             column(3) {
                 option("返回列表") { openWikiIndex(player) }
-                option("最近修改") { openWikiHistoryMenu(player, page.id) }
+                // 旧式菜单（MenuBuilder/Call.menu）不会顶掉服务端对话框：必须先 close()，
+                // 否则新菜单与当前对话框同屏，旧菜单自带的"返回"会变成多余按钮（2026-09-19 用户实测）
+                option("最近修改") { close(); openWikiHistoryMenu(player, page.id) }
                 option("分享到聊天") { shareWikiPageToChat(player, page.id) }
             }
             if (canEdit || adminWiki) {

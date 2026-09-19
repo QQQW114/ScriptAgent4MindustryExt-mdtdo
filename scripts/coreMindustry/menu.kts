@@ -341,7 +341,11 @@ private fun voteHelpCommandColor(commandName: String): String = when (commandNam
 }
 
 private suspend fun runHelpCommand(player: Player, command: String) {
-    RootCommands.handleInput(command, player, "/")
+    // 关键：**一律在独立协程里执行**（2026-09-19）。
+    // 旧式 `MenuBuilder.sendTo` 要等选项回调返回后才走 `finally { close() }`；若命令（如 `/wiki`、`/posts`）
+    // 在回调里 await 自己发下的服务端对话框，回调就被挂住 → 旧聊天菜单连同它自己的"返回"一直留在屏幕上。
+    // 丢到独立协程后回调立刻返回，旧菜单正常收掉。
+    launch(Dispatchers.game) { RootCommands.handleInput(command, player, "/") }
 }
 
 /**
@@ -643,13 +647,12 @@ private suspend fun openHelpEntryList(
             items.subList((page - 1) * HELP_PAGE_SIZE, (page * HELP_PAGE_SIZE).coerceAtMost(items.size))
                 .forEach { item ->
                     option(optionText(item.title, item.description)) {
-                        item.action?.invoke() ?: item.runCommand?.let {
-                            runHelpCommandWithReturn(
-                                player, "返回$titleText",
-                                { openHelpEntryList(player, titleText, messageText, items, openRoot, selectedPage) },
-                                it,
-                            )
+                        // 统一记录返回目标（回到本列表当前页），再执行条目；
+                        // 无论走 action 还是 runCommand，都必须让本回调立刻返回（原因见 runHelpCommand）
+                        MenuNav.push(player, "返回$titleText") {
+                            openHelpEntryList(player, titleText, messageText, items, openRoot, selectedPage)
                         }
+                        item.action?.invoke() ?: item.runCommand?.let { runHelpCommand(player, it) }
                     }
                     newRow()
                 }
@@ -684,13 +687,10 @@ private suspend fun openPagedHelpEntryList(
             }
             pageData.items.forEach { item ->
                 option(optionText(item.title, item.description)) {
-                    item.action?.invoke() ?: item.runCommand?.let {
-                        runHelpCommandWithReturn(
-                            player, "返回$titleText",
-                            { openPagedHelpEntryList(player, titleText, messageText, loadPage, openRoot, selectedPage) },
-                            it,
-                        )
+                    MenuNav.push(player, "返回$titleText") {
+                        openPagedHelpEntryList(player, titleText, messageText, loadPage, openRoot, selectedPage)
                     }
+                    item.action?.invoke() ?: item.runCommand?.let { runHelpCommand(player, it) }
                 }
                 newRow()
             }
