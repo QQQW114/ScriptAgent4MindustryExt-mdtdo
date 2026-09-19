@@ -15,6 +15,15 @@
 >
 > 已接入目标页：帖子分区页、Wiki 列表页、成就页。
 >
+> **旧式菜单（`MenuBuilder`/`Call.menu`）怎么用（2026-09-19 定稿：最小口径）**：
+> - **入口记父页**：`MenuNav.push(player, "返回XX") { 重开父页 }`，放在跳转指令之前；
+>   若入口回调里要执行指令，用 `launch(Dispatchers.game) { ... }` 执行，避免回调被目标菜单挂住。
+> - **目标菜单各加一行**：`if (MenuNav.peek(player) != null) option("返回") { MenuNav.take(player)?.let { it.action() } }`
+>   —— 已接入：技能菜单、商店列表、帮助菜单的条目列表页（后者优先回上一页、否则维持旧口径回帮助首页）。
+> - **不要**在共享菜单库（`menu.lib.kt`）里做"给所有旧式菜单统一追加返回"的全局改造：曾试过一次，
+>   因把脚本作用域的 `launch` 写进模块库导致 `coreMindustry` 编译失败并级联到全部依赖脚本（详见
+>   `scripts-maintenance.md` 第九批第 8 节）。共享库只放通用能力，跨菜单导航这类需要脚本作用域的东西留在 `.kts`。
+>
 > **⚠️ 两个已踩的坑（2026-09-19 用户实测）**：
 > 1. **从旧式聊天菜单跳进 MenuV3 页面时，旧菜单不会自动收掉**：旧式 `MenuBuilder.sendTo` 是在回调返回后才
 >    `finally { close() }`，而 `/posts`、`/wiki`、`/achievements` 这类命令会在回调里一直 await 新对话框 →

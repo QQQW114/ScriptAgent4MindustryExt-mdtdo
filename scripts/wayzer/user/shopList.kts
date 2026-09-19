@@ -3,6 +3,7 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.lib.MenuNav
 import coreMindustry.lib.RootCommands
 
 private data class ShopEntry(
@@ -55,6 +56,10 @@ private suspend fun openShopList(player: Player) {
                     }
                 }
                 newRow()
+            }
+            // 从玩家面板等入口进入时才有"上一页"（2026-09-19：入口记父页，本菜单加一行）
+            if (MenuNav.peek(player) != null) {
+                option("返回") { MenuNav.take(player)?.let { it.action() } }
             }
             option("关闭") {}
         }

@@ -660,7 +660,12 @@ private suspend fun openHelpEntryList(
             option("$page/$totalPage") { refresh() }
             option("->") { selectedPage = page + 1; refresh() }
             newRow()
-            option("返回") { openRoot() }
+            option("返回") {
+                // 2026-09-19：有"上一页"记录时优先回上一页（如玩家面板 → /help → 本列表）；
+                // 没有记录时维持旧口径：回到帮助首页。
+                val navTarget = MenuNav.take(player)
+                if (navTarget != null) navTarget.action() else openRoot()
+            }
             option("关闭") {}
         }
     }.sendTo(player, 60_000)
@@ -702,7 +707,12 @@ private suspend fun openPagedHelpEntryList(
             option("${pageData.page}/${pageData.totalPage}") { refresh() }
             option("->") { selectedPage = (selectedPage + 1).coerceAtMost(pageData.totalPage); refresh() }
             newRow()
-            option("返回") { openRoot() }
+            option("返回") {
+                // 2026-09-19：有"上一页"记录时优先回上一页（如玩家面板 → /help → 本列表）；
+                // 没有记录时维持旧口径：回到帮助首页。
+                val navTarget = MenuNav.take(player)
+                if (navTarget != null) navTarget.action() else openRoot()
+            }
             option("关闭") {}
         }
     }.sendTo(player, 60_000)

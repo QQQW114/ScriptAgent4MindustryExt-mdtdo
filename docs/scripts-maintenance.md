@@ -119,6 +119,32 @@
   本项目 `MenuV3.dispatch` 走"无匹配 id → onCancel + 结束会话"分支，会话正常收尾，不会留下悬挂会话。
 - 验证：三个脚本重编（3.95s / 2.64s / 2.05s）成功，`sa listFailed` 为空。
 
+### 8. 第四轮：玩家面板入口的"返回"（按旧口径实现，含一次失败回退）
+
+- **需求**：玩家菜单（双击玩家打开的「玩家信息」面板）里的 技能/商店/成就/投票 等入口，进去后要有"返回"能回来；
+  用户明确要求**沿用旧口径**（像帮助菜单的"玩家指令"列表那样放一个普通 `返回`），暂不引入全局机制。
+- **⚠️ 一次失败尝试（已完整回退）**：曾试图在共享菜单库 `coreMindustry/menu.lib.kt` 的 `sendTo` 里给**所有**旧式菜单
+  统一追加"返回上一页"，并在 `lib/menuNav.kt` 里实现执行逻辑（用了 `script.launch`）。
+  结果 `menuNav.kt:69 Unresolved reference 'launch'` → `coreMindustry` 模块编译失败 → 级联
+  **论坛/Wiki/成就/玩家面板全部 Dependency Failed**（`157/151/126/出错21`）。
+  两个教训：①**脚本作用域的 DSL（`launch` 等）不要写进模块库**，库文件里要么显式 `import kotlinx.coroutines.launch`
+  并持有脚本作用域，要么把并发逻辑留在 `.kts` 里；②**不要在共享菜单库做全局改造**——影响面太大、失败会级联，
+  用户也明确要求"沿用旧口径"。回退后工作区与提交 `ab65f39` 完全一致、冷启动恢复 `157/153/148/出错0`。
+- **最终实现（最小口径，四处）**：
+  1. `wayzer/ext/playerInfoTripleTap.kts`：面板里新增局部函数 `openSub(command)` —— 先
+     `MenuNav.push(viewer, "返回玩家信息") { showPlayerInfo(viewer, target) }` 记父页，再用
+     `launch(Dispatchers.game)` 执行指令（避免面板回调被目标菜单挂住）；称号/技能/商店/成就/投票/help 六个入口改走它。
+  2. `wayzer/user/ext/skills.kts`（技能菜单）、`wayzer/user/shopList.kts`（商店列表）：各加一行
+     `if (MenuNav.peek(player) != null) option("返回") { MenuNav.take(player)?.let { it.action() } }`。
+  3. `coreMindustry/menu.kts`：帮助菜单的**条目列表页**（玩家/管理/投票指令等）的 `返回` 改为
+     "有上一页记录就回上一页，否则维持旧口径回帮助首页"。
+- **投票页澄清**：`/vote` 本身是**聊天列表不是菜单**，没有"返回按钮"；投票相关旧式菜单只有
+  `wayzer/vote.lib.kt` 的"投票确认"弹窗（赞成/中立/反对/待定/关闭），其中"关闭"语义正确（无上一页）。
+  用户确认其所说的"投票页"= **帮助菜单里的"投票指令"列表页**，本轮已按上面第 3 条修好。
+- 验证：`coreMindustry/menu` 7.39s、`skills` 3.39s、`shopList` 0.37s、`playerInfoTripleTap` 6.17s 重编成功，
+  `sa listFailed` 为空。
+- 未覆盖：面板→技能/商店/成就→返回 的实际脚印仍需真实客户端复测（本机无客户端）。
+
 ## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
 
 类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）

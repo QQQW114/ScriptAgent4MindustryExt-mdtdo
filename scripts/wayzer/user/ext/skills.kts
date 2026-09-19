@@ -21,6 +21,7 @@ import arc.util.serialization.Jval
 import cf.wayzer.placehold.PlaceHoldApi.with
 import coreMindustry.MenuBuilder
 import coreMindustry.lib.ClientOnly
+import coreMindustry.lib.MenuNav
 import coreMindustry.lib.RootCommands
 import coreMindustry.lib.broadcast
 import coreMindustry.lib.hasPermission
@@ -135,6 +136,10 @@ suspend fun openSkillMainMenu(player: Player) {
         extraEntries.forEach { entry ->
             option(entry.optionText) { entry.action(player) }
             newRow()
+        }
+        // 从玩家面板等入口进入时才有"上一页"（2026-09-19：入口记父页，本菜单加一行）
+        if (MenuNav.peek(player) != null) {
+            option("返回") { MenuNav.take(player)?.let { it.action() } }
         }
         option("关闭") {}
     }.sendTo(player, 60_000)

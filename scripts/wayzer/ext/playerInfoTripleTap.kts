@@ -23,6 +23,7 @@ package wayzer.ext
 
 import coreMindustry.MenuBuilder
 import coreMindustry.PagedMenuBuilder
+import coreMindustry.lib.MenuNav
 import coreMindustry.lib.RootCommands
 import coreLibrary.lib.PermissionApi
 import wayzer.VoteEvent
@@ -646,18 +647,23 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
         """.trimMargin()
 
         if (isSelf) {
-            option("打开称号面板") { quickCommand(viewer, "/title") }
-            option("打开技能面板") { quickCommand(viewer, "/skills") }
+            // 2026-09-19（最小口径）：跳转前记一下父页，目标菜单里各加一行"返回"就能回到本面板
+            fun openSub(command: String) {
+                MenuNav.push(viewer, "返回玩家信息") { showPlayerInfo(viewer, target) }
+                launch(Dispatchers.game) { quickCommand(viewer, command) }
+            }
+            option("打开称号面板") { openSub("/title") }
+            option("打开技能面板") { openSub("/skills") }
             newRow()
-            option("打开商店列表") { quickCommand(viewer, "/shop") }
+            option("打开商店列表") { openSub("/shop") }
             if (isDatabaseFeatureEnabled(DatabaseFeature.Achievement)) {
-                option("打开成就系统") { quickCommand(viewer, "/achievements") }
+                option("打开成就系统") { openSub("/achievements") }
             } else option("") { }
             newRow()
             option("随机变换形态") { with(playerRandomForm) { toggleRandomForm(viewer) } }
-            option("打开投票页面") { quickCommand(viewer, "/vote") }
+            option("打开投票页面") { openSub("/vote") }
             newRow()
-            option("打开/help页面") { quickCommand(viewer, "/help") }
+            option("打开/help页面") { openSub("/help") }
         } else {
             if (socialActionsEnabled()) {
                 option("赞ta") { with(playerReputation) { likePlayer(viewer, targetUid, targetDisplayName) } }
