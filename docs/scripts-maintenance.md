@@ -22,6 +22,53 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-19（第九批）：帖子系统缩放（落库+缓存）、菜单"返回上一页"与翻页记忆
+
+类型：功能新增（用户需求：①帖子系统加入可自由调节的缩放，仅1级及以上可用，个性化配置落盘数据库、
+查库项尽量走缓存、性能开销大时可内存化并定期清理；打开帖子时保留上一页页数；②帖子/成就/Wiki 的返回按钮
+不会回到上一页（如 MDT帮助），帖子分区的退出直接关菜单 —— 要求调整）
+
+### 1. 帖子系统界面缩放（1级及以上）
+
+- 存储：新增表 `MdtStorage.PlayerUiPrefs`（`MdtPlayerUiPrefs`，字段 `subject_uid` 主键 + `forum_scale_pct` +
+  `updated_at`），经 `wayzer/mdtDatabase` 的 `DBApi.registerTable(*MdtStorage.tables())` 注册（启动日志
+  `Finish check upgrade for 34 tables` 已包含该表：32 本表 + 本表 + `banStore` 的 1 张）。
+- 读写：`getForumScalePct/setForumScalePct`（事务，无记录则插入）。
+- 缓存与性能：`forumScaleCache`（uid→百分数）+ `forumScaleTouchedAt`（访问时间）+ `forumScaleDirty`（待落盘）。
+  首次访问经 `db { }`（`withContext(Dispatchers.IO)`）查库，之后命中内存；点 ± 只改内存并标脏；
+  `onEnable` 的 IO 协程每 **15 秒**合并落盘一次，并按 **10 分钟 TTL** 清理久未访问的缓存项；
+  `onDisable` 立即 flush 一次（脚本重载不丢改动）。**不在游戏线程做数据库访问**。
+- 范围：`FORUM_SCALE_MIN_PCT=60` / `MAX=130` / `STEP=5` / `DEFAULT=100`；页面里 `uiScale = 移动端默认(0.85) × 玩家值`，
+  所以在手机上仍是"更小一档"的基准。
+- 入口：帖子分区页（`/posts` 首屏）底部新增 `缩小 − / 缩放 N% / 放大 ＋ / 重置` 一行，**仅 1 级及以上**
+  （`hasTrustLevel(player, "1")`）且帖子系统开启时渲染；点击后 `refresh()` 就地重绘本页。
+
+### 2. 跨菜单"返回上一页"（MenuNav）
+
+- 新增模块库 `coreMindustry/lib/menuNav.kt`：`MenuNav.push/peek/take/clear`，每玩家单层返回目标
+  （`label` + 重开上一页的 suspend 动作），**TTL 3 分钟**，`push/peek` 时顺带清理过期项（不注册监听器，内存 O(在线玩家)）。
+- 帮助菜单 `coreMindustry/menu.kts`：在跳转 `/posts`、`/wiki`、`/shop`、`/skill` 以及**条目列表页**里执行条目前的
+  命令时，先 `MenuNav.push`（回归目标是"重开同一页/同一分页"），再 `RootCommands.handleInput`。
+- 目标菜单：帖子分区页 / Wiki 列表页 / 成就页在 `MenuNav.peek` 非空时渲染 `返回`+`关闭` 两列（点返回执行目标动作），
+  为空时保持原来的单个 `关闭`。**从聊天直接敲 `/posts`、`/wiki`、`/achievements` 时行为不变。**
+
+### 3. 翻页记忆（帖子系统）
+
+- `openForumPost(..., listPage)`、`openForumComments(..., postPage, listPage)` 新增页码参数：
+  列表页第 N 页打开帖子 → 帖子页"返回列表"回到第 N 页；帖子第 M 页看评论 → 评论页"返回帖子"回到第 M 页
+  （此前一律回第 1 页，用户明确要求修）。
+- 编辑/删除等聊天输入流程结束后仍按原样打开帖子第 1 页（行为未变），回收站/回收站详情沿用原有页码参数。
+
+### 4. 验证与未覆盖
+
+- 过程中发现并修掉一处编译错误：脚本里**不允许顶层 `const val`**（`forumPosts.kts:81` → 改为 `private val`），
+  首轮冷启动曾报 `157/152/147/出错1`，修复后恢复。
+- **单实例**冷启动 = `共找到157脚本,加载成功153,启用成功148,出错0`，`sa listFailed` 为空，6567/6859/10099 正常。
+- 踩坑记录：kill 掉 java 后**旧监管器会自动重启**，若此时再手动启动启动器，会出现两个实例争端口 →
+  第二次加载报 `151/126/出错21`（假故障）。**重启必须先把监管器与 java 一起停掉，再单独启动一次。**
+- 未覆盖边界：**菜单缩放后的实际观感、返回脚印、翻页记忆都需要真实客户端点击验证**（本机无客户端）；
+  数据库写入的正确性只验证到"表已创建 + 编译加载通过 + 落盘路径有 try/catch 记录"。
+
 ## 2026-09-13（第八批）：局内热重载可行性核对（杂交/音乐/CP-DP 的"重载地图"能否避免）
 
 类型：只读审计（用户提问："看看最新的 mindustry 版本是否允许更优雅的处理方式，比如局内直接热重载，不需要重新加载"）

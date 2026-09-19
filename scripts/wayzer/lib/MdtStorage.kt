@@ -607,6 +607,19 @@ object MdtStorage {
         override val primaryKey: PrimaryKey = PrimaryKey(date, hour)
     }
 
+    /**
+     * 每玩家界面/个性化偏好（2026-09-13 新增）。
+     *
+     * 目前承载帖子系统的界面缩放（百分数）；业务脚本负责内存缓存与合并落盘，
+     * 这里只提供一次性读写，避免菜单交互每次都走一次数据库事务。
+     */
+    object PlayerUiPrefs : IdTable<String>("MdtPlayerUiPrefs") {
+        override val id: Column<EntityID<String>> = varchar("subject_uid", UID_LENGTH).entityId()
+        override val primaryKey: PrimaryKey = PrimaryKey(id)
+        val forumScalePct = integer("forum_scale_pct").default(100)
+        val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp)
+    }
+
     fun tables(): Array<Table> = arrayOf(
         Accounts,
         AccountBindings,
@@ -636,6 +649,7 @@ object MdtStorage {
         RedPacketClaims,
         IpAccountBindings,
         Settings,
+        PlayerUiPrefs,
         StatsPlayers,
         StatsActivePlayers,
         StatsDaily,
@@ -973,6 +987,28 @@ object MdtStorage {
                 result[key] = Settings.selectAll().where { Settings.id eq key }.firstOrNull()?.get(Settings.value)
             }
         result
+    }
+
+    // ---------- 每玩家界面偏好（帖子系统缩放等，2026-09-13）----------
+
+    /** 读取玩家的帖子系统缩放百分数；无记录返回 null（由调用方决定默认值）。 */
+    fun getForumScalePct(uid: String): Int? = transaction {
+        PlayerUiPrefs.selectAll().where { PlayerUiPrefs.id eq uid }
+            .firstOrNull()?.get(PlayerUiPrefs.forumScalePct)
+    }
+
+    /** 写入玩家的帖子系统缩放百分数（无记录则插入）。 */
+    fun setForumScalePct(uid: String, pct: Int): Unit = transaction {
+        val updated = PlayerUiPrefs.update({ PlayerUiPrefs.id eq uid }) {
+            it[PlayerUiPrefs.forumScalePct] = pct
+            it[PlayerUiPrefs.updatedAt] = now()
+        }
+        if (updated == 0) {
+            PlayerUiPrefs.insert {
+                it[PlayerUiPrefs.id] = uid
+                it[PlayerUiPrefs.forumScalePct] = pct
+            }
+        }
     }
 
     // ---------- 名字后缀标记（自定义/隐藏管理标）----------

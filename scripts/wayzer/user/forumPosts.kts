@@ -9,6 +9,10 @@ package wayzer.user
 
 import coreMindustry.MenuBuilder
 import coreMindustry.MenuV3
+import coreMindustry.lib.MenuNav
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 import wayzer.lib.ForumPostCreatedEvent
 import wayzer.lib.MdtStorage
@@ -20,6 +24,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
 name = "MDT帖子系统"
 
@@ -72,6 +77,13 @@ private val FORUM_DAILY_POST_LIMIT = 3
 private val FORUM_MAX_NORMAL_POSTS = 500
 private val FORUM_CLEANUP_MIN_AGE_DAYS = 30L
 private val FORUM_MENU_TIMEOUT_MILLIS = 30 * 60_000
+// 帖子系统界面缩放（2026-09-13）：1级及以上玩家可调，值落库（MdtStorage.PlayerUiPrefs）
+private val FORUM_SCALE_MIN_PCT = 60
+private val FORUM_SCALE_MAX_PCT = 130
+private val FORUM_SCALE_STEP_PCT = 5
+private val FORUM_SCALE_DEFAULT_PCT = 100
+private val FORUM_SCALE_CACHE_TTL_MILLIS = 10 * 60_000L
+private val FORUM_SCALE_FLUSH_INTERVAL_MILLIS = 15_000L
 // 菜单版式（2026-09-13 MenuV3 接入）：内容限宽、正文/评论阅读区高度
 private val FORUM_MENU_WIDTH = 860f
 private val FORUM_READ_PANE_HEIGHT = 340f
@@ -96,6 +108,68 @@ private fun ensureForumEnabled(player: Player): Boolean {
     if (forumEnabled()) return true
     player.sendMessage(FORUM_DISABLED_MESSAGE)
     return false
+}
+
+// ---------- 帖子系统界面缩放（2026-09-13）----------
+// 设计：内存缓存优先（避免点一次按钮/翻一次页就查库），改动进"待落盘"表，
+// 由 onEnable 里的定时轮合并写库（默认 15 秒一次），并按 TTL 清理长时间没访问的缓存项。
+private val forumScaleCache = ConcurrentHashMap<String, Int>()
+private val forumScaleTouchedAt = ConcurrentHashMap<String, Long>()
+private val forumScaleDirty = ConcurrentHashMap<String, Int>()
+
+@Volatile
+private var forumScaleLoopEnabled = false
+
+private fun forumScaleUid(player: Player): String = PlayerData[player].id
+
+/** 取玩家缩放百分数：缓存命中直接用，否则查库（走 `db {}` 的 IO 线程，失败按默认值，不打扰玩家）。 */
+private suspend fun forumScalePct(player: Player): Int {
+    val uid = forumScaleUid(player)
+    val now = System.currentTimeMillis()
+    forumScaleTouchedAt[uid] = now
+    forumScaleCache[uid]?.let { return it }
+    val loaded = runCatching { db { MdtStorage.getForumScalePct(uid) } }.getOrNull()
+        ?.coerceIn(FORUM_SCALE_MIN_PCT, FORUM_SCALE_MAX_PCT)
+        ?: FORUM_SCALE_DEFAULT_PCT
+    forumScaleCache[uid] = loaded
+    return loaded
+}
+
+/** 组合给 MenuV3：移动端默认缩放（0.85）× 玩家个性化缩放。 */
+private suspend fun forumUiScale(player: Player): Float =
+    MenuV3.defaultScale(player) * (forumScalePct(player) / 100f)
+
+/** 仅 1 级及以上（且帖子系统开启时）可调。 */
+private fun canAdjustForumScale(player: Player): Boolean =
+    forumEnabled() && with(trustLevel) { hasTrustLevel(player, "1") }
+
+private suspend fun changeForumScale(player: Player, deltaPct: Int) {
+    val uid = forumScaleUid(player)
+    val next = (forumScalePct(player) + deltaPct).coerceIn(FORUM_SCALE_MIN_PCT, FORUM_SCALE_MAX_PCT)
+    forumScaleCache[uid] = next
+    forumScaleTouchedAt[uid] = System.currentTimeMillis()
+    forumScaleDirty[uid] = next
+}
+
+private suspend fun resetForumScale(player: Player) {
+    val uid = forumScaleUid(player)
+    forumScaleCache[uid] = FORUM_SCALE_DEFAULT_PCT
+    forumScaleTouchedAt[uid] = System.currentTimeMillis()
+    forumScaleDirty[uid] = FORUM_SCALE_DEFAULT_PCT
+}
+
+/** 定时轮：合并落盘 + 清理过期缓存。 */
+private fun flushForumScale() {
+    forumScaleDirty.entries.toList().forEach { (uid, pct) ->
+        runCatching { MdtStorage.setForumScalePct(uid, pct) }
+            .onSuccess { forumScaleDirty.remove(uid, pct) }
+            .onFailure { logger.warning("帖子缩放落库失败($uid): ${it.message}") }
+    }
+    val deadline = System.currentTimeMillis() - FORUM_SCALE_CACHE_TTL_MILLIS
+    forumScaleCache.keys.filter { (forumScaleTouchedAt[it] ?: 0L) < deadline }.forEach {
+        forumScaleCache.remove(it)
+        forumScaleTouchedAt.remove(it)
+    }
 }
 
 private suspend fun <T> db(block: () -> T): T = withContext(Dispatchers.IO) { block() }
@@ -507,6 +581,8 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
         fillScreen = false
         wrapInPane = false
         rootWidth = FORUM_MENU_WIDTH
+        // 玩家个性化缩放（移动端默认 0.85 会再乘一次，见 forumUiScale）
+        uiScale = forumUiScale(player)
 
         val (sections, stats) = db { forumSectionsCached() to forumStatsCached() }
         val totalPage = maxOf(1, (sections.size + FORUM_SECTION_LIST_PAGE_SIZE - 1) / FORUM_SECTION_LIST_PAGE_SIZE)
@@ -540,7 +616,32 @@ private suspend fun openForumIndex(player: Player, initialPage: Int = 1) {
             option("最近变更") { close(); openForumPostHistoryMenu(player) }
             option("格式帮助") { close(); openForumFormatHelp(player) }
         }
-        option("关闭") { close() }
+        // 界面缩放（2026-09-13）：1级及以上可调，个性化配置落库，改动立即重绘本页
+        if (canAdjustForumScale(player)) {
+            val scalePct = forumScalePct(player)
+            column(4) {
+                option("缩小 −") { changeForumScale(player, -FORUM_SCALE_STEP_PCT); refresh() }
+                option("缩放 $scalePct%") { refresh() }
+                option("放大 ＋") { changeForumScale(player, FORUM_SCALE_STEP_PCT); refresh() }
+                option("重置") { resetForumScale(player); refresh() }
+            }
+        }
+        // 返回上一页（如从 MDT帮助 进入帖子系统时回到帮助菜单）；没有来源菜单时保持原来的"关闭"
+        val navBack = MenuNav.peek(player)
+        if (navBack != null) {
+            column(2) {
+                option("返回") {
+                    MenuNav.take(player)?.let { target ->
+                        runCatching { target.action() }.onFailure {
+                            logger.warning("帖子系统返回上一页失败: ${it.message}")
+                        }
+                    }
+                }
+                option("关闭") { close() }
+            }
+        } else {
+            option("关闭") { close() }
+        }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
@@ -710,7 +811,7 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
         }
 
         pageItems.forEach { item ->
-            option(item.text) { openForumPost(player, item.post.id, section.code) }
+            option(item.text) { openForumPost(player, item.post.id, section.code, listPage = selectedPage) }
         }
         repeat(FORUM_LIST_PAGE_SIZE - pageItems.size) { space() }
 
@@ -729,7 +830,13 @@ private suspend fun openForumPostList(player: Player, sectionCode: String = "all
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
 }
 
-private suspend fun openForumPost(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
+private suspend fun openForumPost(
+    player: Player,
+    postId: Int,
+    sectionCode: String = "all",
+    initialPage: Int = 1,
+    listPage: Int = 1,
+) {
     if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
@@ -791,7 +898,9 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
         }
         column(3) {
             option("发布评论") { close(); createForumCommentFlow(player, post.id, sectionCode) }
-            option("查看评论（${post.commentCount}条）") { openForumComments(player, post.id, sectionCode) }
+            option("查看评论（${post.commentCount}条）") {
+                openForumComments(player, post.id, sectionCode, postPage = selectedPage, listPage = listPage)
+            }
             option("分享到聊天") { shareForumPostToChat(player, post.id, sectionCode) }
         }
         if (canEdit || canAdmin) {
@@ -822,7 +931,7 @@ private suspend fun openForumPost(player: Player, postId: Int, sectionCode: Stri
         }
         column(3) {
             option("格式帮助") { close(); openForumFormatHelp(player, post.id, sectionCode) }
-            option("返回列表") { openForumPostList(player, sectionCode) }
+            option("返回列表") { openForumPostList(player, sectionCode, listPage) }
             option("关闭") { close() }
         }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
@@ -853,7 +962,14 @@ private suspend fun shareForumPostToChat(player: Player, postId: Int, sectionCod
     openForumPost(player, post.id, sectionCode)
 }
 
-private suspend fun openForumComments(player: Player, postId: Int, sectionCode: String = "all", initialPage: Int = 1) {
+private suspend fun openForumComments(
+    player: Player,
+    postId: Int,
+    sectionCode: String = "all",
+    initialPage: Int = 1,
+    postPage: Int = 1,
+    listPage: Int = 1,
+) {
     if (!ensureForumEnabled(player)) return
     val post = db { forumPostCached(postId) } ?: run {
         player.sendMessage("[yellow]帖子不存在或已被删除：#$postId")
@@ -908,7 +1024,7 @@ private suspend fun openForumComments(player: Player, postId: Int, sectionCode: 
         }
         column(3) {
             option("发布评论") { close(); createForumCommentFlow(player, post.id, sectionCode) }
-            option("返回帖子") { openForumPost(player, post.id, sectionCode) }
+            option("返回帖子") { openForumPost(player, post.id, sectionCode, postPage, listPage) }
             option("关闭") { close() }
         }
     }.send().awaitWithTimeout(FORUM_MENU_TIMEOUT_MILLIS.milliseconds)
@@ -1232,6 +1348,7 @@ private suspend fun editForumSectionFlow(player: Player, fixedCode: String?) {
 }
 
 onEnable {
+    forumScaleLoopEnabled = true
     // DBApi 的建表可能晚于业务脚本 onEnable。这里延迟执行，避免启动阶段查询尚未创建的表导致脚本卸载。
     launch(Dispatchers.IO) {
         delay(5_000)
@@ -1240,7 +1357,19 @@ onEnable {
             logger.warning("[MDT帖子系统] 初始化帖子统计失败，可能是数据库表尚未完成创建：${it.message}")
         }
         cleanupForumPostsIfNeeded(force = true)
+        // 缩放偏好：每 15 秒合并落盘一次 + 清理 10 分钟未访问的缓存项（2026-09-13）
+        while (forumScaleLoopEnabled) {
+            delay(FORUM_SCALE_FLUSH_INTERVAL_MILLIS)
+            runCatching { flushForumScale() }.onFailure {
+                logger.warning("[MDT帖子系统] 缩放偏好落盘/清理异常：${it.message}")
+            }
+        }
     }
+}
+
+onDisable {
+    forumScaleLoopEnabled = false
+    runCatching { flushForumScale() }
 }
 
 command("posts", "打开帖子列表") {

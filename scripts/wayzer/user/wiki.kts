@@ -8,6 +8,7 @@ package wayzer.user
 
 import coreMindustry.MenuBuilder
 import coreMindustry.MenuV3
+import coreMindustry.lib.MenuNav
 import coreMindustry.lib.hasPermission
 import kotlin.time.Duration.Companion.milliseconds
 import cf.wayzer.placehold.PlaceHoldApi.with
@@ -530,7 +531,22 @@ private suspend fun openWikiIndex(player: Player, initialPage: Int = 1) {
                 option("->") { selectedPage = (selectedPage + 1).coerceAtMost(totalPage); refresh() }
             }
             if (manager) option("管理Wiki") { close(); openWikiManageMenu(player) }
-            option("关闭") { close() }
+            // 返回上一页（如从 MDT帮助 进入 Wiki）；没有来源菜单时保持原来的"关闭"（2026-09-13）
+            val navBack = MenuNav.peek(player)
+            if (navBack != null) {
+                column(2) {
+                    option("返回") {
+                        MenuNav.take(player)?.let { target ->
+                            runCatching { target.action() }.onFailure {
+                                logger.warning("Wiki返回上一页失败: ${it.message}")
+                            }
+                        }
+                    }
+                    option("关闭") { close() }
+                }
+            } else {
+                option("关闭") { close() }
+            }
         }
     }.send().awaitWithTimeout(WIKI_MENU_TIMEOUT_MILLIS.milliseconds)
 }

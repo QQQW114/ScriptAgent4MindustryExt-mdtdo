@@ -7,6 +7,7 @@ import coreLibrary.lib.CommandInfo
 import coreLibrary.lib.Commands
 import coreLibrary.lib.Commands.Hidden
 import coreLibrary.lib.util.calPage
+import coreMindustry.lib.MenuNav
 import coreMindustry.lib.RootCommands
 
 
@@ -343,6 +344,21 @@ private suspend fun runHelpCommand(player: Player, command: String) {
     RootCommands.handleInput(command, player, "/")
 }
 
+/**
+ * 跳转到其它系统的菜单前，先记录"返回上一页"（2026-09-13）。
+ * 目标系统（帖子/Wiki/成就…）会用 `MenuNav.peek` 渲染"返回"按钮，点它就会重开 [reopen] 这一页；
+ * 若不记录，目标菜单只能"关闭"，玩家回不到帮助菜单。
+ */
+private suspend fun runHelpCommandWithReturn(
+    player: Player,
+    label: String,
+    reopen: suspend () -> Unit,
+    command: String,
+) {
+    MenuNav.push(player, label) { reopen() }
+    runHelpCommand(player, command)
+}
+
 private suspend fun noopHelpBack() {}
 
 private fun uniqueSortedCommands(cmds: Commands): List<CommandInfo> {
@@ -622,7 +638,13 @@ private suspend fun openHelpEntryList(
             items.subList((page - 1) * HELP_PAGE_SIZE, (page * HELP_PAGE_SIZE).coerceAtMost(items.size))
                 .forEach { item ->
                     option(optionText(item.title, item.description)) {
-                        item.action?.invoke() ?: item.runCommand?.let { runHelpCommand(player, it) }
+                        item.action?.invoke() ?: item.runCommand?.let {
+                            runHelpCommandWithReturn(
+                                player, "返回$titleText",
+                                { openHelpEntryList(player, titleText, messageText, items, openRoot, selectedPage) },
+                                it,
+                            )
+                        }
                     }
                     newRow()
                 }
@@ -657,7 +679,13 @@ private suspend fun openPagedHelpEntryList(
             }
             pageData.items.forEach { item ->
                 option(optionText(item.title, item.description)) {
-                    item.action?.invoke() ?: item.runCommand?.let { runHelpCommand(player, it) }
+                    item.action?.invoke() ?: item.runCommand?.let {
+                        runHelpCommandWithReturn(
+                            player, "返回$titleText",
+                            { openPagedHelpEntryList(player, titleText, messageText, loadPage, openRoot, selectedPage) },
+                            it,
+                        )
+                    }
                 }
                 newRow()
             }
@@ -796,13 +824,19 @@ private suspend fun openHelpRoot(
             }
         }
 
-        rootOption("帖子列表\n[gray]玩家交流/评论") { runHelpCommand(player, "/posts") }
+        rootOption("帖子列表\n[gray]玩家交流/评论") {
+            runHelpCommandWithReturn(player, "返回帮助菜单", { reopenRoot() }, "/posts")
+        }
 
         if ("shop" in commandByName) {
-            rootOption("商店列表\n[gray]打开 /shop") { runHelpCommand(player, "/shop") }
+            rootOption("商店列表\n[gray]打开 /shop") {
+                runHelpCommandWithReturn(player, "返回帮助菜单", { reopenRoot() }, "/shop")
+            }
         }
         if ("skill" in commandByName) {
-            rootOption("技能指令\n[gray]打开 /skill") { runHelpCommand(player, "/skill") }
+            rootOption("技能指令\n[gray]打开 /skill") {
+                runHelpCommandWithReturn(player, "返回帮助菜单", { reopenRoot() }, "/skill")
+            }
         }
 
         if (adminEntries.isNotEmpty()) {
@@ -815,8 +849,9 @@ private suspend fun openHelpRoot(
         }
 
         rootOption("Wiki列表\n[gray]文档/wiki入口") {
-            if ("wiki" in commandByName) runHelpCommand(player, "/wiki")
-            else player.sendMessage("[yellow]Wiki列表暂未开放，后续会接入 /wiki")
+            if ("wiki" in commandByName) {
+                runHelpCommandWithReturn(player, "返回帮助菜单", { reopenRoot() }, "/wiki")
+            } else player.sendMessage("[yellow]Wiki列表暂未开放，后续会接入 /wiki")
         }
         rootOption("搜索指令\n[gray]名称/别名/说明") {
             val keyword = with(helpTextInput) {

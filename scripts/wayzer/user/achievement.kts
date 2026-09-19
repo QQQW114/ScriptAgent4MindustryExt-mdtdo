@@ -13,6 +13,7 @@ package wayzer.user
 
 import coreMindustry.MenuBuilder
 import coreMindustry.MenuV3
+import coreMindustry.lib.MenuNav
 import coreMindustry.PagedMenuBuilder
 import coreMindustry.renderPaged
 import coreMindustry.lib.hasPermission
@@ -591,7 +592,22 @@ private suspend fun showAchievementPage(player: Player) {
             option(optionText(completed, item)) { showAchievement(uid, player, item) }
         }
 
-        option("关闭") { close() }
+        // 返回上一页（如从 MDT帮助 进入成就系统）；没有来源菜单时保持原来的"关闭"（2026-09-13）
+        val navBack = MenuNav.peek(player)
+        if (navBack != null) {
+            column(2) {
+                option("返回") {
+                    MenuNav.take(player)?.let { target ->
+                        runCatching { target.action() }.onFailure {
+                            logger.warning("成就系统返回上一页失败: ${it.message}")
+                        }
+                    }
+                }
+                option("关闭") { close() }
+            }
+        } else {
+            option("关闭") { close() }
+        }
     }.send().awaitWithTimeout(ACHIEVEMENT_PAGE_TIMEOUT_SECONDS.seconds)
 }
 
