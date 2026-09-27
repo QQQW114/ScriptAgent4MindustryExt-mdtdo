@@ -92,6 +92,19 @@
   `Unresolved reference`——**这是按依赖声明可见，不是全量可见**。
 - `.kts`/`.kt` 脚本若引用了不存在的变量（如删除后残留），编译器给 `Unresolved reference`；
   本次还遇到"删了变量但某处还引用"的低级遗漏——改完全局搜一遍被删符号名。
+- **`with(x) { 同名函数(...) }` 会递归到自己**（2026-09-27 4x4 核心区事故的根因）：
+  `with(receiver) { f(...) }` 里 `f` 的解析优先级是**当前文件作用域 > 隐式接收者**，
+  所以本文件若也声明了 `f`，这行就是无限自调用 → `StackOverflowError`。
+  转发包装一律写显式接收者：`skillsCore.spawnOverlapError(...)`（同目录其它技能文件就是这么写的）。
+  排查可全库扫"转发包装自递归"：`fun f(...)= with(X) { f(`。
+- **命令里抛 Error（`StackOverflowError`/`OutOfMemoryError`）不是 Exception，框架接不住**：
+  SA 的 `CommandInfo.handle()` 只有 `catch (e: Exception)`（`coreLibrary/lib/CommandApi.kt:196-204`），
+  `Error` 会直接打到主线程 → `Exception in thread "HeadlessApplication" ...`，
+  **服务端从此"假活"**：端口还在监听、6859 socket 还能连、`sa listFailed` 还能回，
+  但世界不 tick、所有游戏内命令（技能/菜单/聊天回复）全部无响应 —— 必须重启，热重载无效。
+  判活别只看端口：用依赖主线程的命令（如 `js 1+1`）确认；这种堆栈**只在服务端控制台窗口（stderr）**，
+  `config/logs/log-0.txt` 里没有，所以"点了没反应"要先让用户看一眼窗口里的堆栈。
+- **`sa scan` 不会发现"文件被删了"**：删掉临时脚本后要 `sa unload <名字>`（否则模块一直挂在内存里）。
 - **命令权限 DSL**：`permission = "..."` 已被 `requirePermission` 取代（旧写法还能用，仅警告）；
   关键事实：`CommandInfo.handle()` = **先执行全部 attr（含 Permission）再执行 body**，
   因此菜单/帮助"快速跳转"（`RootCommands.handleInput`）与手打指令是**同一条权限路径**，

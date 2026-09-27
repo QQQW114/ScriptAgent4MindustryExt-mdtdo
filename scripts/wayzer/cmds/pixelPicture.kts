@@ -72,16 +72,26 @@ command("pixel", "绘制像素画".with()) {
             reply("[yellow]缩放后比例{w}x{h}".with("w" to img.width, "h" to img.height))
             withContext(Dispatchers.game) {
                 var i = 0
+                var skippedSpawn = 0
                 val p = player!!
                 for (x in 1..img.width)
                     for (y in 1..img.height) {
                         i++
-                        draw(p.tileX() - img.width / 2 + x, p.tileY() + img.height / 2 - y, img.getRGB(x - 1, y - 1))
+                        val tx = p.tileX() - img.width / 2 + x
+                        val ty = p.tileY() + img.height / 2 - y
+                        // 出生点保护（2026-09-27 口径①）：像素画是大范围铺方块（默认 32x32），
+                        // 落到 Blocks.spawn 标记上会占住刷怪点，这里整格跳过。
+                        if (world.tiles.getc(tx, ty).overlay() === Blocks.spawn) {
+                            skippedSpawn++
+                        } else {
+                            draw(tx, ty, img.getRGB(x - 1, y - 1))
+                        }
                         if (i > 10) {
                             i = 0
                             nextTick()
                         }
                     }
+                if (skippedSpawn > 0) reply("[yellow]已跳过 {n} 格出生点标记（避免占住刷怪点）".with("n" to skippedSpawn))
             }
             reply("[green]绘制完成".with())
         }

@@ -149,6 +149,8 @@ command("summonunloader", "通用技能：召唤装卸器".with(), commands = Sk
     aliases = listOf("召唤装卸器", "装卸器", "unloader")
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(300_000))
     skillBody {
+        // 出生点保护（2026-09-27 口径①）：方块放在脚下，压到 Blocks.spawn 标记会占住刷怪点。
+        spawnOverlapError(player, 0..0, "召唤装卸器")?.let { returnReply(it.with()) }
         if (!placeBlockAtPlayer(player, Blocks.ductUnloader, requireAir = true)) {
             returnReply("[red]脚下已有方块，无法放置装卸器".with())
         }
@@ -161,6 +163,8 @@ command("illuminator", "通用技能：照明器".with(), commands = SkillComman
     aliases = listOf("照明器", "灯")
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
     skillBody {
+        // 出生点保护（2026-09-27 口径①）：方块放在脚下，压到 Blocks.spawn 标记会占住刷怪点。
+        spawnOverlapError(player, 0..0, "照明器")?.let { returnReply(it.with()) }
         if (!placeBlockAtPlayer(player, Blocks.illuminator, requireAir = true)) {
             returnReply("[red]脚下已有方块，无法放置照明器".with())
         }

@@ -22,6 +22,211 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-09-27（第十三批）：出生点保护重做——"范围 ∩ 出生点标记即拒绝"（用户选口径①）
+
+类型：Bug 修复（承接第十一批的发现：旧保护因按 `tile.team()` 过滤而恒不触发）。
+
+用户口径（2026-09-27 三选一，选了①）：**技能范围碰到任何 `Blocks.spawn` 标记就拒绝**。
+
+`wayzer/user/ext/skills.kts` 的 `spawnOverlapError(player, range, displayName)` 重写：
+
+- 判据从"`Vars.spawner.getSpawns()` 里 `team == waveTeam` 且落在 `dropZoneRadius` 折算的方框内"，
+  改为**逐格读地块覆盖层**：`Vars.world.tile(...).overlay() === Blocks.spawn` 命中即拒绝。
+  - 直接读覆盖层等价于 `WaveSpawner.reset()` 收集刷怪点的判据（`overlay() == Blocks.spawn`），
+    而且不受刷怪点集合刷新时机影响（集合是靠 `overlayChange` 事件增删的）；
+  - 不再需要 `rules.dropZoneRadius`：那是"出生点保护圈"（判断玩家离敌方出生点多近）的语义，
+    拿来判放置范围会拦掉一大片正常建造（当前测试图 288px≈36 格）；
+- 文案带上命中坐标与格数：`<技能名> 的放置范围压到了出生点标记 (x,y)[ 等 N 格]，会抹掉或占住刷怪点导致敌人刷不出来，已拒绝释放。`
+- PvP 不做额外豁免：用到本判定的放置类技能基本都带 `SkillNoPvp`（核心区3x3、初级/标准预制防线）；
+  4x4 核心区是商店技能，`ShopSkillPrecheck` 仍按各技能自己的 `pvpDisabled` 处理。
+
+调用方不用改：`skillsCommon` / `skillsLevel2` / `skillsLevel3` / `skillsGodAdmin` / `skillShop` 都是
+`skillsCore.spawnOverlapError(...)` 的转发包装（`skillShop` 那条曾因写成 `with(skillsCore) { ... }` 自递归，已在第十一批修掉），
+所以只改这一处实现即可全技能生效。
+
+验证：`sa load wayzer/user/ext/skills` → `sa listFailed` 为空，`wayzer/user/ext/skills*` 与 `skillShop` 全部 `[Enabled]`
+（本次只改函数体、签名不变，因此依赖方无需重编译，可以安全热重载）。
+待用户实测：站在出生点标记上或用技能范围覆盖到它时被拒绝并看到坐标提示。
+
+### 覆盖范围补齐（同日第二轮：用户追问"其他会放方块的技能会不会也覆盖"）
+
+排查口径：全库扫所有写地块的调用（`setNet` / `setFloorNet` / `setOverlayNet` / `.setBlock` / `.setFloor` / `.setOverlay` /
+`Call.setTile…` / `setCoreZone` / `setBlockSquare` / `setFloorSquare` / `setOreSquare` / `placeBlockAtPlayer` / `placePrefabStage`），
+逐个确认"谁能触发 + 写什么 + 有没有闸门"。
+
+已挂出生点闸门的（13 处，全部"先校验后扣费"）：
+
+| 技能/命令 | 写什么 | 范围 | 闸门位置 |
+|---|---|---|---|
+| 3x3 核心区（2级） | 地板 coreZone（会清覆盖层） | -1..1 | `skillsLevel2.kts:441` |
+| 4x4 核心区（商店） | 同上 | -1..2 | `skillShop.kts:1178` |
+| 初级预制防线（通用） | 方块：电弧+太阳能+铜墙 | -1..2 | `skillsCommon.kts:175/177` |
+| 标准预制防线（3级） | 方块：蓝瑟+太阳能+塑钢墙 | -2..3 | `skillsLevel3.kts:519/521` |
+| 物品源（管理员） | 方块 itemSource 3x3 | -1..1 | `skillsGodAdmin.kts:511` |
+| E星核心（管理员） | 方块 coreBastion 3x3 | -1..1 | `skillsGodAdmin.kts:522` |
+| 随机液体（商店） | 地板 2x2（会清覆盖层） | 0..1 | `skillShop.kts`（本轮补） |
+| 随机矿（商店） | 覆盖层矿脉 2x2 | 0..1 | `skillShop.kts`（本轮补） |
+| 欧皇物品源（2级） | 脚下 1 格方块 | 0..0 | `skillsLevel2.kts`（本轮补） |
+| 读品（2级） | 脚下 1 格处理器 | 0..0 | `skillsLevel2.kts`（本轮补） |
+| 召唤装卸器（通用） | 脚下 1 格方块 | 0..0 | `skillsCommon.kts`（本轮补） |
+| 照明器（通用） | 脚下 1 格方块 | 0..0 | `skillsCommon.kts`（本轮补） |
+| 电力源（管理员） | 脚下 1 格方块 | 0..0 | `skillsGodAdmin.kts`（本轮补） |
+
+另外补了**像素画命令** `wayzer/cmds/pixelPicture.kts`：`/pixel` 会在玩家周围铺 `size×size`（默认 32×32）的 sorter，
+原先只跳过"非空格子"、不看出生点标记 —— 现在整格跳过并计数，结束时提示"已跳过 N 格出生点标记"。
+
+核对过的两处细节：
+
+- 预制防线的**实际占地**与闸门范围完全一致（初级 builder 的 dx/dy ∈ -1..2；标准的墙在 -2..3、
+  蓝瑟是 2x2 且以脚下格为左下角）→ 不存在"闸门管不到的格子"；
+- `setBlockSquare` 只被物品源/E星核心调用、`placePrefabStage` 只被两个预制防线 builder 调用、
+  `placeBlockAtPlayer` 只被装卸器/照明器/电力源调用 → 这些 helper 的调用点全部在闸门后面。
+
+判定为"不需要挂闸门"的写地块路径（记录口径，免得以后重复怀疑）：
+
+- **只拆不建**：粉碎墙壁 / 墙壁粉碎者 / wallkillerpro（`setNet(Blocks.air)`）、内容补丁与热重载工具
+  （`contentsTweaker`、`worldProcessorAdmin`、`externalCpHotReload`、`skillsHybrid`）→ 拆方块不会清覆盖层，出生点标记不受影响；
+- **管理员指令**：`/setBlock`、`/setFloor`、`/fill`（`wayzer.admin.setBlock` / `wayzer.admin.fill`）→ 能改地板也能抹标记，
+  但那是管理员主动编辑世界，挂闸门反而挡住运维，故保持不挂（风险由权限承担）；
+- **地图脚本玩法**：`mapScript/tags/flood`、`14668`、`15450`、`hybrid` 在玩法里铺/拆方块 → 属地图自身设计，不归技能闸门管；
+- **玩家自己投放**：`randommaga` 召唤的 mega 载荷由玩家用原版投放机制丢下 → 不是脚本写的方块，服务端无法拦（原版行为）。
+
+> 排查备注：这块期间本地开发服处于停止状态（用户侧操作），我改了 4 个脚本 + 像素画后先把开发服冷启动起来验证
+> （`158/154/149/出错0`）再热重载，避免把"没编译过的改动"留给用户往生产搬。
+
+## 2026-09-27（第十二批）：投票三项改动——游客闸门、投票禁言、quitOb 自救豁免
+
+类型：功能新增/调整（用户 2026-09-27 五项清单的第 2、3、4、5② 项；第 1 项 4x4 核心区见上一批，第 5① 项见提交 `ca2ef1a`）。
+
+### 1. 作用于他人的投票禁止游客发起（第 2、4 项）
+
+用户口径："带限制其他玩家性质的投票（如 /vote ob）都禁止游客发起"。
+
+- "登录"判定沿用 `PlayerData[player].authed`（与游客投票冷却同一个字段）。
+- **框架层**：`VoteEvent` 新增 `guestForbidden: Boolean = false`，在 `mainJob` 里紧挨"禁止发起投票"拦截；
+  拒绝文案统一走 `VoteEvent.guestVoteBlockReason(player)`（"游客不能发起会限制其他玩家的投票，请先用 /login 登录账号"）。
+- **命令层**：各投票 body 第一行再拦一次，避免游客先被问目标/理由再被拒（kick/ob 的目标是弹菜单选人，体验差别明显）。
+- 已挂闸门：`/vote kick`（踢出）、`/vote ob`（强制观战）、`/vote mute`（本批新增）、`/vote guestOb`（今日未登录玩家强制观战）。
+- **刻意没挂**（都是"世界/服务器级"而非"针对某个玩家"）：投降、跳波、暂停/恢复/调整波次、清理建筑记录、自定义文字、SuperChat、
+  换图/存档/回档、封禁地图、关闭今日PVP、性能优化开关、暂停游戏与压力出波暂停、`/vote guestObOff`（是放开限制不是施加）、`/vote quitOb`（只作用于自己）。
+  以后新增"针对某个玩家"的投票，记得同时挂 `guestForbidden = true` 并在 body 里早退。
+
+### 2. 新增"投票禁言"（第 3 项）
+
+- 新脚本 `wayzer/cmds/voteMute.kts`：`/vote mute <玩家名/id> [时长] [理由]`，别名 `禁言投票` / `votemute` / `投票禁言`，权限 `wayzer.vote.mute`。
+- 时长（用户要求"需要输入时间，最多 3 天"）：
+  - 支持 `30`（按分钟）、`30m`、`2h`、`1d`、`1d12h`、`1d12h30m`；纯数字按分钟（与 `/vote pauseWave` 的"纯数字=秒"同风格）；
+  - 上限 **3 天 = 4320 分钟**（`MAX_MUTE_MINUTES`，超出裁剪到上限），下限 1 分钟；
+  - 命令里没给、或给的不是合法时长时，弹文本输入框让玩家填（复用 voteKick 的 `textInput`），取消输入即中止投票。
+- 目标/理由复用 `voteKick.kts` 的 `getTarget()`（弹菜单选人）与 `getInput()`（文本框收理由），保持全服一致交互。
+- 通过后调用 `playerMute.kts` 的 `mutePlayerTemporary(target, minutes, reason, null)`：
+  - **operator 显式传 null**：投票不是"某个协管在动手"，传 null 可绕开 `canManagePlayerMute` 的协管目标等级边界
+    （与 `/vote kick` 只检查 skipKick 的口径一致），发起者名字写进理由："投票禁言（发起者 xxx）：原因"；
+  - 目标是管理员（`wayzer.admin.skipKick`）时投票通过也不生效并广播（与 kick/ob 相同）。
+- 附带校验：不能禁言自己；目标已被禁言直接拒绝；禁言失败（目标离线等）时广播"禁言未能生效"。
+
+### 3. `quitOb` 自救豁免（第 5② 项）
+
+被"禁止发起投票"的玩家仍要能 `/vote quitOb` 解除自己的观战限制。这里有个**两处闸门**的坑：
+
+- `wayzer/vote.kts` 的 `/vote` 命令 attr 里有一次 `startBlockReason` 检查（负责早退提示）；
+- `VoteEvent.mainJob` 里还有一次（权威检查）。
+
+所以两处都要放行：
+
+- 框架层：`VoteEvent` 新增 `ignoreStartBan: Boolean = false`，`quitOb` 的事件传 `true`；
+- 命令层：新增豁免名单 `VoteEvent.registerStartBanExemptVote(...)` / `isStartBanExemptVote(...)`，
+  `voteOb.kts` 的 onEnable 注册 `"quitOb"` / `"解除观战"`，`/vote` 的 attr 按子命令名跳过检查。
+
+### 验证与注意事项
+
+- 服务端冷启动：`共找到158脚本,加载成功154,启用成功149,出错0` —— **新基线 158/154/149**（比 157/153/148 多 1，因为新增了 `voteMute.kts`）。
+- `sa listFailed` 为空；`wayzer/cmds/voteMute`、`wayzer/cmds/voteOb`、`wayzer/cmds/voteKick`、`wayzer/user/accountGuestControl` 等全部 `[Enabled]`；
+  `启用成功149` 包含新脚本，说明 `onEnable` 里的命令注册确实执行成功。
+- **改了 `VoteEvent` 构造签名 → 依赖它的脚本必须一起重编译**：这轮只做冷启动，不做单脚本热重载
+  （单独重载 `wayzer/vote` 会留下按旧签名编译的调用点，运行时 `NoSuchMethodError`）。
+- 待用户实测：游客发起 `/vote kick|ob|mute` 被拒；`/vote mute` 的时长解析与 3 天上限；被禁发起投票者仍可 `/vote quitOb`。
+
+## 2026-09-27（第十一批）：4x4 核心区"无任何反应 / 只扣 MDC"根因（`with()` 同名自递归 → StackOverflowError）
+
+类型：Bug 定位与修复。
+
+用户先后反馈两种症状：①"不出核心区、只扣MDC、连广播都不广播了"；②"使用技能直接无任何反应，无消息，无效果"。
+最终由用户从服务端控制台窗口拿到的堆栈定案：
+
+```
+Exception in thread "HeadlessApplication" java.lang.StackOverflowError
+        at wayzer.user.ext.SkillShop.spawnOverlapError(skillShop.kts:366)
+        at wayzer.user.ext.SkillShop.spawnOverlapError(skillShop.kts:366)
+        ...
+```
+
+### 根因：转发包装函数写成了 `with(模块) { 同名函数(...) }`，Kotlin 解析回自己 → 无限递归
+
+`wayzer/user/skillShop.kts` 里原本是：
+
+```kotlin
+private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
+    with(skillsCore) { spawnOverlapError(player, range, displayName) }   // ← 调到自己，无限递归
+```
+
+`with(x) { f() }` 的隐式接收者优先级**低于当前文件作用域**，而本文件正好声明了同名 `spawnOverlapError`，
+于是 `f()` 解析到自身。同目录 `skillsLevel2.kts` / `skillsLevel3.kts` / `skillsCommon.kts` / `skillsGodAdmin.kts`
+写的都是 `skillsCore.spawnOverlapError(...)`（显式接收者），只有 skillShop 这条用了 `with`，因此只有它中招。
+
+行为后果（三层叠加，解释了用户看到的全部现象）：
+
+1. **命令一执行就崩**：`corezone4` 命令体第一步就是出生点校验 → 栈溢出 → 之后的铺地板、聊天反馈、技能广播全部不执行
+   → "无任何反应、无消息"。
+2. **崩的是 Error，不是 Exception**：SA 命令框架只 `catch (e: Exception)`（`coreLibrary/lib/CommandApi.kt:196-204`），
+   `StackOverflowError` 直接穿透 → 以 `Exception in thread "HeadlessApplication"` 终止主线程
+   → **服务端"看起来还活着"（socket 6859 仍可连接、端口仍监听），但世界不 tick、命令全部无响应**，
+   必须重启才能恢复。（判活用 `js 1+1` 之类需要主线程的命令，别只看端口能不能连。）
+3. **什么都不写进日志**：该堆栈走的是 stderr，只出现在服务端**控制台窗口**里，`config/logs/log-0.txt` 里没有
+   —— 这也是本问题来回排查了两轮的原因。以后"脚本点了没反应"要优先让用户看一眼窗口里的堆栈。
+
+另外 4x4 命令体原本顺序是"先扣费（`prepareUseError`）再做校验"，所以崩溃前 6 MDC 已经扣掉 → 用户体感"只扣 MDC"。
+**已一并改为先校验后扣费**（3x3 核心区、初级/标准预制防线本来就是这个顺序，只有 4x4 是反的）。
+
+### 修复
+
+- `wayzer/user/skillShop.kts`：`spawnOverlapError(...)` 改为显式调用 `skillsCore.spawnOverlapError(player, range, displayName)`（与其它技能文件一致），
+  并在原处留注释说明为什么不能写 `with`；全库扫描"转发包装自递归"（`fun f(...) = with(X) { f(...) }`）后确认仅此一处。
+- 顺带把 4x4 做成"自证型"技能（避免下次再靠猜）：
+  - `setFloorSquare(...)` 返回 `FloorSquareReport?`（新铺 / 原本已是 / 越界 / 失败原因），逐格 `runCatching`，单格失败不再连带整条技能；
+  - 释放后向玩家播报：`核心区4x4 释放完成：(x1,y1)-(x2,y2) 新铺 N 格，原本已是核心区 M 格`；
+    若整片原本就是核心区，补一句"画面不会变化；可以直接尝试放置/升级核心"；
+  - 每格新铺 `Call.effect(Fx.placeBlock, …)` 做落点反馈。
+
+### 排查过程中确认的非问题项（免得下次重复怀疑）
+
+- **地板同步链路是好的**（更正本文件旧结论）：早期记录写"`Call.setFloor` 是 `@Remote(called = Loc.server)`，
+  服务端自行调用不广播"——**错误**。`javap -c` 反编译 B495 服务端 jar / B497 客户端 jar：
+  服务端调用 `Call.setFloor` → 本地 `Tile.setFloor(tile, floor, overlay)` + 构造 `SetFloorCallPacket` 并 `net.send(packet, true)`；
+  客户端 `SetFloorCallPacket.handleClient()` → `Tile.setFloor(tile, floor, overlay)`。
+  在线复核（临时脚本）：对"空地 / 带矿脉 / 带核心方块"三种地块各调一次 `setFloorNet(Blocks.coreZone)`，均成功无异常。
+- **测试图本身就铺满了核心区**：沙盒图 `终极测试地图v7-3` 已有 **8923 格**核心区地板；
+  在已铺区域用技能时 `Tile.setFloor` 会直接 return，客户端不会有任何变化（属预期行为）。
+
+### 顺带发现：出生点保护（2026-09-12 加的）实际上永远不会触发（✅ 已按口径①重做，见第十三批）
+
+- `skills.kts:333 spawnOverlapError` 的判定是 `spawns.any { it.team() == rules.waveTeam && 与范围重叠 }`；
+  而 `Tile.team()` 实现为 `build == null ? Team.derelict : build.team`（`Tile.java:209`），
+  出生点是**覆盖层标记**、上面通常没有方块，所以 `tile.team()` 恒为 `derelict`，永不等于 `waveTeam` → 该保护是死代码。
+- 实测当前地图：`spawns=1`，`spawn(462,268) team=derelict overlay=spawn block=air`，`waveTeam=crux`。
+- 机制补充（"盖住出生点敌人就刷不出来"的真实原因）：`setFloorNet(block)` 会把覆盖层一并清成 air，
+  于是 `Blocks.spawn` 标记被抹掉，`WaveSpawner` 的 `overlayChange` 监听把它从刷怪点里移除；
+  而 `WaveSpawner.eachGroundSpawn` 对**所有** `Blocks.spawn` 地块刷怪（不区分队伍）。
+  因此准确口径应是"技能覆盖范围 ∩ 出生点标记 ≠ ∅ 即拒绝"，而不是按 `tile.team()` 过滤。
+  （用户 2026-09-27 选定口径①："技能范围碰到任何出生点标记就拒绝"，不再按队伍过滤、不再折算 `rules.dropZoneRadius`；实现见第十三批。）
+
+### 验证口径（本次事故后统一）
+
+- 脚本热重载标识是 `模块/子路径/脚本名`（`sa load wayzer/user/skillShop`），**不是** `wayzer.user/skillShop`；
+  重载后 `sa listFailed` 为空、`sa list wayzer` 显示 `[Enabled]`。
+- 发生过命令级 Error 之后，**必须重启服务端**（主线程已死，热重载也不会生效）。
+- 临时诊断脚本放 `config/scripts/` 下用 `sa scan` + `sa load <名字>`，用完删文件并 `sa unload <名字>`（`sa scan` 不会自动清理已删文件）。
+
 ## 2026-09-19（第九批）：帖子系统缩放（落库+缓存）、菜单"返回上一页"与翻页记忆
 
 类型：功能新增（用户需求：①帖子系统加入可自由调节的缩放，仅1级及以上可用，个性化配置落盘数据库、

@@ -31,6 +31,20 @@ class VoteEvent(
     val requireNum: (all: Int) -> Int = { ceil(it * 0.5).toInt() },
     val fastSuccess: Boolean = true,
     val bypassDenyVote: (Player) -> Boolean = { false },
+    /**
+     * 该投票的效果落在**其他玩家**身上（踢出 / 强制观战 / 禁言等）。
+     *
+     * 用户口径（2026-09-27）：这类投票禁止游客（未登录）发起 —— 游客是一次性身份，
+     * 不该能对别人的游戏状态施加限制。守卫在 [mainJob] 里执行（此时才真正决定要不要发起）。
+     */
+    val guestForbidden: Boolean = false,
+    /**
+     * 只作用于发起者自己的投票（如 `quitOb` 解除自己的观战限制）。
+     *
+     * 用户口径（2026-09-27）：这类投票不受"禁止发起投票"（[startBanReason]）拦截，
+     * 否则被禁者连自救入口都被堵死。
+     */
+    val ignoreStartBan: Boolean = false,
 ) : Event, Event.Cancellable {
     enum class Action { Agree, Disagree, Ignore, Quit, Join }
 
@@ -61,9 +75,19 @@ class VoteEvent(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val mainJob = scope.launch(Dispatchers.game + CoroutineName("Vote Service"), CoroutineStart.LAZY) main@{
-        startBlockReason(starter)?.let { reason ->
-            starter.sendMessage(reason)
-            return@main
+        // 只作用于自己的投票（quitOb）豁免"禁止发起投票"，让被禁者仍有自救入口。
+        if (!ignoreStartBan) {
+            startBlockReason(starter)?.let { reason ->
+                starter.sendMessage(reason)
+                return@main
+            }
+        }
+        // 作用于他人的投票不允许游客发起（2026-09-27 用户要求）。
+        if (guestForbidden) {
+            guestVoteBlockReason(starter)?.let { reason ->
+                starter.sendMessage(reason)
+                return@main
+            }
         }
         starterUnlimitedVote = starter.hasPermission(unlimitedVotePermission)
         if (!starterUnlimitedVote) {
@@ -342,6 +366,31 @@ class VoteEvent(
             startBlockers.values.firstNotNullOfOrNull { blocker ->
                 runCatching { blocker(player) }.getOrNull()
             }
+
+        // ---------- 游客限制与"禁止发起投票"豁免（2026-09-27 用户要求） ----------
+
+        /**
+         * 游客（未登录）不得发起会限制其他玩家的投票；返回拒绝理由，null 表示允许。
+         *
+         * 口径：登录 = `PlayerData[player].authed`（与 VoteEvent 的游客冷却判定同一个字段）。
+         */
+        fun guestVoteBlockReason(player: Player): String? =
+            if (PlayerData[player].authed) null
+            else "[red]游客不能发起会限制其他玩家的投票，请先用 [gold]/login[] 登录账号。".with().toString()
+
+        /**
+         * "只作用于发起者自己"的投票名（`/vote` 的子命令名或别名，大小写不敏感）。
+         *
+         * 这些投票不受[禁止发起投票][startBanReason]拦截；由对应脚本在 onEnable 时注册
+         * （例：`quitOb` 解除自己的观战限制）。
+         */
+        private val startBanExemptVotes = linkedSetOf<String>()
+
+        fun registerStartBanExemptVote(vararg names: String) {
+            names.filter { it.isNotBlank() }.forEach { startBanExemptVotes += it.lowercase() }
+        }
+
+        fun isStartBanExemptVote(name: String): Boolean = name.lowercase() in startBanExemptVotes
 
         // ---------- 禁止发起投票（3++/4级可对他人施加） ----------
         // 说明：这里的"禁止"只拦截**发起投票**，不影响目标参与别人发起的投票。

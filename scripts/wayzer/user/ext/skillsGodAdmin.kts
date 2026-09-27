@@ -629,6 +629,8 @@ command("powersource", "管理员技能：现在的发电量是1m！电力，轻
     attr(ClientOnly)
     skillBody {
         if (!skillAdmin(player)) returnReply("[red]需要资历 4 级/信任4级/已登录admin 才能使用管理员技能".with())
+        // 出生点保护（2026-09-27 口径①）：方块放在脚下，压到 Blocks.spawn 标记会占住刷怪点。
+        spawnOverlapError(player, 0..0, "电力源")?.let { returnReply(it.with()) }
         if (!placeBlockAtPlayer(player, Blocks.powerSource, requireAir = true)) {
             returnReply("[red]脚下已有方块，无法放置 power-source".with())
         }

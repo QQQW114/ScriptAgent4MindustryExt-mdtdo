@@ -810,8 +810,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
             if (canManageVoteStartBan) {
                 newRow()
                 if (targetVoteStartBanned) {
-                    val banReason = VoteEvent.startBanReason(targetUid).orEmpty()
-                    option(if (banReason.isBlank()) "解除禁止发起投票" else "解除禁止发起投票（$banReason）") {
+                    option("解除禁止发起投票") {
                         val done = VoteEvent.unbanVoteStarter(targetUid)
                         if (done) {
                             viewer.sendMessage("[green]已解除 [white]${target.plainName()}[green] 的禁止发起投票")

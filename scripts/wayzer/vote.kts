@@ -62,7 +62,11 @@ command("vote", "发起投票") {
     attr {
         if (VoteEvent.active.get() != null)
             returnReply("[red]投票进行中".with())
-        player?.let { VoteEvent.startBlockReason(it)?.let { reason -> returnReply(reason.with()) } }
+        // 只作用于自己的投票（如 quitOb 解除自己的观战限制）不受"禁止发起投票"拦截：
+        // 否则被禁止发起投票的玩家连自救入口都没有（2026-09-27 用户要求）。
+        val subCommand = arg.firstOrNull()
+        if (subCommand == null || !VoteEvent.isStartBanExemptVote(subCommand))
+            player?.let { VoteEvent.startBlockReason(it)?.let { reason -> returnReply(reason.with()) } }
     }
     body(VoteEvent.VoteCommands)
 }

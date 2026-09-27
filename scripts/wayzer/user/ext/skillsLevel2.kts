@@ -410,6 +410,8 @@ command("sourcelottery", "2级技能：欧皇物品源".with(), commands = Skill
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
     skillBody {
         levelError(player, "2")?.let { returnReply("[red]$it".with()) }
+        // 出生点保护（2026-09-27 口径①）：方块就放在脚下，压到 Blocks.spawn 标记会占住刷怪点。
+        spawnOverlapError(player, 0..0, "欧皇物品源")?.let { returnReply(it.with()) }
         val tile = player.unit()?.tileOn() ?: returnReply("[red]无法获取脚下位置".with())
         if (tile.block() != Blocks.air) returnReply("[red]脚下已有方块，不能抽取物品源".with())
         if (!spendSkillCost(player, 2, "sourcelottery")) returnReply("[red]MDC不足：欧皇物品源需要 2 MDC".with())
@@ -424,6 +426,8 @@ command("coreshard", "2级技能：小伙子,来点读品？".with(), commands =
     attr(SkillPrecheck); attr(SkillNoPvp); attr(SkillCooldown(120_000))
     skillBody {
         levelError(player, "2")?.let { returnReply("[red]$it".with()) }
+        // 出生点保护（2026-09-27 口径①）：方块就放在脚下，压到 Blocks.spawn 标记会占住刷怪点。
+        spawnOverlapError(player, 0..0, "读品")?.let { returnReply(it.with()) }
         val tile = player.unit()?.tileOn() ?: returnReply("[red]无法获取脚下位置".with())
         if (tile.block() != Blocks.air) returnReply("[red]脚下已有方块".with())
         if (!spendSkillCost(player, 2, "coreshard")) returnReply("[red]MDC不足：读品需要 2 MDC".with())

@@ -53,7 +53,9 @@ suspend fun startKickVote(starter: Player, target: Player, reason: String): Bool
     val event = VoteEvent(
         thisScript, starter,
         voteDesc = "踢人(踢出[red]{target}[yellow])".with("target" to target),
-        extDesc = "[red]理由: [yellow]${reason}"
+        extDesc = "[red]理由: [yellow]${reason}",
+        // 作用于他人：禁止游客发起（2026-09-27 用户要求）
+        guestForbidden = true,
     )
     val snapshot = PlayerData[target]
     if (!event.awaitResult()) return false
@@ -70,6 +72,8 @@ command("kick", "[red]踢出玩家[gray]（需50%同意）".with(), commands = V
     usage = "<玩家名/id> <理由>"
     requirePermission("wayzer.vote.kick")
     body {
+        // 作用于他人的投票禁止游客发起：先拦一次，免得游客先选人/填理由再被拒（2026-09-27 用户要求）。
+        VoteEvent.guestVoteBlockReason(player!!)?.let { returnReply(it.with()) }
         val target = getTarget()
         val reason = getInput("踢人理由", "[red]投票踢人需要理由".with())
         val player = player!!

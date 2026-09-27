@@ -129,7 +129,9 @@ suspend fun startObVote(starter: Player, target: Player, reason: String): Boolea
     val event = VoteEvent(
         thisScript, starter,
         voteDesc = "强制观战(目标[red]{target.name}[yellow])".with("target" to target),
-        extDesc = "[red]理由: [yellow]${reason}"
+        extDesc = "[red]理由: [yellow]${reason}",
+        // 作用于他人：禁止游客发起（2026-09-27 用户要求）
+        guestForbidden = true,
     )
     if (!event.awaitResult()) return false
     if (target.hasPermission("wayzer.admin.skipKick")) {
@@ -148,6 +150,8 @@ suspend fun startObVote(starter: Player, target: Player, reason: String): Boolea
 
 onEnable {
     val script = this
+    // 只作用于自己：quitOb（解除自己的观战限制）不受"禁止发起投票"拦截，给被禁者留自救入口（2026-09-27 用户要求）。
+    VoteEvent.registerStartBanExemptVote("quitOb", "解除观战")
     VoteEvent.registerDenyVotePredicate("wayzer.cmds.voteOb.forceOb") { isForceOb(it) }
     onDisable { VoteEvent.unregisterDenyVotePredicate("wayzer.cmds.voteOb.forceOb") }
     VoteEvent.VoteCommands += CommandInfo(script, "ob", "[cyan]强制玩家观战[gray]（需50%同意）") {
@@ -155,6 +159,8 @@ onEnable {
         usage = "<玩家名/id> <理由>"
         permission = "wayzer.vote.ob"
         body {
+            // 作用于他人的投票禁止游客发起：先拦一次，免得游客先选人/填理由再被拒（2026-09-27 用户要求）。
+            VoteEvent.guestVoteBlockReason(player!!)?.let { returnReply(it.with()) }
             val target = with(voteKick) { getTarget() }
             val reason = with(voteKick) { getInput("限制观战理由", "[red]投票限制他人需要理由".with()) }
             val player = player!!
@@ -172,7 +178,9 @@ onEnable {
                 script, player,
                 voteDesc = "解除强制(已持续{delta 分钟})".with("delta" to delta),
                 extDesc = "[yellow]被限制时的理由: $reason",
-                bypassDenyVote = { it == player }
+                bypassDenyVote = { it == player },
+                // 自救入口：即使被管理员禁止发起投票也允许发起（2026-09-27 用户要求）
+                ignoreStartBan = true,
             )
             if (event.awaitResult()) {
                 releaseForceObPlayer(player)

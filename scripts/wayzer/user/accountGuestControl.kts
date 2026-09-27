@@ -108,6 +108,8 @@ private suspend fun startGuestForceObVote(starter: Player): Boolean {
         voteDesc = "今日未登录玩家强制观战".with(),
         extDesc = "[yellow]通过后，今天内未登录账号的玩家会被强制分配为观察者；登录或注册后可正常游玩。",
         canVote = { PlayerData[it].authed },
+        // 作用于他人（所有未登录玩家）：禁止游客发起（2026-09-27 用户要求）
+        guestForbidden = true,
     )
     if (!event.awaitResult()) return false
     enableGuestForceObToday()
@@ -142,6 +144,8 @@ onEnable {
         aliases = listOf("游客观战", "未登录观战")
         permission = "wayzer.vote.guestOb"
         body {
+            // 该投票会限制其他玩家（所有未登录玩家）的游玩状态：禁止游客发起（2026-09-27 用户要求）。
+            VoteEvent.guestVoteBlockReason(player!!)?.let { returnReply(it.with()) }
             val starter = player!!
             startGuestForceObVote(starter)
         }

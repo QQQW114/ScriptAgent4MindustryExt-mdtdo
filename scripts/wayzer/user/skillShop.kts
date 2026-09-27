@@ -20,6 +20,7 @@ import coreMindustry.PagedMenuBuilder
 import coreMindustry.lib.ClientOnly
 import mindustry.Vars
 import mindustry.content.Blocks
+import mindustry.content.Fx
 import mindustry.content.Planets
 import mindustry.content.StatusEffects
 import mindustry.content.UnitTypes
@@ -298,20 +299,75 @@ private fun spawnAround(type: UnitType, player: Player, count: Int, radius: Floa
     }
 }
 
-private fun setFloorSquare(player: Player, block: Block, xRange: IntRange, yRange: IntRange = xRange) {
-    val unit = player.unit() ?: return
-    for (x in xRange) for (y in yRange) {
-        Vars.world.tile(unit.tileX() + x, unit.tileY() + y)?.setFloorNet(block)
+/**
+ * 铺一片地板的结果，用于向玩家自证「新铺了几格 / 原本就是 / 越界几格 / 失败原因」。
+ *
+ * 背景（2026-09-27 用户反馈「用了核心区4x4 却看不到核心区」）：
+ * 范围内如果本来就已经是目标地板，`Tile.setFloor` 会直接 return，客户端不会显示任何变化；
+ * 这跟「一格都没铺上」是两回事，必须在聊天里区分开，否则只能靠猜。
+ */
+private class FloorSquareReport(
+    val x1: Int,
+    val y1: Int,
+    val x2: Int,
+    val y2: Int,
+    val placed: Int,
+    val already: Int,
+    val outOfWorld: Int,
+    val failure: String?,
+) {
+    fun text(displayName: String): String {
+        val sb = StringBuilder("($x1,$y1)-($x2,$y2) 新铺 $placed 格")
+        if (already > 0) sb.append("，原本已是$displayName $already 格")
+        if (outOfWorld > 0) sb.append("，越界 $outOfWorld 格")
+        failure?.let { sb.append("，[red]失败：$it") }
+        return sb.toString()
     }
+}
+
+private fun setFloorSquare(player: Player, block: Block, xRange: IntRange, yRange: IntRange = xRange): FloorSquareReport? {
+    val unit = player.unit() ?: return null
+    val x1 = unit.tileX() + xRange.first
+    val y1 = unit.tileY() + yRange.first
+    val x2 = unit.tileX() + xRange.last
+    val y2 = unit.tileY() + yRange.last
+    var placed = 0
+    var already = 0
+    var outOfWorld = 0
+    var failure: String? = null
+    for (x in xRange) for (y in yRange) {
+        val tile = Vars.world.tile(unit.tileX() + x, unit.tileY() + y)
+        if (tile == null) {
+            outOfWorld++
+            continue
+        }
+        if (tile.floor() === block) {
+            already++
+            continue
+        }
+        // 单格失败不再连带整条技能：先记下原因，继续铺剩下的格子。
+        val error = runCatching { tile.setFloorNet(block) }.exceptionOrNull()
+        if (error != null) {
+            if (failure == null) failure = error.toString()
+            continue
+        }
+        placed++
+        Call.effect(Fx.placeBlock, tile.worldx(), tile.worldy(), block.size.toFloat(), block.mapColor)
+    }
+    return FloorSquareReport(x1, y1, x2, y2, placed, already, outOfWorld, failure)
 }
 
 /**
  * 出生点保护：放置类商店技能（核心区4x4 等）会往地上铺地板/方块，
  * 盖在敌方出生点上会占位导致敌人刷不出来（2026-09-12 用户反馈）。
  * 复用核心技能库的判定，保持与技能系统同一口径。
+ *
+ * ⚠️ 这里必须写成 `skillsCore.spawnOverlapError(...)`：写成 `with(skillsCore) { spawnOverlapError(...) }`
+ * 时 Kotlin 会优先解析到本文件自己的同名函数（隐式接收者优先级低于当前作用域），
+ * 于是无限递归 → `StackOverflowError`（2026-09-27 用户实测：4x4 技能"无任何反应"的根因）。
  */
 private fun spawnOverlapError(player: Player, range: IntRange, displayName: String): String? =
-    with(skillsCore) { spawnOverlapError(player, range, displayName) }
+    skillsCore.spawnOverlapError(player, range, displayName)
 
 private fun setOreSquare(player: Player, block: Block, xRange: IntRange, yRange: IntRange = xRange) {
     val unit = player.unit() ?: return
@@ -1074,6 +1130,9 @@ command("fluid", "商店技能：随机液体".with(), commands = SkillCommands)
     val def = skillByCode.getValue("fluid")
     attr(ShopSkillPrecheck(def)); attr(SkillCooldown(def.cooldownMillis ?: -1))
     skillBody {
+        // 出生点保护（2026-09-27 口径①）：2x2 铺地板会把 Blocks.spawn 覆盖层一并清成 air，
+        // 也就是直接抹掉刷怪点 —— 和核心区是同一个机制，同样先校验后扣费。
+        spawnOverlapError(player, 0..1, "随机液体")?.let { returnReply(it.with()) }
         prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
         setFloorSquare(player, randomLiquidFloor(), 0..1)
         broadcastSkill("随机液体")
@@ -1085,6 +1144,9 @@ command("randomore", "商店技能：随机矿".with(), commands = SkillCommands
     val def = skillByCode.getValue("randomore")
     attr(ShopSkillPrecheck(def)); attr(SkillCooldown(def.cooldownMillis ?: -1))
     skillBody {
+        // 出生点保护（2026-09-27 口径①）：2x2 覆盖层改写会把 Blocks.spawn 标记替换成矿脉，
+        // 刷怪点随即被 WaveSpawner 移除 —— 同样先校验后扣费。
+        spawnOverlapError(player, 0..1, "随机矿")?.let { returnReply(it.with()) }
         prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
         setOreSquare(player, randomOre(), 0..1)
         broadcastSkill("随机矿")
@@ -1117,9 +1179,16 @@ command("corezone4", "商店技能：核心区4x4".with(), commands = SkillComma
     val def = skillByCode.getValue("corezone4")
     attr(ShopSkillPrecheck(def)); attr(SkillCooldown(def.cooldownMillis ?: -1))
     skillBody {
-        prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
+        // 先校验、后扣费（2026-09-27 用户反馈「只扣 MDC」）：范围不合法被拒绝时，不能已经把 MDC 扣掉。
+        if (player.unit() == null) returnReply("[red]无法获取当前单位".with())
         spawnOverlapError(player, -1..2, "核心区4x4")?.let { returnReply(it.with()) }
-        setFloorSquare(player, Blocks.coreZone, -1..2)
+        prepareUseError(player, def)?.let { returnReply("[red]无法使用技能：$it".with()) }
+        val report = setFloorSquare(player, Blocks.coreZone, -1..2)
+            ?: returnReply("[red]无法获取当前单位".with())
+        player.sendMessage("[green]核心区4x4 释放完成：[white]${report.text("核心区")}")
+        if (report.placed == 0 && report.already > 0) {
+            player.sendMessage("[gray]该范围原本就已经是核心区地板，画面不会变化；可以直接尝试放置/升级核心。")
+        }
         broadcastSkill("核心区4x4")
     }
 }
