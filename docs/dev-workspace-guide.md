@@ -19,6 +19,12 @@
   **推送默认包含 scripts 与 Agent 开发文档（docs）**；
 - 推送仓库 `ScriptAgent4MindustryExt-mdtdo`：origin 为 `github.com/QQQW114/ScriptAgent4MindustryExt-mdtdo`，
   upstream 为 `way-zer/ScriptAgent4MindustryExt`。
+- **直连超时/被重置时挂本地代理**：本机混合代理端口是 `127.0.0.1:7897`，一次性推送（不写进仓库 config）：
+  `git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`；
+  典型报错是 `curl 28 Recv failure: Connection was reset` / `send-pack: unexpected disconnect while reading sideband packet`。
+- 同步口径（2026-09-27 复核）：插件仓库跟踪 `docs/**` 与 `scripts/**`（排除 `scripts/data`、`scripts/external-cp`、`scripts/cache`；
+  其中 `scripts/data/config.conf` 是被跟踪的脚本配置，同步时**跳过 `data` 整个目录**、保留仓库里那份）；
+  仓库里有而本地没有的文件不要删（用只增改不删的方式同步）。
 
 ## 新会话 / Agent 入口
 

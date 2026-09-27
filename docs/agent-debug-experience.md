@@ -188,3 +188,10 @@
   `stats-web/`、`README.md` 属 mdtdo 本地资产，不进插件仓库。
 - 插件仓库 `core.autocrlf=true`：直接 `Copy-Item` 即可，不必处理换行。
 - 推送后抽查文件 MD5 一致（本地 vs 插件仓库），并确认两仓工作树干净。
+- **推 GitHub 超时就挂本地代理（2026-09-27 实测有效）**：本机 Clash/V2Ray 的混合端口是 **`127.0.0.1:7897`**，
+  直连失败时报 `error: RPC failed; curl 28 Recv failure: Connection was reset` / `send-pack: unexpected disconnect`，
+  此时用一次性代理推送即可（**不要**写进仓库 config，代理关掉后会反过来挡住直连）：
+  ```powershell
+  git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
+  ```
+  先确认端口在听（`TcpClient` 连 `127.0.0.1:7897`）再推；提交已经在本地成功时，重推只是补上传，不需要重做 commit。
