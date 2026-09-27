@@ -1,10 +1,10 @@
-# 生产同步清单（159 → 160.x 升级 / 日常脚本同步）
+# 生产同步清单（经验清单，不是流程规定）
 
 > 用途：把开发工作区（`mdtdo\mdtserver`）的改动安全地搬到生产服。
 > **结论先行：只复制 `config\scripts` + JAR 是不够的，而且直接镜像 `config\scripts` 会覆盖生产数据库。**
 > 适用边界：Agent 不能访问/停启/替换生产，本清单只作为用户或运维的执行依据（见 `project-memory.md`「生产与证据边界」）。
 
-## 1. 必须同步（缺一不可）
+## 1. 同步范围（这几项缺一不可）
 
 | 项 | 来源 | 说明 |
 |---|---|---|
@@ -49,7 +49,7 @@
 - `config\scripts\**`（排除 `data`、`external-cp`、`cache`）
 - `server-*.jar` + `server.properties` 的 `jar=` 一键
 
-**只要改动落在下面任一项，就必须在提交信息里显式声明"生产同步范围 +"，并更新本节的"最后一次变动"表**：
+**经验（2026-09-19）：改动落在下面任一项时，在提交信息里写一句"生产同步范围 +"最省事**——config\mods\** 与 libs\** 都在 .gitignore 里，**git 看不到它们的变化**，事后想判断"某次改动要不要跟着换文件"只能靠这句话（配哈希核对）。
 
 - `mdtserver\start-server.ps1` / `start-server.sh` / `启动服务器.bat`（启动器）
 - `config\mods\**`（ScriptAgent 插件包）
@@ -85,7 +85,7 @@
 | `web-config.ps1` | ⚠️ **不要覆盖** | **机器相关配置**：`$WebBind` / `$WebPort` / `$WebStatsJson`。公网那台通常是 `0.0.0.0`、端口可能不同、JSON 可能是绝对路径——按目标机器实际值合并 |
 | `README.md` | 可带 | 说明与口径 |
 
-三条必须注意的连带关系：
+三条容易踩的连带关系（都来自实际踩坑）：
 
 1. **数据契约**：页面读的是 `mdtserver\config\stats\server-status.json`，由服务器脚本
    `wayzer/ext/serverStats.kts` 写出（config key `statsOutputPath`，默认 `stats/server-status.json`，60 秒刷新）。
