@@ -50,13 +50,20 @@
 
 ## 当前候选基线（以实际文件复核为准）
 
-- **当前基线：Mindustry v160.3 / MindustryX 预览版 `prerelease-2026.09.13.B495`**（提交 `92471dd`，
-  其 `work` 子模块即 Mindustry `v160.3` 提交 `254fd3e`）；上一基线为正式发行版 X37 / v160.1；
-- 基线 JAR：`mdtserver/server-2026.09.13.B495.jar`（`version.properties` 内 `build=160.3`），
-  已在 `server.properties` 的 `jar=` 中显式指定；SHA-256 `D2872D30…4C09`；
-- 获取方式：直接从 GitHub 发行版下载（`TinyLake/MindustryX` releases 的 `server-*.jar`），不再自建/打补丁；
-- 回滚：`server-2026.09.X37.jar`（v160.1）、`server-2026.09.11.B491.jar`（同 v160.1）、
-  `server-2026.08.12.B485.jar`（v159.7）都保留在 `mdtserver/`，回滚只改 `server.properties` 的 `jar=`；
+- **当前基线：Mindustry v160.7 / MindustryX 预览版 `prerelease-2026.10.10.B509`**（上游 `origin/main` = `703f65aa`，
+  其 `work` 子模块即 Mindustry v160.7 提交 `17012d61`）；上一基线为 v160.3 / B495，再上为正式发行版 X37 / v160.1；
+- 基线 JAR：`mdtserver/server-2026.10.10.B509.jar`（`version.properties` 内 `build=160.7`），
+  已在 `server.properties` 的 `jar=` 中显式指定；SHA-256 `FC1B01AB9F90B3F761AFB0045547FE2C0347B645BB050C648CB230698676AC74`；
+  切换后冷启动 `158/154/149/出错0`、`sa listFailed` 为空；
+- 获取方式：直接从 GitHub 发行版下载（`TinyLake/MindustryX` releases 的 `server-*.jar`，含 `prerelease-*` 预览版），
+  不再自建/打补丁；网络走本地代理（`Invoke-WebRequest -Proxy http://127.0.0.1:7897`）；
+- 回滚：`server-2026.09.13.B495.jar`（v160.3）、`server-2026.09.X37.jar`（v160.1）、`server-2026.09.11.B491.jar`（同 v160.1）、
+  `server-2026.08.12.B485.jar`（v159.7）都保留在 `mdtserver/`，回滚只改 `server.properties` 的 `jar=`（该文件不入库、按机器各自维护）；
+- **上游 DP 侧核对（2026-10-16，v160.3→v160.7）**：`mod/`+`io/` 仅 9 个提交，涉及 `DataImagePacker`(+5)、`DataManager`(+30/-14)、
+  `DataPatcher`(±4)、`ModClassLoader/ModListing/Mods`；**`DataManager.reloadPatches(Seq<PatchAsset>)`、
+  `DataPatcher.apply(Seq<PatchAsset>, Seq<ContentAsset>)`、`PatchAsset(String)`、`DataAsset.updateData(byte[])` 签名全在（javap 复核）**，
+  DP 字段未动 → 属"小版本兼容"；`DataAssetType` 只有 6 类（`patch/content/bundle/image/sound/music`），与脚本里写死的目录清单一致；
+  MindustryX 另有 `0075-FIX.G-DataPatcher-refresh-icons-of-all-content-after.patch`（DP 打补丁后刷新内容图标，与"贴图为空"症状相关）；
 - **脚本硬依赖 MindustryX 端**（`trafficMonitor.kts` 直接 `import mindustryX.events.SendPacketEvent`），
   **不能用官方 Mindustry 的 jar 顶替**；
 - **版本跟进总体原则**：常态化跟进上游最新版本，具体跟到哪个版本由用户拍板；ScriptAgent 插件以本项目自行维护为主，

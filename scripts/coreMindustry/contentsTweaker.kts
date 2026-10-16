@@ -859,24 +859,117 @@ private fun applyNativeDataPatches(patches: List<String>): Boolean {
     return true
 }
 
+/**
+ * 逐个校验补丁文本是否是该版本 patcher 能吃下的 JSON/HJSON。
+ *
+ * 背景（2026-10 生产日志）：坏补丁（例如地图内嵌的 `AP.json`、手写 DP 里的语法错误）会一路喂给
+ * patcher，最后只留一句英文 `Error loading content: xxx.json: Name is not closed at 2:0`，
+ * 既看不出是谁的补丁、也不带行号归属，还会在每次换图/回档时重复出现。
+ * 这里在送进 patcher 之前先自己解析一遍，坏的就地剔除并给出可定位的中文日志。
+ */
+private fun validatedPatches(patches: List<String>): List<String> {
+    if (patches.isEmpty()) return patches
+    val ok = ArrayList<String>(patches.size)
+    var skipped = 0
+    patches.forEachIndexed { index, text ->
+        val error = runCatching { Jval.read(text) }.exceptionOrNull()
+        if (error == null) {
+            ok.add(text)
+            return@forEachIndexed
+        }
+        skipped++
+        val head = text.trim().lineSequence().firstOrNull()?.take(90) ?: ""
+        logger.warning("CP补丁 #${index + 1} 不是合法 JSON/HJSON，已跳过（${error.message}）；内容片段：$head")
+    }
+    if (skipped > 0) logger.warning("本次共跳过 $skipped 个坏补丁（原始共 ${patches.size} 个）")
+    return ok
+}
+
+/** 上一次 CP/DP 补丁应用的引擎路径：`native` 或 `旧版 patcher（原因）`。外部CP加载会把它写进该包的加载警告。 */
+var patchEngineInfo: String = "native"
+
 fun applyPatchStrings(patches: Iterable<String>) {
-    val list = patches.toList()
+    val list = validatedPatches(patches.toList())
+    patchEngineInfo = "native"
     prepareForDataAssetReload("属性Patch重载 patches=${list.size}")
     restoreDefaultContentStateBaseline("patches=${list.size}")
     val applied = runCatching { applyNativeDataPatches(list) }.getOrElse {
         logger.warning("DataAsset CP应用失败，尝试旧版 patcher: ${it.message}")
+        patchEngineInfo = "旧版 patcher（DataAsset 路径不可用：${it.message}）"
         false
     } || runCatching { applyLegacyPatches(list) }.getOrElse {
         logger.warning("旧版 ContentPatcher CP应用失败: ${it.message}")
+        patchEngineInfo = "旧版 patcher（应用失败：${it.message}）"
         false
     }
     if (!applied) error("当前 Mindustry 版本未提供可用的 CP/DataAsset patcher")
     refreshDynamicContentRuntimeCaches("属性Patch重载 patches=${list.size}")
 }
 
+/**
+ * 只在"字符串字面量之外"做文本改写：先把每个完整字符串挖成占位符，改写完再还原。
+ * 原来的实现在整段文本上盲替（`+=`→`+`、`#`→`arg`、几条正则），值里带 `#`/`+=`/`中文:值` 的补丁会被写坏。
+ */
+private fun rewriteOutsideStrings(text: String, transform: (String) -> String): String {
+    if (!text.contains('"')) return transform(text)
+    val literals = ArrayList<String>()
+    val masked = StringBuilder(text.length)
+    var index = 0
+    while (index < text.length) {
+        if (text[index] != '"') {
+            masked.append(text[index++])
+            continue
+        }
+        val literal = StringBuilder("\"")
+        index++
+        var closed = false
+        while (index < text.length) {
+            val ch = text[index]
+            literal.append(ch)
+            index++
+            if (ch == '\\' && index < text.length) {
+                literal.append(text[index++])
+                continue
+            }
+            if (ch == '"') { closed = true; break }
+        }
+        if (closed) {
+            literals += literal.toString()
+            masked.append('\u0001').append(literals.size - 1).append('\u0001')
+        } else {
+            masked.append(literal) // 引号没闭合：原样留着，交给后面的解析校验报错
+        }
+    }
+    val rewritten = transform(masked.toString())
+    if (literals.isEmpty()) return rewritten
+    return Regex("\u0001(\\d+)\u0001").replace(rewritten) { m -> literals[m.groupValues[1].toInt()] }
+}
+
 @JvmName("addPatchV3")
 fun addPatch(name: String, patch: String) {
     //logger.info("Adding patch $name")
+    val raw = rewriteOutsideStrings(patch) { text ->
+        text
+            .replace("+=", "+")
+            .replace("#", "arg")
+            .replace(Regex("""(:)([\u4e00-\u9fa5][^,\}\]]*)""")) { m ->
+                val sep = m.groupValues[1]
+                val value = m.groupValues[2].trim()
+                "$sep\"$value\""
+            }
+            .replace(Regex("(?<=\\{|,|\\s)([a-zA-Z0-9_-]+):"), "\"$1\":")
+            .replace(Regex(":\\s*([a-zA-Z_-]+)(?=\\s*[},])")) { m ->
+                ":\"${m.groupValues[1]}\""
+            }
+    }
+
+    // 先校验再登记：解析不了的补丁不要写进地图 tags/patchList，否则每次换图都会重放一次坏补丁。
+    val parsed = runCatching { Jval.read(raw) }.getOrElse { error ->
+        logger.warning("CP补丁「$name」解析失败，已跳过（${error.message}）；内容片段：${raw.trim().take(120)}")
+        return
+    }
+    val readPatch = parsed.toString(Jval.Jformat.plain)
+
     if (!name.startsWith("$")) {
         state.map.tags.put("CT@$name", patch)
         patchList = patchList.toMutableList().apply {
@@ -884,20 +977,6 @@ fun addPatch(name: String, patch: String) {
         }
     }
 
-    val raw = patch
-        .replace("+=", "+")
-        .replace("#", "arg")
-        .replace(Regex("""(:)([\u4e00-\u9fa5][^,\}\]]*)""")) { m ->
-            val sep = m.groupValues[1]
-            val text = m.groupValues[2].trim()
-            "$sep\"$text\""
-        }
-        .replace(Regex("(?<=\\{|,|\\s)([a-zA-Z0-9_-]+):"), "\"$1\":")
-        .replace(Regex(":\\s*([a-zA-Z_-]+)(?=\\s*[},])")) { m ->
-            ":\"${m.groupValues[1]}\""
-        }
-
-    val readPatch = Jval.read(raw).toString(Jval.Jformat.plain)
     contentPatches.add(readPatch)
     applyPatchStrings(currentPatchStrings().filterNot { it == readPatch } + readPatch)
 }

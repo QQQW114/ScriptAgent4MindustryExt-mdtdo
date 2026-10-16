@@ -22,6 +22,177 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-16（第十六批）：跟进 MindustryX 到 B509/v160.7 + CP 两处小优化（引号外改写、降级可见）
+
+类型：版本跟进 + 小优化（用户口径："简单查看情况即可，不是必须改的东西；脚本有明确优化点再改"）。
+
+### 1. 版本跟进：B495/v160.3 → **B509/v160.7**
+
+- 新版 JAR：`mdtserver/server-2026.10.10.B509.jar`（23.2 MB，SHA-256 `FC1B01AB…AC74`，`version.properties: build=160.7`）；
+  `server.properties` 的 `jar=` 已切换（该文件不入库）；旧 jar（B495 / X37 / B491 / B485）全部保留可回滚；
+- 冷启动验证：`共找到158脚本,加载成功154,启用成功149,出错0`，`sa listFailed` 为空；
+- 上游差距：MindustryX `origin/main` = `703f65aa`（v160.7，`work` = `17012d61`），我们原停 `92471dd`（v160.3）差 16 个提交；
+  官方 Mindustry master 只多 1 个 merge 提交；`参考项目` 两个仓库都已 fetch（走 7897 代理，首次 TLS 抖动重试即可）。
+
+### 2. 上游 DP 加载部分核对结论（回答"有没有修改"）
+
+- v160.3→v160.7 共 76 个提交，仅 9 个动 `mod/`+`io/`：`DataImagePacker`(+5)、`DataManager`(+30/-14)、`DataPatcher`(±4)、
+  `ModClassLoader/ModListing/Mods`；**DP 字段未动**；
+- javap 在 B509 上复核：`PatchAsset(String)`、`DataManager.reloadPatches(Seq<PatchAsset>)`、
+  `DataPatcher.apply(Seq<PatchAsset>, Seq<ContentAsset>)`、`DataAsset.updateData(byte[])` **全部存在且签名一致**
+  → 我们的 native 反射路径在 v160.7 可用，**不需要额外的多签名探测机制**；
+- `DataAssetType` 只有 6 类（`patch/content/bundle/image/sound/music`），与脚本里写死的目录清单**完全一致**
+  → "资产目录/类型从上游派生"暂无收益，不做（上游若新增类型，先看 `zipAssetFolders`/`externalCpHotReload` 与本文档）；
+- 与"贴图为空"相关：MindustryX 新增 `0075-FIX.G-DataPatcher-refresh-icons-of-all-content-after.patch`（DP 打补丁后刷新内容图标）
+  + `DataImagePacker` 改动 → 新 jar 已带上，值得复测。
+
+### 3. 本轮两处小优化
+
+- `coreMindustry/contentsTweaker.kts` `addPatch`：改写从"整段盲替"改为**只在引号外**（新增 `rewriteOutsideStrings()`，
+  先把完整字符串字面量挖成占位符、改写后还原；引号未闭合的文本原样保留，交给 `Jval` 校验报错）
+  —— 避免值里含 `#`/`+=`/`中文:值` 的补丁被写坏；
+- **CP 引擎降级可见**：`contentsTweaker` 新增 `patchEngineInfo`（`native` / `旧版 patcher（原因）`），
+  `applyPatchStrings` 每次重置并记录；`externalCpHotReload.applyDataAssetsAndSanitize` 收尾时若非 native，
+  就往该包加载警告里加一条"贴图/字段类补丁可能不生效（例如 DP 贴图为空）"，管理菜单/加载结果可见，不再只藏在日志里。
+
+### 4. 定性结论（写下来免得下次重复排查）
+
+- `[ContentPatcher] Failed to read value … variantRegions … [Larc.graphics.g2d.TextureRegion;` 是**上游自己的 DP 补丁读取器**
+  抛的（该文案只存在于游戏侧；我们 legacy 兜底的文案是 `旧版 ContentPatcher CP应用失败`，生产 SA 日志里没有）→
+  生产走的是 native 路径，问题本质是**上游读不了 `variantRegions` 这类数组字段**，属"直接动 DP 字段的破坏性更新"，
+  按用户口径**不做兼容**，只做归因报告（现在降级可见性已改善）。
+
+### 仍待处理
+
+- `contentsTweaker.prepareForDataAssetReload` 的 `仍有旧DP单位/建筑/液体洼地/天气/未清理子弹` 仍会阻止内容注销
+  （是"加载/回滚失败"剩下的最大来源）；建议改成"先自动清一轮 + 等 1~2 tick 重试，再决定失败"，等用户点头再做。
+
+## 2026-10-16（第十五批）：DP 加载兼容性——资产重名不再判死整包 + 同名贴图警告收敛 + 分队主线程修复
+
+类型：兼容性修复（用户要求"dp加载系统尽量做好兼容，兼容性做到好"；`D:\临时文件-mdtlog\error` 里补的生产 SA 脚本日志驱动）。
+
+### 生产日志给出的真实根因
+
+1. **"我们自己的 dp 列表经常资产重名无法加载"** = `mergedDataAssets` 遇到**任何**重复路径/重名就抛异常 → 整包加载失败：
+   - `数据资产路径冲突：bundles/bundle_zh_CN.properties（拟核dpbeta.zip 与 饱和火力4.0.6dp版.zip）`
+   - `数据资产路径冲突：sounds/explosionbig.ogg（当前地图/服务端 与 饱和火力4.0.6dp版.zip）`
+   - `数据资产名称冲突：…`（同一句话里还会连带 `外部CP回滚失败 … 仍有未清理子弹`）
+2. **"地图的 dp 贴图经常为空"** = DP 给矿脉写的 `variantRegions`（`TextureRegion[]`）无法被 arc 的 JSON 反序列化：
+   `[ContentPatcher] Failed to read value dp-ore-manganese.variantRegions = variantRegions: {0: dp-ore-un1, …}` +
+   `SerializationException: … [Larc.graphics.g2d.TextureRegion;` —— 字段被**静默丢弃**（只有 warning）→ 地板没有变体贴图 → 显示为空。
+3. 另有：`旧DP运行态引用清理未完成，已阻止内容注销：仍有未清理子弹 / 仍有旧DP单位`
+   （`contentsTweaker.prepareForDataAssetReload` 的安全检查把整次加载/回滚挡掉）；
+   `java.lang.IllegalStateException: safeBlocking only for mainThread @ betterTeam.randomTeam`
+   （玩家进服是在后台协程里分队，而 `safeBlocking` 只允许主线程）。
+
+### 本轮修复
+
+- `externalCpHotReload.mergedDataAssets`：**任何单个资产冲突都不再让整包失败**（返回值改为 `Pair<assets, warnings>`）：
+  - `bundles/**` 视为可合并资产，两份都保留（后加载的同名键覆盖先加载的）；
+  - 其它同路径资产保留先加载的、后加载的跳过并记录；
+  - 贴图重名（不同路径）两份都交给打包器（v159 规则 generated 优先），只记一条警告；
+  - 其它重名保留先加载的；
+  - 两个调用点（加载 / 卸载）都把合并警告并入"加载警告"（不再整包失败）。
+- `readZipCp`：同名贴图警告从"每个贴图一条"合并成一条（附名字清单，最多列 20 个）；
+  ZIP 内三份同名、或非"生成版+源图"配对**不再硬失败**，改为警告。
+- `betterTeam.randomTeam`：新增 `onGameThreadBlocking`（主线程走 `safeBlocking`，其它线程 `runBlocking + withContext(game)`），
+  修掉生产日志里 4 次 `safeBlocking only for mainThread` 造成的**分队失败**。
+
+### 兼容口径落地（同日第二批，用户 2026-10-16 确认"底线留着、内容与结构判断尽量放宽、语言包要合并"）
+
+**A. 内容 / 结构判断全部放宽为"跳过 + 警告"（不再判死整包）**：
+
+- `readZipCp`：content 资产**缺少类型子目录 / 不支持的 content 类型 / JSON-HJSON 预解析失败** → 跳过该文件并记录（原来三条都是硬失败）；
+- `readZipCp`：ZIP 内**重复资产路径** → 语言包合并（见 B），其它类型跳过后一份并记录（原来硬失败）；
+- `applyDataAssetsAndSanitize`：patch/content 的失败汇总不再 `throw`，改为一条"本次有 N 项未能生效（已按兼容口径跳过）"的加载警告；
+- 运行态修复：**动态 Content 模块容量修复未完成**、**后梁节点电力校验失败** 都降级为 `logger.warning`（原来会中断整次加载）。
+
+**B. 语言包合并（DP 作者要求）**：
+
+- 新增 `bundleTexts`（IdentityHashMap，记录本次读到的语言包原文）、`bundleTextOf`、`mergeBundleTexts`；
+- **包内**重复语言包：直接合并文本（同名键后一份覆盖前一份），不再跳过后一份；
+- **跨包 / 与基础资产**同路径语言包：两份原文都拿得到就真合并写入先加载的那份；拿不到（例如基础资产来自地图/存档）退回"两份都加载"，由 `DataManager` 顺序合并；
+- 合并按行处理并保留原始文本 —— **不用 `java.util.Properties`**，因为它会把中文转义成 `\uXXXX`（客户端会显示乱码）。
+
+**C. 保留的底线（硬失败，均可配置）**：ZIP 路径空/非法字符/`..` 越界；压缩比、单文件与累计解压上限、条目数（`maxZipCompressionRatio`/`maxZipEntryBytes`/`maxZipExpandedBytes`/`maxZipEntries`）；
+PNG/JPEG 尺寸 ≤2000×2000 与文件头校验；CP 文件体积（`hardExternalCpBytes`）与资产数（`maxExternalCpAssets`）；
+ZIP 内没有任何 v159 数据资产。
+
+### 仍待处理（等用户定口径）
+
+1. **`TextureRegion[]` 这类贴图字段**（"地图 DP 贴图为空"的根因）：① 生成侧（bridge/DP 作者）规范成 `variants: N` + 命名约定；
+   ② 加载侧做"贴图字段后置修复"（解析补丁里的名字，用 `Core.atlas.find` 反射写入 `variantRegions`）。②能救存量 DP，但需要读地图内嵌资产，改动面较大。
+2. **运行态引用清理阻塞**（`仍有旧DP单位/建筑/液体洼地/天气/未清理子弹`）：`contentsTweaker.prepareForDataAssetReload` 仍会阻止内容注销；
+   下一步改成"先自动清一轮 + 等 1~2 tick 重试，再决定失败"。
+
+> 验证：`sa load wayzer/map/externalCpHotReload`、`sa load wayzer/map/betterTeam` 后 `sa listFailed` 为空、两者 `[Enabled]`；
+> 开发服冷启动（本次改动前）为 `158/154/149/出错0`。
+
+## 2026-10-16（第十四批）：生产日志分析——插件刷屏 NPE 修复 + DP/CP 加载健壮性补强
+
+类型：Bug 修复 + 缺陷排查（用户把生产 `config\logs\*.txt`（09-26~10-16，约 88MB，17 个文件）拷到 `D:\临时文件-mdtlog` 让 Agent 查错）。
+
+### 日志规模与归类（`[E]` 共 92,324 条）
+
+| 类别 | 条数 | 归属 |
+|---|---|---|
+| `funRuleModes` 无限火力维护 NPE（`itemReq must not be null`） | **92,173（99.8%）** | **我们的插件** |
+| 读包异常（EOFException / `unit must not be null`，`mapScript/14668`） | 77 | 我们的地图脚本 |
+| 内容补丁 JSON/序列化失败（`AP.json`、`兵工/组装厂.json` 等） | 33 | **我们的 DP/CP 链路** |
+| `ArrayIndexOutOfBoundsException`（含原版 `Router.getTileTarget` 崩溃） | 23 | 游戏侧（用户口径：不管，随版本更新） |
+| 连接被关闭（客户端侧错误） | 18 | 玩家网络 |
+
+崩溃重启（`restart-supervisor.log`）：2026-08-06 ~ 10-10 共 **19 次 `crash exit=1`**；最近一次 10-10 11:31 连续崩 3 次
+（runtime=249746s / 0s / 0s）。崩溃栈是原版 `Router$RouterBuild.getTileTarget` 的 `ArrayIndexOutOfBoundsException`
+（在 `Logic.updateEntities` 里抛出 → 主循环线程终止 → 退出码 1），属游戏侧；10-10 11:32 起进程已连续运行 6 天。
+
+### 修复 1（插件缺陷，刷屏根因）：`wayzer/map/funRuleModes.kts`
+
+`fillUnitAssembler` 直接读 `plan.itemReq`。原版 `UnitAssembler$AssemblerUnitPlan.itemReq` 声明就是 `@Nullable`，
+未配置计划的组装厂读它会抛 `NullPointerException: itemReq must not be null`；而这个维护循环是
+`Trigger.update` + **250ms** 节流（`infiniteFireMaintainIntervalMillis = 250L`），即**每 250ms × 每台组装厂**抛一次，
+SA 又按"每次事件"记一条 `[E]` → 生产上一条 NPE 刷了 9 万多行。
+
+- `fillUnitAssembler`：`plan` / `itemReq` / `liquidReq` 三段都容错，拿不到就跳过；
+- 主循环拆成 `maintainInfiniteFireBuildings`（外层逐格 `runCatching`）+ `maintainInfiniteFireBuilding`（原逻辑不变）；
+- 新增 `reportInfiniteFireFailure`：**同一种失败每分钟最多一条**（换一种立即报）并折叠累计次数 —— 以后再冒别的异常也不会刷日志。
+
+### 修复 2（DP/CP 加载缺陷）：`coreMindustry/contentsTweaker.kts`
+
+1. **坏补丁没有归属**：坏 JSON 一路喂给 patcher，只留一句英文 `Error loading content: xxx.json: Name is not closed at 2:0`，
+   看不出是谁的补丁、没有行号，且每次换图/回档重复出现。新增 `validatedPatches(...)`：送进 patcher 前先用 `Jval.read`
+   自解析一遍，坏的**就地剔除**并打中文日志（补丁序号 + 解析错误 + 内容片段 + 跳过总数）。
+2. **坏补丁会被登记**：`addPatch` 原来先写 `state.map.tags["CT@name"]` 再解析，解析抛异常时 tag 已经留在图里 →
+   每次进这张图都会重放坏补丁。现在改为**先校验再登记**，解析失败直接跳过并报出补丁名。
+
+### DP/CP 侧仍需处理（本次只报告，未改动，等用户定口径）
+
+1. **`TextureRegion[]` 类字段无法序列化**：生产日志里大量
+   `[W] [ContentPatcher] Failed to read value dp-ore-xxx.variantRegions = variantRegions: {0: dp-ore-un1, ...}` +
+   `SerializationException: ... [Larc.graphics.g2d.TextureRegion;` —— DP 给矿脉写的贴图变体数组无法被 arc 的 JSON 反序列化，
+   字段被静默丢弃（画面少变体）并按字段刷警告。两条路：① 生成侧（bridge/DP 作者）别写这类字段；
+   ② 补丁侧增强：识别 `TextureRegion[]` 字段，用 `Core.atlas.find(name)` 解析名字而不是走 JSON。
+2. **补丁之间没有顺序/依赖处理**：`兵工/组装厂.json` 报 `Serialization trace: {}.plans[0].unit → unit (AssemblerUnitPlan)`，
+   即补丁引用的单位在应用时还不存在（多半是同包内"定义内容"的文件排在"修改内容"之后）。建议两阶段应用（先建内容、再改字段）或失败重试一轮。
+3. **地图/存档内嵌 DP 的归属与去重**：`Error loading content: AP.json: ... Name is not closed at 2:0` 出现在地图
+   `AP的训练（）(ID:25763)` 的加载/回档（`SaveVersion.readDataPatches` 路径），是地图作者内嵌的坏 DP。
+   建议地图加载前预校验内嵌 DP，用一句中文日志报清"地图 X 内嵌数据包 Y 第 N 行解析失败，已跳过"，同一张图只报一次。
+4. **`addPatch` 的文本改写是"全文盲替"**：`+=`→`+`、`#`→`arg` 与三条正则会把**字符串字面量内部**也改掉
+   （值里带 `#`/`+=`/`中文:值` 就可能被破坏）。建议改成"只在引号外替换"，现在的解析校验作为兜底。
+
+### 日志拷贝口径（下次给 Agent 查错时带上这些）
+
+- 本次拷的是 `config\log-*.txt`（5MB 滚动）+ `last.log` + `restart-supervisor.log`，**确实含报错、够用**；
+- **缺**：`config\logs\script-load\last-error.log`（SA 侧脚本错误/警告汇总，如"命令被 cancel""duplicate aliases"）、
+  服务端**控制台窗口的 stderr**（JVM 级 `Error`（StackOverflowError 等）与部分崩溃栈只在这里，`log-*.txt` 里没有）、
+  `hs_err_pid*.log`（JVM 硬崩溃）、`config\logs\history\**`；
+- **崩溃原因看"当次运行日志的末尾"**：找崩溃时刻所属那份日志（或 `last.log`）的最后几十行最有效；
+- 本次日志在 `10-11 15:34 → 10-11 21:16` 之间有空档（滚动文件没覆盖到那一段）。
+
+> 验证：开发服冷启动 `158/154/149/出错0`、`sa listFailed` 为空、`coreMindustry`(13) 与 `wayzer`(119) 模块脚本数不变。
+> 另注：本机开发服当前**起得来但没图**——默认地图要从资源站下载，`加载地图地图a失败: Read timed out`（需要代理或资源站可达），
+> 不影响"脚本能正确加载"这一验证口径。
+
 ## 2026-09-27（第十三批）：出生点保护重做——"范围 ∩ 出生点标记即拒绝"（用户选口径①）
 
 类型：Bug 修复（承接第十一批的发现：旧保护因按 `tile.team()` 过滤而恒不触发）。

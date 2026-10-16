@@ -385,11 +385,15 @@ private fun fillUnitFactory(build: UnitFactory.UnitFactoryBuild) {
 }
 
 private fun fillUnitAssembler(build: UnitAssembler.UnitAssemblerBuild) {
-    val plan = build.plan() ?: return
-    plan.itemReq.forEach { stack ->
+    // 生产日志里刷屏的那条 NPE 就在这里：未配置计划的组装厂 `plan.itemReq` 为 null
+    //（原版 `UnitAssembler$AssemblerUnitPlan.itemReq` 声明就是 @Nullable，新版 jar 上读它会直接抛错），
+    // 所以整段做容错，拿不到就跳过 —— 绝不让异常冒到事件监听器外面（那会按"每次维护 × 每台组装厂"刷日志，
+    // 生产上这一条 NPE 刷了 9 万多行）。
+    val plan = runCatching { build.plan() }.getOrNull() ?: return
+    runCatching { plan.itemReq }.getOrNull()?.forEach { stack ->
         setItemAtLeast(build, stack.item, itemTargetAmount(build, stack.item, stack.amount))
     }
-    plan.liquidReq.forEach { stack ->
+    runCatching { plan.liquidReq }.getOrNull()?.forEach { stack ->
         setLiquidAtLeast(build, stack.liquid, liquidTargetAmount(build, stack.amount * 180f))
     }
 }
@@ -406,24 +410,53 @@ private fun maintainInfiniteFireBuildings() {
     val snapshot = infiniteFireSnapshot ?: return
     val teamIds = snapshot.teamRules.keys
     Groups.build.forEach { build ->
-        if (!build.isValid || build.team == Team.derelict || build.team.id !in teamIds) return@forEach
-
-        if ((infiniteFireProMax || build is Turret.TurretBuild) && build.power != null && build.block.hasPower) {
-            build.power.status = 1f
-            build.shouldConsumePower = true
-        }
-
-        if (infiniteFireProMax) fillConsumerInputs(build)
-
-        when (build) {
-            is ItemTurret.ItemTurretBuild -> fillItemTurret(build)
-            is LiquidTurret.LiquidTurretBuild -> fillLiquidTurret(build)
-            is Turret.TurretBuild -> rememberAndDisableTurretHeatRequirement(build.block as? Turret ?: return@forEach)
-            is UnitFactory.UnitFactoryBuild -> if (infiniteFireProMax) fillUnitFactory(build)
-            is UnitAssembler.UnitAssemblerBuild -> if (infiniteFireProMax) fillUnitAssembler(build)
-            is Reconstructor.ReconstructorBuild -> if (infiniteFireProMax) fillReconstructor(build)
-        }
+        // 单格失败绝不能冒到监听器外面：SA 会按"每次事件"记一条 [E]，生产上曾因此刷出 9 万行日志。
+        runCatching { maintainInfiniteFireBuilding(build, teamIds) }
+            .onFailure { reportInfiniteFireFailure(build, it) }
     }
+}
+
+/** 单格无限火力维护；异常统一由 [maintainInfiniteFireBuildings] 兜住并收敛上报。 */
+private fun maintainInfiniteFireBuilding(build: Building, teamIds: Collection<Int>) {
+    if (!build.isValid || build.team == Team.derelict || build.team.id !in teamIds) return
+
+    if ((infiniteFireProMax || build is Turret.TurretBuild) && build.power != null && build.block.hasPower) {
+        build.power.status = 1f
+        build.shouldConsumePower = true
+    }
+
+    if (infiniteFireProMax) fillConsumerInputs(build)
+
+    when (build) {
+        is ItemTurret.ItemTurretBuild -> fillItemTurret(build)
+        is LiquidTurret.LiquidTurretBuild -> fillLiquidTurret(build)
+        is Turret.TurretBuild -> rememberAndDisableTurretHeatRequirement(build.block as? Turret ?: return)
+        is UnitFactory.UnitFactoryBuild -> if (infiniteFireProMax) fillUnitFactory(build)
+        is UnitAssembler.UnitAssemblerBuild -> if (infiniteFireProMax) fillUnitAssembler(build)
+        is Reconstructor.ReconstructorBuild -> if (infiniteFireProMax) fillReconstructor(build)
+    }
+}
+
+private var infiniteFireFailureKey: String? = null
+private var infiniteFireFailureCount = 0
+private var infiniteFireFailureLoggedAt = 0L
+
+/** 同一种失败每分钟最多报一条（换一种失败立即报），并带上被折叠掉的次数。 */
+private fun reportInfiniteFireFailure(build: Building, error: Throwable) {
+    val key = "${build.block.name}|${error.javaClass.simpleName}|${error.message}"
+    val now = Time.millis()
+    if (key == infiniteFireFailureKey && now - infiniteFireFailureLoggedAt < 60_000L) {
+        infiniteFireFailureCount++
+        return
+    }
+    val folded = if (key == infiniteFireFailureKey && infiniteFireFailureCount > 0) "（同一失败已折叠 $infiniteFireFailureCount 次）" else ""
+    logger.warning(
+        "无限火力维护单格失败：${build.block.name}@(${build.tileX()},${build.tileY()}) $folded - " +
+            "${error.javaClass.simpleName}: ${error.message}"
+    )
+    infiniteFireFailureKey = key
+    infiniteFireFailureCount = 0
+    infiniteFireFailureLoggedAt = now
 }
 
 fun currentMapScriptStatuses(activeOnly: Boolean = true): List<MapScriptStatus> =

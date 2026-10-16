@@ -351,6 +351,8 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
     val assets = mutableListOf<DataAsset>()
     val counts = linkedMapOf<String, Int>()
     val seenPaths = hashSetOf<String>()
+    /** 重复路径的首次资产：语言包重复时要合并到它身上，其余类型跳过重复项。 */
+    val seenPathAssets = linkedMapOf<String, DataAsset>()
     val packPrefix = "external-cp/${safePackPathSegment(cp.name)}"
     var expandedBytes = 0L
     var entryCount = 0
@@ -393,7 +395,25 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
                 return@forEach
             }
             val duplicateKey = "$folder/${relative.lowercase(Locale.ROOT)}"
-            require(seenPaths.add(duplicateKey)) { "ZIP内存在重复资产路径：$normalized" }
+            val previousAsset = seenPathAssets[duplicateKey]
+            if (previousAsset != null) {
+                // 兼容口径（DP 作者要求）：重复的语言包要**合并**生效，其余重复路径跳过后一份，都不判死整包。
+                val duplicateBytes = readZipEntryBytes(zip, entry, expandedBytes)
+                expandedBytes += duplicateBytes.size
+                val text = duplicateBytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+                val previousText = bundleTextOf(previousAsset)
+                if (previousText != null && previousAsset is BundleAsset) {
+                    val merged = mergeBundleTexts(previousText, text)
+                    previousAsset.updateData(merged.toByteArray(Charsets.UTF_8))
+                    bundleTexts[previousAsset] = merged
+                    warnings += "ZIP 内重复语言包已合并：$normalized"
+                } else {
+                    seenPaths.add(duplicateKey)
+                    warnings += "ZIP内重复资产路径，已跳过后一份：$normalized"
+                }
+                return@forEach
+            }
+            seenPaths.add(duplicateKey)
 
             val bytes = readZipEntryBytes(zip, entry, expandedBytes)
             expandedBytes += bytes.size
@@ -408,11 +428,22 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
                 "content" -> {
                     val contentFolder = relative.substringBefore('/')
                     val contentPath = relative.substringAfter('/', "")
-                    require(contentPath.isNotBlank()) { "content资产缺少类型子目录：$normalized" }
+                    if (contentPath.isBlank()) {
+                        // 兼容口径：内容/结构判断尽量放宽 —— 跳过该文件而不是判死整包
+                        warnings += "跳过 content 资产（缺少类型子目录）：$normalized"
+                        return@forEach
+                    }
                     val contentType = ContentAsset.loadableContent.firstOrNull { it.folderName.equals(contentFolder, true) }
-                        ?: throw IllegalArgumentException("不支持的content类型：$contentFolder（$normalized）")
+                    if (contentType == null) {
+                        warnings += "跳过 content 资产（不支持的 content 类型：$contentFolder）：$normalized"
+                        return@forEach
+                    }
                     val raw = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
-                    runCatching { Jval.read(raw) }.getOrElse { throw IllegalArgumentException("content预解析失败：$normalized：${briefError(it)}", it) }
+                    val parseError = runCatching { Jval.read(raw) }.exceptionOrNull()
+                    if (parseError != null) {
+                        warnings += "跳过 content 资产（JSON/HJSON 解析失败：${briefError(parseError)}）：$normalized"
+                        return@forEach
+                    }
                     ContentAsset(contentPath, contentType, raw)
                 }
                 "bundles" -> BundleAsset().also { it.setPath(relative); it.updateData(bytes) }
@@ -422,10 +453,14 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
                 else -> error("unreachable")
             }
             assets += asset
+            seenPathAssets[duplicateKey] = asset
+            if (asset is BundleAsset) bundleTexts[asset] = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
             counts[folder] = (counts[folder] ?: 0) + 1
             if (assets.size > maxExternalCpAssets.coerceAtLeast(1)) throw IllegalArgumentException("CP资产数超过上限 $maxExternalCpAssets")
         }
     }
+    val sameNameSprites = mutableListOf<String>()
+    val sameNameOthers = mutableListOf<String>()
     assets.asSequence()
         .filterNot { it is PatchAsset }
         .groupBy { "${it.getType().name.lowercase(Locale.ROOT)}:${it.name.lowercase(Locale.ROOT)}" }
@@ -433,13 +468,20 @@ private fun readZipCp(cp: ExternalCpFile): ExternalCpReadResult {
         .filter { it.size > 1 }
         .forEach { sameNameAssets ->
             val first = sameNameAssets.first()
-            require(sameNameAssets.size == 2 && isV159GeneratedImagePair(sameNameAssets[0], sameNameAssets[1])) {
-                "ZIP内存在数据资产名称冲突：${first.name}（${sameNameAssets.joinToString(" 与 ") { it.getFullPath() }}）"
+            if (sameNameAssets.size == 2 && isV159GeneratedImagePair(sameNameAssets[0], sameNameAssets[1])) {
+                sameNameSprites += first.name
+            } else {
+                // 不再硬失败：同一 ZIP 内三份同名、或非"生成版+源图"配对时只记录警告，优先保证能加载。
+                sameNameOthers += "${first.name}（${sameNameAssets.joinToString(" 与 ") { it.getFullPath() }}）"
             }
-            val generated = sameNameAssets.first(::isGeneratedImageAsset)
-            val source = sameNameAssets.first { !isGeneratedImageAsset(it) }
-            warnings += "同名贴图 ${first.name} 同时存在 ${source.path} 与 ${generated.path}；按Mindustry v159规则优先使用generated贴图，普通同名贴图不进入补丁图集"
         }
+    if (sameNameSprites.isNotEmpty()) {
+        // 逐个贴图刷警告会淹没日志（生产上单包几十条），合并成一条并保留规则说明与名字清单。
+        warnings += "同名贴图 ${sameNameSprites.size} 个（生成版与源图同名的 v159 结构，按规则优先用 generated 版，" +
+                "普通同名贴图不进入补丁图集）：" + sameNameSprites.take(20).joinToString("、") +
+                if (sameNameSprites.size > 20) " 等" else ""
+    }
+    sameNameOthers.forEach { warnings += "同名资产（非生成版配对）：$it" }
     require(assets.isNotEmpty()) { "ZIP内没有找到v159数据资产；需要 patches/content/bundles/sprites/sounds/music 目录" }
     val slow = cp.bytes > slowExternalCpBytes.coerceAtLeast(1L) || expandedBytes > slowExternalCpBytes.coerceAtLeast(1L)
     val summary = zipAssetFolders.mapNotNull { folder -> counts[folder]?.let { "$folder=$it" } }.joinToString(", ")
@@ -639,8 +681,9 @@ private fun validateContentModuleCapacities(builds: List<Building>) {
         }
     }
     if (failures.isNotEmpty()) {
-        throw IllegalStateException(
-            "动态Content模块容量修复未完成：${failures.take(5).joinToString("；")}" +
+        // 兼容口径（2026-10-16 用户确认）：运行态修复不完整不再中断整次 CP/DP 加载，只记警告。
+        logger.warning(
+            "动态Content模块容量修复未完成（已降级为警告）：${failures.take(5).joinToString("；")}" +
                 if (failures.size > 5) " 等${failures.size}处" else ""
         )
     }
@@ -969,7 +1012,8 @@ private fun repairExistingBuildingModulesAfterCp(
             }
     }
     if (beamFailures.isNotEmpty()) {
-        throw IllegalStateException("CP后梁节点电力校验失败：${beamFailures.take(3).joinToString("；")}${if (beamFailures.size > 3) " 等${beamFailures.size}处" else ""}")
+        // 兼容口径（2026-10-16 用户确认）：后梁节点校验失败只记警告，不中断加载（内容问题由作者自查）。
+        logger.warning("CP后梁节点电力校验失败（已降级为警告）：${beamFailures.take(3).joinToString("；")}${if (beamFailures.size > 3) " 等${beamFailures.size}处" else ""}")
     }
 
     if (stats.total() > 0) {
@@ -984,6 +1028,37 @@ private fun repairExistingBuildingModulesAfterCp(
         )
     }
     return stats
+}
+
+/**
+ * 本次加载读到的语言包原文（IdentityHashMap：只对活着的资产有效）。
+ * 跨包/包内合并语言包时要用到它；基础资产（地图/存档内嵌）拿不到原文，走"两份都加载"的降级路径。
+ */
+private val bundleTexts = java.util.IdentityHashMap<BundleAsset, String>()
+
+/** 取回本次读到的语言包原文；拿不到（例如基础资产）返回 null。 */
+private fun bundleTextOf(asset: DataAsset): String? = (asset as? BundleAsset)?.let { bundleTexts[it] }
+
+/**
+ * 合并两份 bundle 文本：**同名键后一份覆盖前一份**，其余键取并集。
+ *
+ * DP 作者要求（2026-10-16）：多个包各自带 `bundles/bundle_zh_CN.properties` 时应当合并生效，而不是互相挤掉。
+ * 这里按行合并、保留原始文本 —— 不用 `java.util.Properties`，避免它把中文转义成 `\uXXXX` 让客户端显示乱码。
+ */
+private fun mergeBundleTexts(base: String, extra: String): String {
+    val merged = LinkedHashMap<String, String>() // key -> 原始行
+    fun collect(text: String) {
+        text.lineSequence().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) return@forEach
+            val key = trimmed.substringBefore('=').substringBefore(':').trim()
+            if (key.isEmpty()) return@forEach
+            merged[key] = line.trimEnd()
+        }
+    }
+    collect(base)
+    collect(extra)
+    return merged.values.joinToString("\n")
 }
 
 private fun dataAssetPathKey(asset: DataAsset): String =
@@ -1034,45 +1109,100 @@ private fun baseAssetsExcluding(records: Collection<LoadedExternalCp>): List<Dat
     return current
 }
 
-private fun mergedDataAssets(base: List<DataAsset>, records: Collection<LoadedExternalCp>): List<DataAsset> {
+/**
+ * 合并"基础资产（地图/服务端）"+ 各外部CP的资产。
+ *
+ * 兼容口径（2026-10-16，生产日志驱动）：**任何单个资产冲突都不再让整包失败**。
+ * 旧实现遇到重复路径/重名就直接抛 `IllegalArgumentException`，于是"包里带了个
+ * `bundles/bundle_zh_CN.properties` 或 `sounds/explosionbig.ogg` 与别人撞名"就会让整个 DP 加载失败
+ * （生产上反复出现"外部CP加载失败 … 数据资产路径冲突"）。现在：
+ * - `bundles/**`：可合并资产，两份都保留（后加载的同名键覆盖先加载的）；
+ * - 其它同路径资产：保留先加载的那份，后加载的跳过并记录；
+ * - 贴图重名但不同路径：两份都保留交给打包器（v159 规则下 generated 版优先），只记一条警告；
+ * - 其它重名（content 等）：保留先加载的那份。
+ * 所有冲突都以警告列表返回，由调用方汇总进"加载警告"。
+ */
+private fun mergedDataAssets(
+    base: List<DataAsset>,
+    records: Collection<LoadedExternalCp>,
+): Pair<List<DataAsset>, List<String>> {
     val out = mutableListOf<DataAsset>()
+    val warnings = mutableListOf<String>()
     val pathOwners = linkedMapOf<String, String>()
     val nameOwners = linkedMapOf<String, String>()
     val nameOwnerRecords = linkedMapOf<String, LoadedExternalCp?>()
     val nameAssets = linkedMapOf<String, DataAsset>()
     val acceptedGeneratedImagePairs = hashSetOf<String>()
+    val acceptedNameAliases = hashSetOf<String>()
 
     fun add(asset: DataAsset, owner: String, ownerRecord: LoadedExternalCp?) {
         val external = ownerRecord != null
         val pathKey = dataAssetPathKey(asset)
         val pathConflict = pathOwners[pathKey]
-        if (external && pathConflict != null) throw IllegalArgumentException("数据资产路径冲突：${asset.getFullPath()}（$pathConflict 与 $owner）")
+        if (external && pathConflict != null) {
+            if (asset is BundleAsset) {
+                // 语言包可合并：能拿到两份原文时就**真的合并**（后加载的覆盖同名键），
+                // 否则（例如基础资产来自地图/存档）退回"两份都加载"，由 DataManager 顺序合并。
+                val previous = out.firstOrNull { dataAssetPathKey(it) == pathKey } as? BundleAsset
+                val previousText = previous?.let { bundleTextOf(it) }
+                val extraText = bundleTextOf(asset)
+                if (previous != null && previousText != null && extraText != null) {
+                    val merged = mergeBundleTexts(previousText, extraText)
+                    previous.updateData(merged.toByteArray(Charsets.UTF_8))
+                    bundleTexts[previous] = merged
+                    warnings += "语言包已合并（$owner 覆盖同名键）：${asset.getFullPath()}（$pathConflict 与 $owner）"
+                } else {
+                    warnings += "资产路径重复，已按可合并资产处理：${asset.getFullPath()}（$pathConflict 与 $owner）"
+                    out += asset
+                }
+                pathOwners[pathKey] = "$pathConflict+$owner"
+                return
+            } else {
+                warnings += "资产路径重复，已跳过（保留先加载的）：${asset.getFullPath()}（$pathConflict 优先于 $owner）"
+            }
+            return
+        }
+
         val nameKey = dataAssetNameKey(asset)
         val nameConflict = nameKey?.let(nameOwners::get)
         if (external && nameConflict != null && nameKey != null) {
             // Mindustry v159 intentionally keeps generated sprites beside their source sprites.
             // DataImagePacker prioritizes generated/** and omits the ordinary same-name image.
-            // Permit exactly that pair inside one ZIP, never across packages/base assets or for a third alias.
             val generatedImagePair = nameOwnerRecords[nameKey] === ownerRecord &&
                 nameKey !in acceptedGeneratedImagePairs &&
                 nameAssets[nameKey]?.let { isV159GeneratedImagePair(it, asset) } == true
-            if (!generatedImagePair) {
-                throw IllegalArgumentException("数据资产名称冲突：${asset.name}（$nameConflict 与 $owner）")
+            when {
+                generatedImagePair -> {
+                    acceptedGeneratedImagePairs += nameKey
+                    out += asset
+                }
+
+                asset is ImageAsset && acceptedNameAliases.add(nameKey) -> {
+                    // 重名贴图不再判死整包：两份都交给打包器（v159 规则 generated 优先），只记一条警告
+                    warnings += "同名贴图（不同路径）：${asset.getFullPath()} 与 ${nameAssets[nameKey]?.getFullPath()}；打包器按 v159 规则取其一"
+                    out += asset
+                }
+
+                else -> {
+                    warnings += "资产名称重复，已跳过（保留先加载的）：${asset.name}（$nameConflict 优先于 $owner）"
+                    return
+                }
             }
-            acceptedGeneratedImagePairs += nameKey
+        } else {
+            out += asset
         }
+
         pathOwners[pathKey] = owner
         if (nameKey != null && nameConflict == null) {
             nameOwners[nameKey] = owner
             nameOwnerRecords[nameKey] = ownerRecord
             nameAssets[nameKey] = asset
         }
-        out += asset
     }
 
     base.forEach { add(it, "当前地图/服务端", null) }
     records.forEach { record -> record.assets.forEach { add(it, record.fileName, record) } }
-    return out
+    return out to warnings
 }
 
 private fun applyDataAssetsAndSanitize(assets: List<DataAsset>, externalAssets: List<DataAsset>, reason: String): List<String> {
@@ -1102,9 +1232,19 @@ private fun applyDataAssetsAndSanitize(assets: List<DataAsset>, externalAssets: 
         }
         if (!asset.isAlwaysEmbedded && !asset.isCached) failures += "资产缓存缺失：${asset.getFullPath()}"
     }
-    if (failures.isNotEmpty()) throw IllegalStateException(failures.take(8).joinToString("；"))
+    if (failures.isNotEmpty()) {
+        // 兼容口径（2026-10-16 用户确认）：内容/结构类判断尽量放宽，patch/content 失败不再让整包失败，
+        // 统一转成加载警告（作者可在加载日志/管理菜单里自查），避免"一个文件写错就让整个 DP 用不了"。
+        warnings += "本次有 ${failures.size} 项未能生效（已按兼容口径跳过，未中断加载）：" + failures.take(8).joinToString("；")
+    }
     repairExistingBuildingModulesAfterCp(reason, buildStatsBeforePatch, unitStatsBeforePatch)
     sanitizeInvalidTurretAmmo(reason)
+    // 降级可见：native 路径失败时整包用的是旧版 patcher，贴图/字段类补丁会失效（"贴图为空"的常见原因之一），
+    // 只看日志很容易漏，这里并入该包的加载警告/管理菜单。
+    val engineNote = with(contentsTweaker) { patchEngineInfo }
+    if (engineNote != "native") {
+        warnings += "本次补丁走的是$engineNote：贴图/字段类补丁可能不生效（例如 DP 贴图为空），建议查上游 DataAsset 路径为何不可用"
+    }
     return warnings.distinct()
 }
 
@@ -1181,9 +1321,9 @@ private fun applyExternalCp(cp: ExternalCpFile, operator: String): ExternalCpRes
         loadedExternalCps[key] = provisional
 
         runCatching {
-            val merged = mergedDataAssets(baseAssets, externalAssetRecords())
+            val (merged, mergeWarnings) = mergedDataAssets(baseAssets, externalAssetRecords())
             val runtimeWarnings = applyDataAssetsAndSanitize(merged, externalAssetRecords().flatMap { it.assets }, "外部CP加载:${cp.name}")
-            val warnings = (readResult.warnings + runtimeWarnings).distinct()
+            val warnings = (readResult.warnings + mergeWarnings + runtimeWarnings).distinct()
             loadedExternalCps[key] = provisional.copy(warnings = warnings)
             warnings.take(12).forEach { warning -> logger.warning("外部CP ${cp.name} 加载警告: $warning") }
             if (warnings.size > 12) logger.warning("外部CP ${cp.name} 另有 ${warnings.size - 12} 条加载警告，请在管理菜单查看")
@@ -1214,7 +1354,8 @@ private fun unloadExternalCp(key: String, operator: String): ExternalCpResult {
         val baseAssets = baseAssetsExcluding(previousLoaded.values)
         loadedExternalCps.remove(key)
         runCatching {
-            val merged = mergedDataAssets(baseAssets, externalAssetRecords())
+            val (merged, mergeWarnings) = mergedDataAssets(baseAssets, externalAssetRecords())
+            mergeWarnings.forEach { logger.warning("外部CP卸载 ${record.fileName} 资产合并警告: $it") }
             applyDataAssetsAndSanitize(merged, externalAssetRecords().flatMap { it.assets }, "外部CP卸载:${record.fileName}")
             syncWorldAfterExternalCpChange("卸载:${record.fileName}")
             logger.info("外部CP已卸载: ${record.fileName} by $operator assets=${record.assetSummary}")
@@ -1290,6 +1431,23 @@ fun loadServerCp(target: String, operator: String): String {
     val cp = resolveExternalCpFile(target)
         ?: return "[red]未找到服务器CP：[white]$target\n${externalCpListText()}"
     return applyExternalCp(cp, operator).message
+}
+
+/**
+ * 控制台调试入口：**异步**加载、立刻返回，不阻塞主线程。
+ *
+ * 为什么要单独一个函数：控制台的 `js` 在主线程上**同步**执行，而 CP/DP 加载需要在 game 线程上
+ * 分帧同步（`syncWorldAfterExternalCpChange` 里的 delay/派发），主线程被 js 占住就两边互等 → 卡住。
+ * 用法：`js contextScript<wayzer.map.ExternalCpHotReload>().loadServerCpAsync("包名.zip", "控制台")`
+ */
+fun loadServerCpAsync(target: String, operator: String): String {
+    thisContextScript().launch(Dispatchers.game) {
+        val result = runCatching { loadServerCp(target, operator) }
+            .getOrElse { error -> "加载异常：" + error.stackTraceToString() }
+        val clean = result.replace(Regex("\\[[^\\]]*\\]"), "")
+        logger.info("控制台外部CP加载[" + target + "] by " + operator + ": " + clean)
+    }
+    return "已开始异步加载：" + target + "（结果见服务器日志或管理菜单）"
 }
 
 suspend fun openServerCpManagementMenu(player: Player) {

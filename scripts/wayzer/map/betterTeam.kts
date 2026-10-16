@@ -161,13 +161,30 @@ fun updateBannedTeam(force: Boolean = false) {
     }
 }
 
+/**
+ * 主线程可以直接阻塞执行（`safeBlocking`）；其它线程调 `safeBlocking` 会立刻抛
+ * `IllegalStateException: safeBlocking only for mainThread` —— 生产日志里 4 次
+ * `randomTeam` 异常就是这么来的（玩家进服是在后台协程里分队的）。
+ * 这里在非主线程时改用 runBlocking + 一次 game 线程派发；检测在 safeBlocking 的最前面（不会重复派发事件），
+ * 所以只有"线程不对"这一种错误会被兜住，其它异常照旧抛出。
+ */
+private fun <T> onGameThreadBlocking(block: suspend () -> T): T {
+    try {
+        return Dispatchers.game.safeBlocking(block)
+    } catch (error: IllegalStateException) {
+        if (!error.message.orEmpty().contains("safeBlocking only for mainThread")) throw error
+    }
+    // 非主线程：阻塞等一次 game 线程派发（此时不会和主线程互相等待）
+    return runBlocking<T> { withContext(Dispatchers.game) { block() } }
+}
+
 fun randomTeam(player: Player, group: Iterable<Player> = Groups.player): Team {
     val allTeam = allTeam
     // 只在“玩家离线后重连”时尝试恢复原队伍。
     // 旧实现还会沿用 player.team()，这在PVP图加载/玩家新加入时很容易把所有人都留在默认队伍
     // （例如上一局全在 sharded，新PVP图也有 sharded 核心），导致看起来没有正常分队。
     val bak = savedTeams.remove(player.uuid())?.takeIf { it in allTeam }
-    val fromEvent = Dispatchers.game.safeBlocking { AssignTeamEvent(player, group, bak).emitAsync() }.team
+    val fromEvent = onGameThreadBlocking { AssignTeamEvent(player, group, bak).emitAsync() }.team
     if (fromEvent != null) return fromEvent
     if (!isPvpLike()) return state.rules.defaultTeam
     return allTeam.shuffled()
