@@ -22,6 +22,32 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-17（第二十五批）：被禁言者自救投票 /vote quitMute（解除临时禁言）
+
+类型：功能新增（提交 `7140bed`；4 个脚本：`wayzer/cmds/voteMute.kts` +68、`wayzer/ext/playerMute.kts` +22、
+`coreMindustry/menu.kts` +1、`wayzer/cmds/voteTutorial.kts` +1）。
+
+### 1. 命令与口径
+
+- `/vote quitMute`（子指令，别名 **`解除禁言`**/**`解禁`**）：**仅当前被禁言者本人**可发起；未禁言提示拒绝。
+- **只解除临时禁言**：永久禁言（无期限 DB 记录）**拒绝**并提示"联系管理员；若为管理员层级以下施加可用 `/punishreport` 检举"。
+- 阈值沿用 `VoteEvent` 默认（**50% 同意 + fastSuccess**）；`bypassDenyVote` 仅本人可投自己；
+  `ignoreStartBan=true`（被禁止发起投票 / 被强制观战 / 未完成教程等状态下**都可用此自救入口**）。
+- 通过后调用 `playerMute.unmutePlayer`；玩家投票期间离线时按投票前捕获的 uid 用 `liftMuteByUids` 兜底；广播结果。
+
+### 2. 配套改动
+
+- `wayzer/ext/playerMute.kts`：`SELF_RESCUE_VOTE_SUBCOMMANDS` 增加 `quitmute`/`解除禁言`/`解禁`（禁言拦截放行自救投票）；
+  新增 `isPermanentMuted(target)` 辅助（供 quitMute 判断"永久禁言不允许自救"）。
+- `coreMindustry/menu.kts`：`voteHelpEntries` 新增「取消禁言投票」条目（`/vote quitMute`，标注仅临时禁言/永久需联系管理员）。
+- `wayzer/cmds/voteTutorial.kts`：quitOb 步骤补一句提及 `/vote quitMute`（被禁言时的自救入口）。
+
+### 3. 验证与未验证
+
+- 验证：4 个脚本 `sa load` 通过、`sa listFailed` 空、`scriptdiag` **163/159/154/失败0**、KDoc 嵌套注释扫描 **210 文件**干净。
+- **未做运行时行为验证（按用户要求，写入未验证项）**：真实被禁言玩家发起→投票→50% 通过→解禁链路、永久禁言拒绝提示、
+  投票期间离线兜底、与 `punishmentReport` 检举 / `/vote quitOb` 自救的交互均**未验证**。
+
 ## 2026-10-17（第二十四批）：投票免打扰 /votednd + 新手投票教程 /votetutorial + 菜单检举弹窗核实 + playerMute 异步持久化
 
 类型：功能新增 + 核实 + 性能加固（提交 `0cbf9c4`、`da90fcf`；帮助菜单条目改 `coreMindustry/menu.kts`）。

@@ -627,3 +627,17 @@ punishmentReport.kts ───────────────────�
 其它菜单/旁路：`quickOps.kts` 只转发 `/vote` 子指令（走 vote 路径，会 fire）；全仓 grep 确认 `temporaryMutes/limitPlayers/buildBanReasons/MdtStorage.setMute` 的写入只存在于 `playerMute.kts`/`voteOb.kts`/`playerBuildBan.kts` 内部，**未发现绕过事件的旁路**。
 
 **性能检查**：游戏线程新增分支均为内存查找；持久化状态改为 `onEnable` 用 `launch(Dispatchers.IO)` 异步预加载（实测日志：`已异步加载持久化状态…耗时 1ms，线程=DefaultDispatcher-worker-13`），落库改为锁内生成快照 + 单 IO 协程串行异步写（实测：`异步落库已生效（写线程=DefaultDispatcher-worker-13）`），失败限频 60s 告警；面板惩罚实测耗时 A/临时禁言 2ms、C/直观战 5ms、D/投票禁言 1ms（无同步 DB）。剩余同步 DB 仅为原有 `MdtStorage.setMute/getMuteReason/clearMute`（禁言应用/解除，低频，未改）。
+
+## 2026-10-17 补充：`/vote quitMute` 禁言自救（实现后追加，仅引用/补记）
+
+> 用户新增需求"被禁言者可以发起取消禁言投票"已实现（提交 `7140bed`；维护记录见 `scripts-maintenance.md` 第二十五批）。
+> 本节只作引用与补记，**不改上文口径**：上文 §1 G1"禁言/禁建没有自救入口"、§2.3/§7 的 N4 白名单等均为当时表述，
+> 以本节与最终实现为准，后续维护请以 `playerMute.kts`/`voteMute.kts` 代码为真源。
+
+- 命令：`/vote quitMute`（子指令，别名 `解除禁言`/`解禁`），**仅当前被禁言者本人**可发起；未禁言提示拒绝。
+- 行为：**只解除临时禁言**；永久禁言（无期限 DB 记录）拒绝并提示联系管理员（管理员层级以下施加的可走 `/punishreport` 检举）；
+  阈值沿用 VoteEvent 默认 50%+fastSuccess；`bypassDenyVote` 仅本人、`ignoreStartBan=true`（被禁止发起投票/强制观战/
+  未完成教程时也可自救）；通过后 `unmutePlayer`，投票期间离线用 `liftMuteByUids` 兜底，并广播结果。
+- 配套：`playerMute.SELF_RESCUE_VOTE_SUBCOMMANDS` 增加 `quitmute`/`解除禁言`/`解禁`，新增 `isPermanentMuted(target)`；
+  `coreMindustry/menu.kts` 帮助条目、`voteTutorial.kts` 教程提及。
+- **未做运行时行为验证**（按用户要求，写入未验证项）。
