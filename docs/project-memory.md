@@ -240,6 +240,11 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   审核后台、DP/地图审核落盘与控制台桥、`liveEventFeed.kts` 实时事件流、旧 `web-config.ps1` 自动迁移（提交
   `64b194f`/`8e1dc99`/`a5b7f06`，事件流 `588169c`）。验证：后端 21 项自测、前端 mock 28/28 + 真实联调 35/35、
   迁移 18/18，游戏服全程未重启。未验证：真实多 IP 登录、DP 热重载端到端、地图审核后客户端换图、真实玩家事件。
+- **2026-10-17（投票体验：免打扰 + 新手教程）**：新增 `/votednd` 投票免打扰（自动投中立、跳过弹窗；持久化 MdtSettings
+  `vote.dnd.uids`；300ms 只读轮询、热路径零 DB/IO）与 `/votetutorial` 7 页新手投票教程（游客进服 1.5s 弹窗，
+  **未完成教程的游客无投票权**（deny predicate，全内存 O(1)），完成即时恢复；持久化 `vote.tutorial.completed`）。
+  同轮核实"玩家信息面板的禁言/观战/禁建均触发检举弹窗、无旁路"（假玩家探针 6 条事件到达监听器），并将 `playerMute`
+  检举封禁/冷却状态改为异步预加载 + 异步落库（游戏线程无同步 DB，面板操作 1-5ms）。提交 `0cbf9c4`/`da90fcf`。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -297,6 +302,9 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
     PVP 保护此前**完全失效**、等级分布即时迁移此前从未触发。未验证：`TrustLevelChangedEvent` 真实玩家等级变化；
     `betterTeam` 有 8+ 个 `contextScript` 依赖方，单脚本热重载不级联，建议低峰冷启动一次。详见
     [listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)。
+14. **投票免打扰 / 新手投票教程待真实客户端验证**：`/votednd`（自动中立、跳过弹窗）与 `/votetutorial`（7 页教程，
+    **未完成教程游客无投票权**，完成即时恢复）已实现并进帮助菜单；未验证真实客户端 UI、游客完成教程后的真实投票链路、
+    DND 多投票并发行为、已登录非游客会话路径。菜单/面板禁言/观战/禁建→检举弹窗已核实无旁路（`0cbf9c4`）。
 
 ## 9. 给新会话 Agent 的柔性接手提示
 
@@ -350,6 +358,10 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-10-17（投票体验 / 检举弹窗核实 / playerMute 性能）**：新增 `/votednd` 投票免打扰与 `/votetutorial` 新手投票教程
+  （**未完成教程游客无投票权**，完成即时恢复）；帮助菜单 `voteHelpEntries` 加入两条；核实菜单/面板禁言/观战/禁建均触发
+  检举弹窗、无绕过旁路；`playerMute` 检举状态改异步预加载/落库（游戏线程无同步 DB）。提交 `0cbf9c4`/`da90fcf`；
+  同步 `help-menu.md` 与 `scripts-maintenance.md` 第二十四批。
 - **2026-10-17（SA 事件监听审计修复）**：`listen`（arc 原生事件）/`listenTo`（SA 自定义事件）两套总线混用，导致 3 处监听器
   静默失效（PVP 保护此前完全失效、等级分布即时迁移从未触发、换图后禁用队伍兜底未跑），已修复（`69d4932`）并新增
   [listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)；教训写入 `agent-debug-experience.md` §10 与

@@ -22,6 +22,62 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-17（第二十四批）：投票免打扰 /votednd + 新手投票教程 /votetutorial + 菜单检举弹窗核实 + playerMute 异步持久化
+
+类型：功能新增 + 核实 + 性能加固（提交 `0cbf9c4`、`da90fcf`；帮助菜单条目改 `coreMindustry/menu.kts`）。
+
+### 1. 投票免打扰 `/votednd`（`wayzer/cmds/voteDnd.kts`，307 行，提交 `0cbf9c4`）
+
+- 命令：`/votednd`（别名 `投票免打扰`/`免打扰`/`dnd`），参数 `on|off|status`，**无参切换**；
+  持久化 `MdtSettings` 键 **`vote.dnd.uids`**（按行存主体 uid：账号 uid + 游戏 uuid 任一命中即生效）。
+- 机制：`Dispatchers.game` 每 **300ms** 只读 `VoteEvent.current()` + identity 去重；发现新投票时遍历 `allCanVote()`，
+  对开启 DND 且未投票者调用 `event.vote(p, Action.Ignore)` 自动中立（`vote.lib` 对已投票者跳过 20s 弹窗）；
+  发起者跳过、已投票不覆盖、开启当时立即补中立。
+- 配置：`enabled=true`、`pollIntervalMillis=300`、`maxAutoIgnorePerVote=64`。
+- 性能：轮询热路径**零 DB/IO/日志**；状态加载与落库都在 IO 协程；未改 `vote.lib.kt` / `wayzer/lib/*`。
+- 验证（假玩家 E2E）：DND 玩家自动中立且 **0 弹窗**、普通玩家正常 1 弹窗、发起者赞成不变 —— 全 PASS；
+  `scriptdiag commands votednd` 命中。
+
+### 2. 新手投票教程 `/votetutorial`（`wayzer/cmds/voteTutorial.kts`，297 行，提交 `da90fcf`）
+
+- 命令：`/votetutorial`（别名 `投票教程`/`votehelp`），**任何玩家可重开**；游客（未登录，`!PlayerData.authed`，与
+  `vote.lib` starterGuest 同口径）进服 **1.5s** 后弹 **7 页教程**（首屏"不完成也可玩但没有投票权"→ `/vote ob`、
+  `/vote quitob`（被禁言也可用）、输入 `0/1/.`（中立不计赞反）、`/votednd` 免打扰、"不要跟风投票"、完成页）。
+- **行为变化：未完成教程的游客没有投票权** —— `VoteEvent.registerDenyVotePredicate("wayzer.cmds.voteTutorial")`
+  （全内存 O(1) 判定：不弹窗、票数不计、发起被拦），完成教程**立即解除**，无需重进。
+- 持久化 `MdtSettings` 键 **`vote.tutorial.completed`**（按行 uuid/uid）；启用时 `Dispatchers.IO` 读一次、完成时
+  内存 + conflated Channel → IO 落库；**加载完成前一律放行**（避免慢库误拒）。配置：`joinDelayMillis=1500`。
+- 验证（js 假玩家走真实命令链路）：逐页文案、完成落库、未完成投票被拒、完成即时恢复、重进不重复弹、
+  热重载从库恢复 —— 全通过。**未验证**：真实客户端 UI（7 页排版/观感）与已登录非游客会话路径。
+  副作用：测试假 join 使 `serverStats` 今日计数轻微抬高（运行时数据，非持久污染）。
+
+### 3. 菜单/面板限制 → 检举弹窗核实（提交 `0cbf9c4`，设计文档新增「菜单入口核实（2026-10-17）」节）
+
+- 结论：玩家信息面板的**临时禁言 / 直观战 / 临时禁建**均汇聚到会 `fire PunishmentAppliedEvent` 的函数 →
+  `punishmentReport` 监听弹窗；**永久选项被 Q3 规则先行拒绝**；4 级/3++ 与游客目标正确过滤；**全仓无绕过事件的旁路**。
+- 运行时假玩家探针实测 **6 条事件到达监听器**（探针已删）。**无需代码修复**，仅在设计文档补核实章节（本批只引用）。
+
+### 4. playerMute 持久化性能加固（`wayzer/ext/playerMute.kts`，+157/−34 量级，提交 `0cbf9c4`）
+
+- 检举封禁/冷却状态由"游戏线程懒加载 + 同步写库"改为 **onEnable 时 `launch(Dispatchers.IO)` 异步预加载** +
+  锁内生成快照、单 IO 协程**串行异步落库**（失败 60s 限频告警）；未加载时查询返回安全默认值不阻塞。
+- 面板惩罚实测耗时：A/临时禁言 2ms、C/直观战 5ms、D/投票禁言 1ms，**游戏线程无同步 DB**；剩余同步 DB 仅为原有
+  `MdtStorage.setMute/getMuteReason/clearMute`（禁言应用/解除，低频，未改）。
+
+### 5. 帮助菜单与文档
+
+- `coreMindustry/menu.kts` 的 `voteHelpEntries` 新增：「新手投票教程」（投票入口之后）、「投票免打扰」（一票否决之后）；
+  改后 `sa load coreMindustry/menu` 编译/启用正常。
+- 文档：`help-menu.md` 补两条指令；`current-issues.md`/`project-memory.md` 补行为变化与未验证项；
+  `punishment-system-design.md` 的「菜单入口核实」节由 task-18 owner 添加（本批只引用，不修改）。
+
+### 6. 验证与未验证
+
+- 验证（提交时）：`sa listFailed` 空；`scriptdiag count` = 163/159/154/失败0、根指令 160（当次）；`scriptdiag commands
+  votednd|votetutorial` 命中；KDoc 嵌套注释扫描 **210 文件**干净；三个改动脚本均 Enabled。
+- 未验证：真实客户端 UI（教程排版与弹窗观感）、真实玩家完整链路（游客完成教程后参与投票、DND 在多投票并发下的表现）、
+  已登录非游客会话路径。
+
 ## 2026-10-17（第二十三批）：SA 事件监听 listen/listenTo 静默失效修复（3 处）
 
 类型：Bug 修复（提交 `69d4932`；全仓审计文档 [`docs/listener-listen-vs-listenTo-audit.md`](listener-listen-vs-listenTo-audit.md)）。

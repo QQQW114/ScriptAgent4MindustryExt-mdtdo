@@ -152,6 +152,7 @@ private val playerHelpEntries = listOf(
 
 private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "投票入口", "打开投票指令列表；多数投票需50%同意，特殊投票会单独标注", "/vote"),
+    HelpEntryDef("votetutorial", "新手投票教程", "游客必读：介绍 /vote ob·quitob、输入 1/0/.、/votednd 免打扰；完成教程后才能参与投票", "/votetutorial"),
     HelpEntryDef("vote", "投降/结束", "投票投降或结束当前局", "/vote gameOver"),
     HelpEntryDef("vote", "投票换图", "发起换图投票，需51%同意", "/vote map"),
     HelpEntryDef("vote", "下次自动轮换", "投票通过后在下一次自动轮换时换到指定地图，需51%同意", "/vote nextmap"),
@@ -187,6 +188,7 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "本局纯净模式", "投票立即开启当前这局纯净模式，禁用普通技能与3级技能", "/vote pure"),
     HelpEntryDef("vote", "关闭本局纯净模式", "投票关闭当前局纯净模式，不影响地图原有技能限制", "/vote pureoff"),
     HelpEntryDef("veto", "一票否决", "3++级/4级一键否决当前投票", "/veto"),
+    HelpEntryDef("votednd", "投票免打扰", "开启后投票时自动投中立、跳过弹窗；用法 /votednd on|off|status（别名 dnd/免打扰）", "/votednd"),
 )
 
 private val adminHelpEntries = listOf(

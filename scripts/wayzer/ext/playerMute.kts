@@ -137,29 +137,34 @@ data class RestrictionBanInfo(
 private val restrictionBans = linkedMapOf<String, RestrictionBanInfo>()
 private val punishCooldowns = linkedMapOf<String, Long>()
 private var punishStateLoaded = false
-private var punishStateLoadWarned = false
+private var punishStateLoadInFlight = false
+private var lastPunishLoadWarnAt = 0L
+private var lastPunishPersistWarnAt = 0L
+private var punishPersistSuccessLogged = false
+// 异步落库：锁内只生成“最新全量快照”，由单个 IO 协程串行写，后写覆盖先写，避免乱序。
+private var pendingBanSnapshot: String? = null
+private var pendingCooldownSnapshot: String? = null
+private var punishPersistInFlight = false
 
 private fun sanitizePersistText(text: String): String =
     text.replace('|', '/').replace('\n', ' ').replace('\r', ' ').trim()
 
-private fun ensurePunishStateLoaded() {
-    if (punishStateLoaded) return
+/** 是否已完成 DB 状态加载；未完成时规则查询返回“无封禁/无冷却”的安全默认值（放行），不阻塞游戏线程。 */
+fun isPunishStateLoaded(): Boolean = punishStateLoaded
+
+/**
+ * 解析 DB 中的检举封禁/冷却记录（只在 Dispatchers.IO 调用）。
+ * 与游戏线程可能已写入的早期状态合并：内存里已有的键优先，避免加载覆盖刚发生的记录。
+ */
+private fun loadPunishStateFromDb(): Pair<Int, Int> {
+    val banRaw = MdtStorage.getSetting(BAN_SETTING_KEY)
+    val cooldownRaw = MdtStorage.getSetting(COOLDOWN_SETTING_KEY)
     synchronized(PUNISH_LOCK) {
-        if (punishStateLoaded) return
-        val banRaw = runCatching { MdtStorage.getSetting(BAN_SETTING_KEY) }
-        if (banRaw.isFailure) {
-            if (!punishStateLoadWarned) {
-                punishStateLoadWarned = true
-                logger.warning("加载检举封禁状态失败（数据库可能未就绪，稍后自动重试）: ${banRaw.exceptionOrNull()?.message}")
-            }
-            return
-        }
-        val cooldownRaw = runCatching { MdtStorage.getSetting(COOLDOWN_SETTING_KEY) }.getOrNull()
-        banRaw.getOrNull()?.lineSequence()?.forEach { line ->
+        banRaw?.lineSequence()?.forEach { line ->
             val parts = line.split('|')
             if (parts.size < 4) return@forEach
             val uid = parts[0].trim()
-            if (uid.isEmpty()) return@forEach
+            if (uid.isEmpty() || restrictionBans.containsKey(uid)) return@forEach
             val until = parts[1].toLongOrNull() ?: return@forEach
             val strikes = parts[2].toIntOrNull() ?: 0
             val name = parts.drop(3).joinToString("|")
@@ -168,22 +173,88 @@ private fun ensurePunishStateLoaded() {
         cooldownRaw?.lineSequence()?.forEach { line ->
             val parts = line.split('|')
             if (parts.size < 3) return@forEach
+            val key = "${parts[0]}|${parts[1]}"
+            if (punishCooldowns.containsKey(key)) return@forEach
             val until = parts[2].toLongOrNull() ?: return@forEach
-            punishCooldowns["${parts[0]}|${parts[1]}"] = until
+            punishCooldowns[key] = until
         }
-        punishStateLoaded = true
+        return restrictionBans.size to punishCooldowns.size
     }
 }
 
-private fun persistPunishStateLocked() {
-    val banText = restrictionBans.values.joinToString("\n") {
+/** 请求异步加载持久化状态（幂等、不阻塞游戏线程）；DB 未就绪时 60s 内最多告警一次，下次查询自动重试。 */
+private fun requestPunishStateLoad() {
+    synchronized(PUNISH_LOCK) {
+        if (punishStateLoaded || punishStateLoadInFlight) return
+        punishStateLoadInFlight = true
+    }
+    launch(Dispatchers.IO) {
+        val startedAt = System.currentTimeMillis()
+        val result = runCatching { loadPunishStateFromDb() }
+        synchronized(PUNISH_LOCK) {
+            punishStateLoadInFlight = false
+            if (result.isSuccess) punishStateLoaded = true
+        }
+        result.onSuccess { counts ->
+            logger.info(
+                "[惩罚体系] 已异步加载持久化状态：检举封禁 ${counts.first} 条、冷却 ${counts.second} 条，耗时 ${System.currentTimeMillis() - startedAt}ms，线程=${Thread.currentThread().name}"
+            )
+        }.onFailure { error ->
+            val now = System.currentTimeMillis()
+            val shouldWarn = synchronized(PUNISH_LOCK) {
+                if (now - lastPunishLoadWarnAt < 60_000L) false
+                else {
+                    lastPunishLoadWarnAt = now
+                    true
+                }
+            }
+            if (shouldWarn) logger.warning("加载惩罚体系持久化状态失败（60s 内最多告警一次，将自动重试）: ${error.message}")
+        }
+    }
+}
+
+/**
+ * 在锁内生成最新全量快照并调度异步落库（调用方需已持有 PUNISH_LOCK）。
+ * 用“单 IO 协程串行写 + 最后快照覆盖”保证不会乱序；写失败只限频记录日志，不阻塞游戏线程。
+ */
+private fun schedulePunishPersistLocked() {
+    pendingBanSnapshot = restrictionBans.values.joinToString("\n") {
         "${it.uid}|${it.untilMillis}|${it.strikeCount}|${sanitizePersistText(it.name)}"
     }
-    val cooldownText = punishCooldowns.entries.joinToString("\n") { "${it.key}|${it.value}" }
-    runCatching {
-        MdtStorage.setSetting(BAN_SETTING_KEY, banText)
-        MdtStorage.setSetting(COOLDOWN_SETTING_KEY, cooldownText)
-    }.onFailure { logger.warning("保存惩罚体系状态失败: ${it.message}") }
+    pendingCooldownSnapshot = punishCooldowns.entries.joinToString("\n") { "${it.key}|${it.value}" }
+    if (punishPersistInFlight) return
+    punishPersistInFlight = true
+    launch(Dispatchers.IO) {
+        while (true) {
+            val snapshot = synchronized(PUNISH_LOCK) {
+                val ban = pendingBanSnapshot
+                val cooldown = pendingCooldownSnapshot
+                pendingBanSnapshot = null
+                pendingCooldownSnapshot = null
+                if (ban == null && cooldown == null) null else ban to cooldown
+            } ?: break
+            runCatching {
+                snapshot.first?.let { MdtStorage.setSetting(BAN_SETTING_KEY, it) }
+                snapshot.second?.let { MdtStorage.setSetting(COOLDOWN_SETTING_KEY, it) }
+            }.onSuccess {
+                if (!punishPersistSuccessLogged) {
+                    punishPersistSuccessLogged = true
+                    logger.info("[惩罚体系] 异步落库已生效（写线程=${Thread.currentThread().name}），后续变更均在 IO 线程异步写")
+                }
+            }.onFailure { error ->
+                val now = System.currentTimeMillis()
+                val shouldWarn = synchronized(PUNISH_LOCK) {
+                    if (now - lastPunishPersistWarnAt < 60_000L) false
+                    else {
+                        lastPunishPersistWarnAt = now
+                        true
+                    }
+                }
+                if (shouldWarn) logger.warning("异步保存惩罚体系状态失败（60s 内最多告警一次，下次变更会重试）: ${error.message}")
+            }
+        }
+        synchronized(PUNISH_LOCK) { punishPersistInFlight = false }
+    }
 }
 
 // ---------- 等级/时长/冷却/封禁 规则函数 ----------
@@ -216,7 +287,10 @@ fun applierLevelOrderByUid(uid: String): Int =
 fun restrictionBanLeftMillis(uids: Iterable<String>): Long {
     val keys = uids.filter { it.isNotBlank() }.toSet()
     if (keys.isEmpty()) return 0L
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) {
+        requestPunishStateLoad()
+        return 0L // 状态未加载完成：按“无封禁”放行，不在游戏线程阻塞等 DB
+    }
     val now = System.currentTimeMillis()
     var best = 0L
     synchronized(PUNISH_LOCK) {
@@ -234,7 +308,10 @@ fun restrictionBanLeftMillis(uids: Iterable<String>): Long {
 fun restrictionBanInfo(uids: Iterable<String>): RestrictionBanInfo? {
     val keys = uids.filter { it.isNotBlank() }.toSet()
     if (keys.isEmpty()) return null
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) {
+        requestPunishStateLoad()
+        return null
+    }
     synchronized(PUNISH_LOCK) {
         return keys.mapNotNull { restrictionBans[it] }
             .maxWithOrNull(
@@ -254,7 +331,10 @@ fun punishCooldownLeftMillis(operatorUids: Iterable<String>, targetUids: Iterabl
     val opKeys = operatorUids.filter { it.isNotBlank() }.toSet()
     val targetKeys = targetUids.filter { it.isNotBlank() }.toSet()
     if (opKeys.isEmpty() || targetKeys.isEmpty()) return 0L
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) {
+        requestPunishStateLoad()
+        return 0L // 状态未加载完成：按“无冷却”放行，不在游戏线程阻塞等 DB
+    }
     val now = System.currentTimeMillis()
     var best = 0L
     synchronized(PUNISH_LOCK) {
@@ -275,14 +355,14 @@ private fun markPunishmentApplied(operatorUids: Iterable<String>, targetUids: It
     val targetKeys = targetUids.filter { it.isNotBlank() }.toSet()
     val cooldown = punishRepeatCooldownMillisValue()
     if (opKeys.isEmpty() || targetKeys.isEmpty() || cooldown <= 0L) return
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) requestPunishStateLoad()
     val now = System.currentTimeMillis()
     synchronized(PUNISH_LOCK) {
         punishCooldowns.entries.removeIf { it.value <= now }
         opKeys.forEach { op ->
             targetKeys.forEach { target -> punishCooldowns["$op|$target"] = now + cooldown }
         }
-        persistPunishStateLocked()
+        schedulePunishPersistLocked()
     }
 }
 
@@ -382,7 +462,7 @@ fun applyReportStrike(
     val primary = operatorUid.trim()
     if (primary.isEmpty()) return null
     val keys = (operatorUids.filter { it.isNotBlank() } + primary).distinct()
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) requestPunishStateLoad()
     val now = System.currentTimeMillis()
     val threshold = permanentReportStrikeThresholdValue()
     synchronized(PUNISH_LOCK) {
@@ -394,7 +474,7 @@ fun applyReportStrike(
         val until = if (permanent) PERMANENT_UNTIL else now + banLeft
         val record = RestrictionBanInfo(primary, sanitizePersistText(operatorName.ifBlank { primary }), until, strikeCount)
         keys.forEach { restrictionBans[it] = record }
-        persistPunishStateLocked()
+        schedulePunishPersistLocked()
         return ReportStrikeResult(record.uid, record.name, strikeCount, permanent, banLeft)
     }
 }
@@ -403,18 +483,21 @@ fun applyReportStrike(
 fun clearRestrictionBan(uids: Iterable<String>): Boolean {
     val keys = uids.filter { it.isNotBlank() }.toSet()
     if (keys.isEmpty()) return false
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) requestPunishStateLoad()
     synchronized(PUNISH_LOCK) {
         var removed = false
         keys.forEach { if (restrictionBans.remove(it) != null) removed = true }
-        if (removed) persistPunishStateLocked()
+        if (removed) schedulePunishPersistLocked()
         return removed
     }
 }
 
 /** 当前生效的检举封禁列表（去重后按剩余时间排序，管理命令/菜单用）。 */
 fun activeRestrictionBans(): List<RestrictionBanInfo> {
-    ensurePunishStateLoaded()
+    if (!punishStateLoaded) {
+        requestPunishStateLoad()
+        return emptyList()
+    }
     val now = System.currentTimeMillis()
     return synchronized(PUNISH_LOCK) {
         restrictionBans.values
@@ -820,3 +903,9 @@ command("playerunmute", "管理指令：解除玩家禁言") {
 }
 
 PermissionApi.registerDefault("wayzer.admin.playerMute", group = "@admin")
+
+onEnable {
+    // 性能：持久化状态（检举封禁/24h 冷却）在启用时异步预加载，避免第一次惩罚施加时在游戏线程做同步 DB 事务。
+    // 预加载完成前规则查询返回安全默认值（无封禁/无冷却，放行），不会阻塞游戏线程。
+    requestPunishStateLoad()
+}

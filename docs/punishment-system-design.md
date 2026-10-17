@@ -606,3 +606,24 @@ punishmentReport.kts ───────────────────�
 | `docs/trust-system.md:153-160` | 持久化现状说明（本轮未新增 Exposed 表，冷却/封禁用 `MdtSettings` 两键，见 §3.5） |
 | `docs/security-guard.md:22, 76` | IP 封禁持久化（同 MdtSettings 口径）、临时禁言/禁建内存态 |
 | `docs/agent-debug-experience.md` §8/§9 | SA 静默失败与 KDoc 截断坑（脚本改动必须验证） |
+
+## 菜单入口核实（2026-10-17）
+
+> 核实问题：玩家被其他玩家通过**玩家信息面板**（`playerInfoTripleTap.kts`）施加禁言/强制观战/禁建时，被罚者是否会收到检举弹窗。实现代码：`playerMute.kts`（规则/事件，事件 :51/:83）、`punishmentReport.kts`（监听 :92、弹窗 :141）、`voteOb.kts`、`playerBuildBan.kts`。
+
+| 面板动作（`playerInfoTripleTap.kts`） | 调用函数（行号） | 是否 fire `PunishmentAppliedEvent` | 事件 source / 备注 |
+|---|---|---|---|
+| 禁言此玩家 · 临时时长 | `mutePlayerTemporary`（:771 → playerMute :635，fire :660） | 是 | `direct`；非管理员钳制≤1440、24h 冷却、检举封禁生效 |
+| 禁言此玩家 · 留空=永久 | `mutePlayer`（:769 → playerMute :558，fire :596） | 仅真正生效时 fire | 非管理员永久请求被 Q3 规则拒绝 → 不生效、无事件/弹窗（符合口径） |
+| 强制观战此玩家 | `forceObPlayer`（:748 → voteOb :72，fire :125） | 是 | 4 级/3++：`source=admin`（管理员层级→不弹窗）；3+：`source=direct`+`directOwnerUid`，额外补 24h 到期 |
+| 禁止ta建造 · 临时时长 | `disableBuildTemporary`（:795 → playerBuildBan :109，fire :145） | 是 | `direct`；同上钳制/冷却/封禁 |
+| 禁止ta建造 · 留空=永久 | `disableBuild`（:793 → playerBuildBan :69，fire :101） | 仅真正生效时 fire | 非管理员永久请求被拒绝 → 无事件 |
+| 解除ta禁言/解除限制（:756/:689/:780） | `unmutePlayer`/`releaseForceObPlayer`/`enableBuild` | 否（属解罚，不需要） | — |
+| 投票类按钮（:677/:681） | `startKickVote` / `startObVote`（voteOb :234，fire :287） | ob 投票通过后 fire；kick 不在本轮范围 | `source=vote`，施罚者归因为投票发起者 |
+| ban / ban ip / 禁止发起投票（:803/:806/:823） | ban 系统 / `VoteEvent.banVoteStarter` | 否 | 不在本轮惩罚体系范围（Q7/Q5 已说明） |
+
+结论：**面板施加的临时禁言/强制观战/临时禁建都会 fire 事件 → `punishmentReport` 监听后给被罚者弹窗**；弹窗还需满足：`enabled=true`、目标非游客（`targetAuthed`）、施罚者等级 <3++（3++/4 不弹）、在 `Groups.player` 中找到目标、在线人数 ≥ `minOnlinePlayers`（默认 3）、距上次该目标弹窗 ≥ `popupMinIntervalMillis`（默认 60s），之后延迟 `popupDelayMillis`（默认 3s）弹窗（`punishmentReport.kts:101-139`）。非管理员"永久"类请求会被 Q3 规则先拒绝，因此不会有弹窗（行为正确）。
+
+其它菜单/旁路：`quickOps.kts` 只转发 `/vote` 子指令（走 vote 路径，会 fire）；全仓 grep 确认 `temporaryMutes/limitPlayers/buildBanReasons/MdtStorage.setMute` 的写入只存在于 `playerMute.kts`/`voteOb.kts`/`playerBuildBan.kts` 内部，**未发现绕过事件的旁路**。
+
+**性能检查**：游戏线程新增分支均为内存查找；持久化状态改为 `onEnable` 用 `launch(Dispatchers.IO)` 异步预加载（实测日志：`已异步加载持久化状态…耗时 1ms，线程=DefaultDispatcher-worker-13`），落库改为锁内生成快照 + 单 IO 协程串行异步写（实测：`异步落库已生效（写线程=DefaultDispatcher-worker-13）`），失败限频 60s 告警；面板惩罚实测耗时 A/临时禁言 2ms、C/直观战 5ms、D/投票禁言 1ms（无同步 DB）。剩余同步 DB 仅为原有 `MdtStorage.setMute/getMuteReason/clearMute`（禁言应用/解除，低频，未改）。
