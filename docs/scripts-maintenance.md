@@ -22,6 +22,455 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-17（第二十三批）：SA 事件监听 listen/listenTo 静默失效修复（3 处）
+
+类型：Bug 修复（提交 `69d4932`；全仓审计文档 [`docs/listener-listen-vs-listenTo-audit.md`](listener-listen-vs-listenTo-audit.md)）。
+
+### 1. 发现与机制
+
+- 现象：`listen<SA 自定义事件>` **编译通过、脚本 `[Enabled]`、无报错，但监听器永远不触发**。本次实际影响：
+  `pvpProtect` 的 PVP 保护**完全失效**（`startPvpProtect()` 全仓唯一调用点就在该监听器）、`serverStats` 等级分布
+  即时迁移从未执行（进服路径会自愈）、`betterTeam` 换图后禁用队伍兜底未跑。
+- 原因：SA 有两套同名但互不相通的事件总线——`listen<T>` 只挂 `arc.Events`（`Events.fire` 派发，原生 `EventType.*` 用）；
+  实现 `cf.wayzer.scriptAgent.Event`（带 `Event.Handler`、`emitAsync()`/`launchEmit()` 派发）的自定义事件必须用
+  `listenTo<T>`，**不会进 `arc.Events`**。`listen` 的 `T : Any` 所以误用照样编译通过。
+
+### 2. 全仓审计与修复（3 处）
+
+- 审计 208 个 `.kts/.kt`：`listen` 186 处、`listenTo` 70 处；SA 自定义事件误用 `listen` 仅 3 处，均已修复：
+  - `wayzer/ext/serverStats.kts:311`：`listen<TrustLevelChangedEvent>` → `listenTo`，lambda 由 `it.uid/it.newLevel`
+    改为 receiver 直取 `uid/newLevel` + `return@listenTo`（`listenTo` 的 lambda 是事件 receiver，**没有隐式 `it`**；
+    首次热重载曾因 `Unresolved reference 'it'` 失败一次）；
+  - `wayzer/map/betterTeam.kts:97`、`wayzer/map/pvpProtect.kts:152`：`listen<MapLoadFinishedEvent>` → `listenTo`。
+- 每处加一行中文防回退注释；合计 3 文件 +10/−5，未改任何其它脚本。反向核查：原生事件误用 `listenTo` 是编译错误，
+  本仓不存在该方向问题；其余 183 处 `listen` 均为原生事件（含显式 import 与 `listen<Any>(class)` 形式）。
+
+### 3. 运行态证据与验证
+
+- 修复前（只读反射）：`arc.Events` 上错误挂着 `MapLoadFinishedEvent`×2 + `TrustLevelChangedEvent`×1；修复后 SA handler 上
+  MLF 3→5、TLC 6→7，`arc` 归零；并有一次真实换图 E2E 证明派发到新监听器。
+- 验证：KDoc 嵌套注释扫描 208 文件干净、`sa listFailed` 为空、`scriptdiag` 失败 0、三脚本均 Enabled。
+
+### 4. 未验证 / 建议
+
+- **未验证**：`TrustLevelChangedEvent` 需要真实玩家等级变化才能端到端确认（非永久数据错误，进服路径会自愈）。
+- `betterTeam` 有 8+ 个 `contextScript<T>()` 传递依赖方持旧实例，SA 单脚本热重载**不级联** —— **建议低峰期冷启动一次**彻底刷新
+  （不影响本次监听的修复生效）。
+- 预防规则已落在 `agent-debug-experience.md` §10 与审计文档 §7（新增/审查监听器先看事件定义、扫描命令、receiver 写法与热重载注意）。
+
+## 2026-10-17（第二十二批）：服务器门户 Web（三页前端 + 后端 API + DP/地图上传审核 + 管理员后台 + 事件流 + 旧配置自动迁移）
+
+类型：Web 端功能升级（后端 `64b194f`、前端 `8e1dc99`、旧配置自动迁移 `a5b7f06`；配套事件流 `588169c`/`32b106b`、
+README `aa847f1`、`.gitignore` `2624a96`）。**未改游戏主逻辑**；权威文档 [`docs/web-portal.md`](web-portal.md)。
+
+### 1. 需求
+
+用户 2026-10-17 要点：欢迎页 + 特殊效果；新增"服务器内消息与事件"实时刷新并渲染 Mindustry 彩色文字；玩家上传
+DP/地图 → **管理员审核通过后**进入服务器列表；**每种待审队列上限 10、单文件 10MB**；管理员账号密码由配置文件决定、
+**同一账号允许多 IP 登录**；尽量不占用游戏服务器主线程。
+
+### 2. 架构与文件
+
+- **独立进程**：Windows PowerShell 5.1 `HttpListener`，零外部依赖（不需要 Node/Python/联网）；游戏侧只做两件事：
+  `serverStats.kts` 写状态 JSON、`liveEventFeed.kts` 用 IO 协程批量写事件 JSONL；Web 可独立启停。
+- `stats-web/`：`index.html`（欢迎页 + 状态卡 + 原生 SVG 趋势图 + 实时消息流 + 原「履历/运维」数据看板）、
+  `upload.html`（公开投稿）、`admin.html`（管理后台）、`assets/**`（css/js/mock/自测页，全部本地、无外网 CDN）、
+  `server/*.ps1` 共 6 个模块（`portal-core` 配置/会话/限频、`portal-http` 请求与静态、`portal-store` 提交/审核/落盘、
+  `portal-console` 游戏控制台桥、`portal-api` 路由、`portal-server` 监听循环）、`start-web.ps1`/`start-web.bat`、
+  `web-config.json`（主配置）、`web-config.ps1`（旧配置，仅迁移兜底）、`web-data/`（运行数据，`.gitignore` 已忽略）。
+- 启动：`cd stats-web; .\start-web.ps1`（默认 **127.0.0.1:8090**；`-Port/-Bind/-StatsJson/-Config` 可覆盖，
+  `-InstallAcl` 公网注册 URL 保留，`-GenPasswordHash "密码"` 生成 PBKDF2 哈希；兼容旧参数）。
+
+### 3. 配置项与默认值（`web-config.json`，相对路径以 stats-web 为基准）
+
+- 监听：`bind=127.0.0.1`、`port=8090`；
+- 管理员：`admin.username=admin`、`admin.password=ChangeMe_123456`（**首次部署必须立即修改**）、
+  `admin.passwordHash=""`（非空时优先，`-GenPasswordHash` 生成）、`admin.sessionHours=12`、`session.secret` 占位需改；
+- 上传：`maxFileBytes=10MB`、`maxRequestBytes=12MB`、`queueLimitPerKind=10`、`historyLimit=200`、
+  `allowedDpExtensions=.zip/.json/.hjson/.json5`、`allowedMapExtensions=.msav`、`deleteRejectedPayloads=true`；
+- 限频：登录失败 `5 次/5 分钟`、上传 `5 次/10 分钟`；
+- 目录：`dirs.dp=../mdtserver/config/scripts/external-cp`、`dirs.maps=../mdtserver/config/maps`；
+- 控制台桥：`console.enabled=true`、`127.0.0.1:6859`、`waitSeconds=30`；
+- 审核后动作：`reload.dpOnApprove=false`（默认关，热重载重建内容并触发世界重同步）、`reload.mapListOnApprove=true`、
+  `reload.mapListOnRemove=true`、`reload.unloadOnRemove=false`；`security.trustProxyHeaders=false`、`maxPendingConsoleCommands=8`。
+
+### 4. 权限、会话与安全
+
+- 鉴权：`Authorization: Bearer <token>`（`POST /api/login` 获取，32 字节随机 hex；内存会话 12h；**同账号多 IP/多会话允许**、
+  token 不绑 IP；**不使用 Cookie**，跨站表单无法伪造 → 无 CSRF 面）；登录失败同 IP 限频 5/5 分钟 → 429。
+- 安全：上传扩展名 + **文件头校验**（zip `PK`、JSON 必须 UTF-8 对象/数组、msav zlib/gzip 头）；静态白名单 + 路径穿越防护，
+  屏蔽 `server/`、`web-data/`、`web-config.*`；上传先落隔离目录 `web-data/uploads/<id>/`，审核通过才同卷「临时文件 + 原子替换」落位；
+  XSS：后端只透传颜色标记原文，前端**先 HTML 转义再把白名单颜色转 `<span>`**（自测 18/18、DOM 危险节点 0）。
+- 审计/日志：`web-data/audit.log`（上传/登录/审核/删除）、`console-actions.log`（控制台命令与回显）、`portal.log`（5MB 轮转）。
+
+### 5. 上传/审核与控制台桥
+
+- 公开投稿：`POST /api/upload`（multipart，`kind=dp|map` + `title/author` 必填 + `desc/replaceOf` 可选）；
+  10MB、每种待审 10（满 → 409 `QUEUE_FULL`）、同 IP 限频；审核通过才落盘（DP → `external-cp/`、地图 → `config/maps/`）。
+- 替换语义：同扩展名 `replaceOf` 原地替换（加载名稳定）；扩展名变化则新名落位并删旧；未指定替换但同名 → 自动 ` (2)` 后缀。
+- 控制台桥（`portal-console.ps1`）：审核后可选向游戏控制台 6859 发命令——DP `externalcp load "<文件名>"`（**默认关**，
+  建议低人数时手动/勾选）、地图 `maps`（默认开，触发 `maps.reload()` **免重启**）；发送非阻塞、回显异步收集，
+  失败只写日志、**不影响审核结果**；`maxPendingConsoleCommands=8` 防堆积。
+
+### 6. HTTP API（完整契约见 web-portal §4）
+
+- 公开只读：`GET /api/status`、`/api/events?afterTs=&limit=`、`/api/catalog`、`/api/health`；旧入口 `GET /server-status.json` 兼容；
+- 认证：`POST /api/login`、`POST /api/logout`；
+- 公开上传：`POST /api/upload`；
+- Bearer 管理：`GET /api/review/list`、`POST /api/review/approve|reject`、`DELETE /api/item`；
+- 统一信封 `{ok:true,data}` / `{ok:false,error:{code,message}}`，错误码与 HTTP 状态同步（401/404/409/413/429/500 等）。
+
+### 7. 游戏内实时事件流（契约）
+
+`liveEventFeed.kts` → `mdtserver/config/stats/live-events.jsonl`（UTF-8 无 BOM、append-only、每行完整 JSON、`ts` 严格递增、
+约 2MB 轮转 `live-events.1.jsonl`、`text` 截断 500 字符）；字段 `ts,type,text,player,playerId?`，
+`type ∈ chat/join/leave/vote_start/vote_pass/vote_fail/map_change/system`；Web 按 `afterTs`（严格大于）增量读取，
+坏行/半行/文件缺失均容错。详见 [`docs/live-events-feed.md`](live-events-feed.md) 与 web-portal §7。
+
+### 8. 旧配置自动迁移（后向兼容，`a5b7f06`）
+
+旧部署只有 `web-config.ps1`（`$WebBind/$WebPort/$WebStatsJson`）时，首次启动自动生成 `web-config.json`、旧文件改名
+`web-config.ps1.bak-<yyyyMMdd-HHmmss>` 并写审计 `config_migrated`；**幂等**、解析失败按文本正则兜底、写失败回退旧配置启动、
+`-Config` 自定义路径跳过迁移、CLI `-Bind/-Port/-StatsJson` 最终覆盖。
+**生产升级注意：不要把仓库默认 `web-config.json` 整目录覆盖到旧部署**（否则不会迁移、监听退回默认 127.0.0.1:8090）；
+旧 `start-web.bat` 带参启动时参数仍生效。完整 6 步见 web-portal §3.4。
+
+### 9. 验证（前后端自测数字）
+
+- 后端 21 项（web-portal §10）：错误密码 401 → 5 次后 429；同账号双会话均有效、登出后原 token 失效；未授权管理 API 401；
+  11.5MB → 413 `FILE_TOO_LARGE`；伪 zip/非 JSON → 400 `BAD_TYPE`；待审满 10 → 409 `QUEUE_FULL`；审核落盘/替换/拒绝/删除生效；
+  地图审核后控制台 `maps` 回显成功；事件流真实 JSONL 读取与容错；`/web-config.json`、`server/**` 404，编码穿越 403/404；
+  全程游戏服未重启（`scriptdiag count` 共 161 / 加载 157 / 启用 152 / **失败 0**）。
+- 前端：mock E2E **28/28**；真实后端联调 **35/35**（真实 live-events 5 条渲染、错误码 413/400/429/401 映射、静态 MIME/敏感路径/穿越、
+  颜色渲染自测 18/18、无 JS 异常）；`?mock=1` 演示模式（演示账号 admin/demo123，假后端不产生真实请求），`?mock=0` 关闭；
+  前端资源版本号 `?v=` 需手工 bump。
+- 旧配置迁移 **18/18**（含 0.0.0.0:8091 迁移+备份、CLI 覆盖、无 json 才迁移、重启幂等、语法错误正则兜底、完全非法明确报错、
+  写失败回退、`-Config` 跳过、`-InstallAcl` 共存、仓库现状全 200）。
+
+### 10. 未验证项 / 已知限制
+
+- 未验证：**真实多 IP 公网登录**（本机只能 127.0.0.1，已验证语义：token 不绑 IP + 双会话有效）；**DP 热重载端到端**
+  （为避免副作用，未在运行服执行"审核通过 + `externalcp load`"）；**地图审核后玩家客户端换图验收**（只验证 `maps` 回显）；
+  **真实玩家 chat/join/leave/vote 事件**（测试期无人，只验证 system/map_change 与读取容错）。
+- 限制：会话内存态（重启 Web 需重登）；后端单线程请求循环（大文件/慢客户端会短暂串行）；控制台桥尽力而为（依赖
+  `socketInput=true`，并发占用时回显可能为空）；门户无 HTTPS（公网建议反代）；`/api/status.maxPlayers` 无可靠来源固定 `null`。
+
+### 11. 生产升级要点 / 维护建议
+
+- 生产升级按 web-portal §3.4：**备份**线上 `stats-web/`（含 `web-config.ps1`、`web-data/`）→ 整目录替换但**不带仓库默认
+  `web-config.json`**、保留线上旧 `web-config.ps1` 让其首启自动迁移 → 确认日志 `[升级] 已把旧配置迁移到…` 且监听地址与旧站一致
+  → **立即修改默认管理员密码**（`-GenPasswordHash`）与 `session.secret` → 公网 ACL/防火墙/反代确认。
+- 不提交 `stats-web/web-data/`（已 gitignore）与含凭据的 `web-config.json`；分发用**整目录复制**或按 `stats-web/README.md`
+  打包并排除 `web-data/`（**旧 `复制插件用\stats-web.zip` 已过期**，只含旧的单文件静态页）。
+- 改后端 `.ps1` 必须保持 **UTF-8 with BOM**（PS5.1）；改前端资源记得 bump `?v=`；改 API/数据契约时同步 `web-portal.md`、
+  `server-status-stats.md`、`live-events-feed.md`，事件契约变更还要同步 `liveEventFeed.kts`。
+- 后续增强（web-portal §11 TODO）：双因素/来源 IP 白名单、审核结果站内通知、上传 SHA-256 去重/病毒扫描钩子、
+  `maxPlayers` 从游戏侧配置读取、控制台桥持久单连接、提交记录迁移 SQLite（量大时）。
+
+## 2026-10-17（第二十一批）：惩罚体系改造——检举系统/非管理员 24h 钳制与冷却/禁建限制/N4 自救豁免
+
+类型：功能新增 + 行为调整（实现提交 `f845d19`；设计文档 `docs/punishment-system-design.md` 已按最终实现回填，本批为维护记录）。
+
+### 1. 需求与总体设计
+
+用户 2026-10-17 需求（完整口径见 `punishment-system-design.md` §2）：
+
+- **检举系统**：非游客玩家被管理员层级以下（<3++）玩家施加限制性惩罚（禁言/观战/禁建）时收到弹窗，可发起 **70% 同意**的全服检举投票；通过后：①解除该条惩罚；②禁止施罚者使用限制权限 **1 天**；③累计成功检举达到阈值（默认 **4 次 = “超过 3 次”**）→ **永久**禁止限制性权利。
+- **时限与冷却**：非管理员层级施加的带时间惩罚 **≤1440 分钟（1 天）**（超限自动钳制；禁言/禁建“永久”选项直接拒绝）；`(施罚者, 目标)` **24 小时内不得重复施加**（跨禁言/观战/禁建共用，跨重启持久化）。强制观战没有时长参数 → 非管理员自动补 1440 分钟到期解除。
+- **N4 自救豁免（用户批准）**：被禁言玩家可用 `/vote quitOb`（含 `quob`/`退出观战`/`解除观战` 别名）自救，解决“禁言+强制观战”死锁；其它 vote 子命令仍被禁言拦截。
+
+### 2. 关键架构决策（维护必读）
+
+- **不新增 `wayzer/lib/PunishmentEvents.kt`**：新增 `wayzer/lib/*.kt` 会触发 wayzer 模块重编，运行中重载会让 `PlayerData`/`MdtStorage` 等单例按 classloader 分裂成两份（本会话不允许重启，风险过高）。因此**事件 + 规则 + 持久化状态全部并入 `wayzer/ext/playerMute.kts`**（脚本内嵌套 `data class` 事件 + `MdtSettings` 两键）。
+- **依赖方向单向**：`voteMute/voteOb/playerBuildBan/punishmentReport → playerMute`；`punishmentReport` 不反向依赖任何惩罚脚本，解罚通过 `PunishmentLiftedEvent` 由各脚本监听、按 uid 清理（目标离线也能解），避免循环依赖。
+- **不改旧函数签名**：投票禁言新增 `mutePlayerTemporaryByVote(...)`，而不是给 `mutePlayerTemporary` 加参数——避免热重载后 `playerInfoTripleTap` 等旧调用点 `NoSuchMethodError`（同第十二批教训）。
+
+### 3. 改动明细（按文件）
+
+**`wayzer/ext/playerMute.kts`（改造，822 行）**
+
+- 新增事件：`PunishmentAppliedEvent`（kind/recordId/source/operatorUid/Name/LevelOrder/Uids/targetUuid/Uids/Name/Authed/durationMinutes/reason）与 `PunishmentLiftedEvent`；统一发射函数 `emitPunishmentApplied(...)`。
+- 新增配置 4 项、`MdtSettings` 两键持久化、规则 API：`preparePunishment`（封禁→冷却→钳制/永久拒绝）、`markPunishmentAppliedIfNeeded`、`punishCooldownLeftMillis`、`restrictionBanLeftMillis`/`restrictionBanInfo`/`restrictionBanBlockMessage`、`applyReportStrike`、`clearRestrictionBan`、`activeRestrictionBans`、`liftMuteByUids`。
+- 禁言入口接入规则：`mutePlayer`（永久→非管理员拒绝）、`mutePlayerTemporary`（超 1440 自动钳制+提示）、新增 `mutePlayerTemporaryByVote`（施罚者=投票发起者）；应用成功写冷却 + 发事件。
+- `shouldBlockMutedInput` 增加 **N4 自救白名单** `SELF_RESCUE_VOTE_SUBCOMMANDS = {quitob, quob, 解除观战, 退出观战}`（大小写不敏感）。
+
+**`wayzer/user/punishmentReport.kts`（新增，366 行）**
+
+- 监听 `PunishmentAppliedEvent`：过滤 system/管理员层/游客；在线 <3 只文字提示；同目标 60s 弹窗节流；延迟 3s 弹窗（`MenuBuilder`）。
+- 检举投票：`VoteEvent` 70% 通过率、排除被检举者、被罚者本人可投（`bypassDenyVote`）、`guestForbidden`、`ignoreStartBan`（自救）；单投票互斥、`handledRecords` 幂等。
+- 通过后：发 `PunishmentLiftedEvent` 解罚 → `applyReportStrike`（+1 / 1 天 / 永久）→ 全服广播 + 私聊被检举者。
+- `/punishreport` 命令（无 permission attr，子命令内校验）：无参/`report`=玩家检举最近一次惩罚（30 分钟内有效）、`bans`/`status`（3++）、`reset`（仅 4 级）。
+
+**`wayzer/cmds/voteMute.kts`**：发起前 `preparePunishment` 检查（钳制/冷却/封禁，被拒即终止投票）；通过后调用 `mutePlayerTemporaryByVote`（双重检查）。保留 3 天上限（管理员层发起时生效）。
+
+**`wayzer/cmds/voteOb.kts`**：非管理员直罚/投票观战补 1440 分钟到期（`forceObExpireAt` + 30s 清扫 + 入服检查，到期自动解除不产生检举）；直罚/投票均做发起前检查 + 通过后记录；`quitOb` 新增别名 `quob`/`退出观战`。
+
+**`wayzer/ext/playerBuildBan.kts`（Q7 纳入）**：禁建与禁言同口径——永久拒绝/超 1440 钳制/24h 冷却/检举封禁拦截/发 `kind="buildban"` 事件/检举通过按 uid 离线解禁。
+
+**`coreMindustry/menu.kts`**：`/help` 增加菜单入口——玩家区“检举惩罚”（`/punishreport` 无参自救）、管理区“检举封禁管理”（`/punishreport bans`，3++/4 经 `canSeeAdminHelp` 可见）；`vote quitOb` 条目补充 `quob`/`退出观战` 与“被禁言者也可用”。
+
+**文档**：`punishment-system-design.md` 回填最终接口（§3 重写 + §2.3/§5/§7/§8/§9 校正）；`dev-workspace-guide.md` 调试工具补 `/punishreport`。
+
+### 4. 配置项（10 项，全部有默认值）
+
+| 配置键 | 默认 | 说明 |
+|---|---|---|
+| `wayzer.ext.playerMute.nonAdminMaxPunishMinutes` | 1440 | 非管理员单次带时间惩罚最大分钟数 |
+| `wayzer.ext.playerMute.punishRepeatCooldownHours` | 24 | `(施罚者,目标)` 重复施加冷却（跨类型共用） |
+| `wayzer.ext.playerMute.reportBanHours` | 24 | 检举成立后封施罚者限制权限时长 |
+| `wayzer.ext.playerMute.permanentReportStrikeThreshold` | 4 | 累计成功检举达到该次数→永久封限制权（4=“超过3次”） |
+| `wayzer.user.punishmentReport.enabled` | true | 检举系统总开关 |
+| `wayzer.user.punishmentReport.passRatePercent` | 70 | 检举投票通过赞成率(%) |
+| `wayzer.user.punishmentReport.popupDelayMillis` | 3000 | 惩罚后延迟弹窗(ms) |
+| `wayzer.user.punishmentReport.popupMinIntervalMillis` | 60000 | 同一玩家弹窗最小间隔(ms) |
+| `wayzer.user.punishmentReport.minOnlinePlayers` | 3 | 在线人数下限（低于不弹窗/不组投票） |
+| `wayzer.user.punishmentReport.contextValidMinutes` | 30 | `/punishreport` 重开检举有效期(分钟) |
+
+### 5. 事件 / 命令 / 持久化速查
+
+- **事件**（`wayzer/ext/playerMute.kts` 内嵌套 class）：`PunishmentAppliedEvent`、`PunishmentLiftedEvent`（引用方式 `import wayzer.ext.PlayerMute.PunishmentAppliedEvent`）。
+- **命令**：`/punishreport`（别名 `检举`/`jubao`/`reportpunish`；子命令 `report`/`bans`/`status`/`reset`）；`/vote quitOb`（别名 +`quob`/`退出观战`/`解除观战`）。
+- **持久化**（`MdtSettings` 两键，跨重启）：
+  - `punishment.report.bans`：每行 `uid|untilMillis|strikeCount|name`（`Long.MAX_VALUE`=永久；过期保留计数）；
+  - `punishment.report.cooldowns`：每行 `operatorUid|targetUid|untilMillis`（跨类型共用）。
+- **未接范围（TODO）**：`/vote kick`、清场类、账户/IP 封禁的封权拦截；已预留 `restrictionBanLeftMillis`/`restrictionBanBlockMessage` API。
+
+### 6. 验证（本机开发服，未重启）
+
+- 实现提交 `f845d19` 后 Lead 验证：`sa listFailed` 空；`scriptdiag count` = **161/157/152/失败0**；根指令注册数 **158**（含 `punishreport`）；`punishreport bans/status` 控制台可用。
+- 本批文档/菜单改动后复验：嵌套块注释扫描器 **208 个文件干净**；`sa load coreMindustry/menu` 后 `scriptdiag state coreMindustry/menu` = **Enabled**（新 `.ktc` 19:22:43 生成）；`sa listFailed` 空；`scriptdiag count` = 161/157/152/失败0；`scriptdiag commands punishreport` → `根指令匹配 'punishreport'：1`。
+- 运行态已重载新代码，**服务器未重启**（跨重启持久化读取路径已生效，写入路径未做自然重启回归）。
+
+### 7. 未验证项（如实记录）
+
+- 弹窗触发（在线≥3、60s 节流、3s 延迟）、按钮交互、关闭后 `/punishreport` 重开（30 分钟窗口）；
+- 检举投票全流程（70%、被检举者不能投、被罚者自救投、解罚、1 天封权、第 4 次永久）；
+- 面板/投票路径的钳制与跨类型 24h 冷却提示、永久选项拒绝提示；
+- `MdtSettings` 两键**写入→自然重启→读取**（本轮只验证读取路径）；
+- `/help` 菜单新增条目在 3++/4 与普通玩家视角的真实可见性与点击（本轮只验证脚本加载）。
+
+### 8. 维护建议（后续接手先读）
+
+- 不要新增 `wayzer/lib/*.kt` 放惩罚事件（模块重编风险）；事件/规则/持久化的真源是 `playerMute.kts`，改动需同时更新设计文档 §3。
+- 不要扩 `SELF_RESCUE_VOTE_SUBCOMMANDS` 白名单（用户批准范围仅 quitOb 自救），也不要把 `/r`/私聊加入禁言拦截（用户已否决，见设计文档 §7.1）。
+- 后续若要接 `/vote kick`/清场类封权拦截，用已有 `restrictionBan*` API；改公开签名需冷启动全量重编译验证。
+- 本文档对应设计文档：`punishment-system-design.md` §3（最终接口）/§7（决策）/§8.2（未验证项）。
+
+## 2026-10-17（第二十批）：小音效通道调查（结论：维持音乐通道，无法重叠）
+
+类型：只读审计（产出 `docs/sound-effect-channel-audit.md`，**未改任何脚本/配置、未重启服务器**）。
+
+### 1. 结论
+
+- **不能**把服务器小音效切到 Sound（音效）通道：B509/v160.7 仍按 **short** 序列化声音 id（`TypeIO.writeSound → Writes.s`、
+  `readSound → Reads.s`），自定义 SoundAsset id 从 **100001** 起，客户端读回截断为 **-31071** → `Sounds.getSound` 返回
+  `Sounds.none` → **静默无声**（实测 wire 2 字节 `0x86A1` 往返即丢 id）；上游源码注释明确 mod 音频不支持（审计 §2.1/§3.3）。
+- **music 通道也不能重叠**：`Call.playMusic(String)` 线上传字符串（实测 14 字节往返无损），但客户端 `SoundControl`
+  只有单个 `current` 槽——`playMusic(interrupt=true)` 先 stop，`playOnce()` 在忙时直接 return（审计 §2.2）。
+- 结论：现状（`Call.playMusic` 字符串通道、单条播放）是 B509 协议内**唯一可行**的自定义音频方案；要"可重叠"必须做
+  客户端/上游协议扩展（审计 §5 方案 C），纯服务端脚本无最小可行方案；**用户已决策（2026-10-17）：采用 A 维持现状、不做 C**（见 §3）。
+
+### 2. 关键证据与代码位置
+
+- 参考项目 `Mindustry-master`（v160.3 源码，与 B509 字节码语义一致）：`core/.../io/TypeIO.java:1223-1229`（short + mod 音频
+  不支持注释）、`core/.../mod/DataAudioLoader.java:13-14,23-46`（100000 偏移、headless 跳过）、
+  `core/.../audio/SoundControl.java:37,194-206,317-330`（单 `current`）、`server/.../ServerControl.java:403-470,596-598`
+  （`config/assets` 自动扫描、`server-assets/` 前缀、`reloadassets`）。
+- 运行态（开发服 B509，在线 0 人）：`state.data` sounds=1/music=1；SoundAsset 真实 path=`server-assets/omg.ogg`
+  （上游扫描产生，脚本 SoundAsset 反射注册是兜底）、MusicAsset=`sfx-omg`（脚本注册）；`/sfx` 列表
+  `omg soundId=100001 music=dp-sfx-omg`；`scriptdiag count` 失败 0、`sa listFailed` 空。
+- 复现手段/替代方案（A-E）/未验证项见 `docs/sound-effect-channel-audit.md` §3/§5/§6。
+
+### 3. 影响与后续
+
+- 文档已同步：`official-v159-compat.md` §10/§11、`v159-network-sync.md`、`v159-data-assets-hot-reload.md`、
+  `current-issues.md`、`project-memory.md`。
+- **未改代码**：`soundEffectMenu.kts` 维持现状；用户已决策采用**方案 A**（维持现状，零代码）、**不做方案 C**；
+  方案 B/D/E 为可选项（见审计 §5），当前均不实施。
+- 未验证：真实客户端听感/重叠行为、`reloadassets` 后在线玩家推送（开发服 0 人、headless 无音频输出）。
+- **决策结果（2026-10-17 用户拍板）**：采用**方案 A 维持现状**——继续 `Call.playMusic` 音乐通道，单条播放、不重叠；
+  **明确不做客户端/上游协议扩展（方案 C）**（用户口径"确认不行就不搞了，不做客户端"）。**B510+ 升级时需按
+  `docs/sound-effect-channel-audit.md` §8 复跑确认**（short 序列化/100001 偏移/客户端单 `current` 槽都可能随上游变化）。
+
+## 2026-10-17（第十九批）：账号/IP 防熊审计报告 + 用户决策（文档类，无代码改动）
+
+类型：只读审计 + 决策记录（产出 `docs/ip-risk-control-report.md`，**未改任何脚本/配置**）。背景是 2026-10-17
+牢猫/wweww 日志冲突分析（本文只作背景引用，过程不展开）。
+
+### 1. 审计产出（`docs/ip-risk-control-report.md`）
+
+- 对象：`wayzer/user/accountIpGuard.kts`（主风控）+ 直接调用方 `wayzer/user/ban.kts`、`wayzer/user/accountAuth.kts`、
+  持久化 `wayzer/lib/MdtStorage.kt`，相邻系统 `wayzer/security/securityGuard.kts`、`forceObAutoCleaner.kts`、
+  `wayzer/user/accountGuestControl.kts`；数据源是 `player.con.address`（直连 IP，**无代理头**），内网/loopback/`steam:*` 忽略。
+- 规则规模：**11 类机制 + 1 类"只记录不处罚"的观察机制**；真正改变玩家状态的只有 5 类动作（标记风险 IP / 风险游客强制观战 /
+  风险游客聊天·投票·踢出禁言 / 风险 IP 禁止注册 / 同 IP 换身份广播）。
+- 生产日志证据（**只读旧日志**，窗口 2026-10-01～10-10）：去重后 **60 次风险 IP 标记 / 8 个 IP**，**100% 原因为
+  「禁封账号尝试进入」**；"投票踢出 2 次/24h"阈值路径窗口内 **0 次触发**（9 条踢出计数全部停在 1/2）。
+- 关键缺陷（报告 §7，均只记录、未修）：被封账号每次重连都把风险期刷新为 `now+24h`（1 小时内同 IP 被标 22 次）→ 风险期可无限续期；
+  2 次/24h 阈值被"重连即标"旁路；`/login` 登录已被封禁账号不校验封禁且登录会解除风险观战（静态推导的完整绕过链，**日志未证被利用**）；
+  风险 IP 唯一豁免是 `authed`，NAT/校园网/共享出口的未登录玩家易被连坐；小号广播公开上一身份名 + 完整游戏 UUID；
+  `MdtSettings` 索引缺失会 fail-open、记录+索引两次写非原子、`ipLast` 永久保留无清理；可观测性不足（无解除/过期/实际拦截日志）。
+- 与相邻系统：与 `forceObAutoCleaner` 的 sameIpCleanup 无共享数据、互不触发但策略相反；`securityGuard` 是独立的第二套 IP 风控。
+
+### 2. 用户决策（2026-10-17 终局口径；详见报告 §11）
+
+- **❌ 明确否决：风控补"行为规则"**（同 IP/同 UUID 多身份互骂、刷屏、票滥用；把风险 IP 覆盖扩展到"同 IP 多账号反复进出"）——
+  用户口径"太复杂，推掉不做"，**勿再提议**；现有 IP 风控保持只围绕连接/账号/IP 身份关系判断，不引入聊天内容/行为语义。
+- **📌 报告 §8 其余建议（续期去重、踢出阈值修复、`/login` 封禁校验、广播降级、索引原子写等）默认方案 C：
+  只留报告、不改代码**；除非用户另行明确指示，不要转成实现任务、也不要写进"待办"。
+- **两套系统解耦**：IP 风控不与惩罚体系叠加自动处罚；人工处罚仍走 playerMute 体系。
+- 执行状态：**方案 C 已落实**（本轮只有报告与文档，无代码改动）；生产日志只读、未修改生产、未重启服务器。
+
+### 3. 同日其他决策记录（惩罚体系：只记决策，不写实现批次）
+
+- 用户**否决**三项（`punishment-system-design.md` §7.1 N1-N3，**勿再提议**）：①禁言拦截**不**扩展到 `r`/私聊；
+  ②`/vote text|sc` **不加**冷却/敏感词过滤；③**不做**名称规范化/同名冒充检测/投票文案 UUID 或等级后缀。
+- 用户**批准** N4/D5（`punishment-system-design.md` §7.2）：禁言拦截**豁免自救投票**——`shouldBlockMutedInput` 对
+  `vote`/`投票` 解析子命令，放行 `quitOb`/`quob`/`退出观战`/`解除观战`（大小写不敏感），其它 vote 子命令仍拦截。
+- 方向提醒：**被否决的是上述三项，被批准的是 N4 quitOb 自救豁免**，两者不要写反。
+- 惩罚体系实现由 punish-system 进行中（工作区未提交）；**本批不写惩罚实现批次**——落地后由 punish-docs 统一补
+  `docs/punishment-system-design.md` 最终接口 + `scripts-maintenance.md` 批次 + `menu.kts` 菜单。
+
+### 4. 验证 / 状态
+
+- 纯文档产出：`docs/ip-risk-control-report.md`（含 §11 用户决策）+ `punishment-system-design.md` 的决策段落
+  （提交 `a739f99`/`60aafcb`/`3dcfd09`/`0acd0c7`）。
+- 无运行态验证可做（也不需要）：不改代码。报告中的绕过链属静态推导、**日志未证被利用**；10-11 之后的生产日志未覆盖，
+  该窗口的风险标记次数**未确认**。
+
+## 2026-10-17（第十八批）：SA 编译管线 KDoc 内嵌 `/**` 静默截断 bug 定位 + 调试设施落地
+
+类型：bug 排查 + 调试/日志设施（提交 `cdc8b17`、`7364043`；**不改业务脚本行为**，DP 兼容修复见第十七批）。
+
+### 1. 现象与真因
+
+- 现象：`wayzer/map/externalCpHotReload.kts` 一次兼容改动后，脚本仍 `[Enabled]`、冷启动 `出错0`、`sa listFailed` 为空，
+  但 `command("externalcp")` 与 `onEnable { VoteService.registerExternalCpVote() }` 全未执行 → 游戏内/控制台"无效指令"；
+  SA 不写任何日志（`log-0.txt` / `script-load/*.log` 无痕），最初误以为"热重载不注册指令"。
+- 真因（2026-10-17 17:00 定位，SA 3.4.0）：**KDoc 块注释内部再出现字面量 `/**`**（坏版本第 1119 行
+  `` * - `bundles/**`：可合并资产… ``）时，SA 编译管线**静默产出被截断的 `.ktc`**——该 KDoc 所在函数及其后的所有
+  函数/顶层语句都不生成，但编译日志仍打印「编译脚本完成」。
+- 与游戏/服务器环境无关：最小复现只需 5 行脚本；排障过程与预防见 `agent-debug-experience.md` §8/§9。
+
+### 2. 证据（`.ktc` 产物 + javap）
+
+- `config/scripts/cache/compiled/wayzer_map_externalCpHotReload/<hash>.ktc` **实际是 jar**：正常 **55 entries /
+  主类 148,894B（≈149KB）**；截断 **26 entries / 主类 103,508B（≈103.5KB）**（整个 `.ktc` 约 153KB → 77KB）。
+- javap 对比：正常版 154 个方法 / 截断版 93 个方法，从 `mergedDataAssets` 起连续缺失 **61 个方法**。
+- 最小复现（`cdc8b17` 提交记录）：A=普通 KDoc（`.ktc` 5 entries / 主类 2476B，两行 `Log.info` 都打印）；
+  B=KDoc 里多写一个 `/**`（4 entries / 主类 1042B，`onEnable` lambda 缺失、两行日志都不打印）。
+- **规避即恢复**：把该 KDoc 行改为「bundles 目录」后同一份源码立即全量编译；随后按第十七批分 5 步重做，
+  最终 `.ktc` 为 56 entries / 157,498B。
+
+### 3. 新增调试设施（后续排查"入口消失"先用这些）
+
+- **`scriptdiag` 控制台诊断指令**（新增 `wayzer/cmds/scriptDiag.kts`，权限 `wayzer.admin.scriptDiag`）：
+  `scriptdiag commands [过滤词]` 直接列出根指令（区分"没注册"还是"注册了但没权限"）、
+  `scriptdiag failed`（列出 failReason；**注意静默截断时也可能是空**）、`scriptdiag state <脚本id>`、
+  `scriptdiag count`（脚本总数/加载/启用/失败 + 根指令注册数）。
+- **启动器控制台逐行落盘**（`mdtserver/start-server.ps1`，提交 `7364043`；**需重启启动器生效**）：java 的 stdout/stderr
+  逐行写入 `config/logs/console-<yyyyMMdd-HHmmss>.log`（UTF8-BOM、AutoFlush），窗口仍可正常输入服务器命令。
+  同时修掉两个坑：①顶部 `$ErrorActionPreference="Stop"` 会让 java stderr（经 `2>&1`）变成 terminating error、启动即中断；
+  ②Windows PowerShell 5.1 的 `Tee-Object` 不实时刷盘（文件一直 0 字节、进程退出才写出）→ 改为 StreamWriter 逐行写 + Write-Host 同步回显。
+- **嵌套块注释扫描器** `tools/scan-nested-block-comment.ps1`（仓库根 `mdtdo/` 下）：状态机扫描 `config/scripts` 下全部
+  `.kts/.kt`（当时 206 个文件、秒级），命中输出 `文件 : 第 N 行 块注释内出现 '/*'`；对历史坏版本 `.agents/ktcs/broken.kts`
+  精确报第 1119 行，对原版干净；行注释/字符串/字符三种状态已排除（行注释里的 `/**` 无害）。
+
+### 4. 文档与上游
+
+- `docs/agent-debug-experience.md`：§8 修正"顶层初始化异常"旧推断、新增 §9（KDoc 截断真因/证据链/预防）；
+  `docs/dev-workspace-guide.md` 新增「调试工具」段；`docs/doc-sync-audit.md` 记录本轮文档防偏移巡检结论。
+- 上游 issue：**已提 [way-zer/ScriptAgent4MindustryExt#50](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/50)**
+  （含最小复现、`.ktc` 数据与"fail loud"期望）；**截至 2026-10-17 上游未确认修复**，当前运行仍是维护者竞态修复构建
+  `c2823c1`（未切换到 SA 3.4.0 正式发行版，是否切换由用户决定）。
+
+### 5. 验证
+
+- 冷启动（2026-10-17 17:38，B509 + 新启动器）：`共找到159脚本,加载成功155,启用成功150,出错0`；6567/6859 监听正常；
+  `config/logs/console-20261017-173848.log` 实时增长（启动阶段 64KB）。
+- 嵌套注释扫描：当时 206 个文件通过、无嵌套命中；`scriptdiag commands externalcp` 输出 `根指令匹配 'externalcp'：1`
+  + `externalcp(ecp/外部cp/热重载cp)`。
+
+## 2026-10-17（第十七批）：DP 加载实测成功 + CP 兼容改造整体回退后分 5 步重做（已完成）
+
+类型：回退 + 实测（用户口径：先恢复可用基线；兼容改造保留在 git 历史里，之后分小步重做）——**已于同日 17:34
+完成 5 步重做并验证**（提交 `729dff3`）。
+
+### 1. DP 加载实测：加载系统本身正常
+
+- 回退版本上实测加载 `赛克兰特高阶科技.zip`（`config/scripts/external-cp/`，430.5KB）**成功**：
+  `外部CP已加载: 赛克兰特高阶科技.zip … parse=Mindustry v159 ZIP Data Assets assets=patches=1, content=33, sprites=196 / expanded=600.5KB slow=false warnings=2`，
+  控制台 `可用CP：16 个`；加载后串行同步世界数据完成，运行态兼容修复正常
+  （`itemArrays=234, flags=328, oldGraphs=6, graphs=6`，物品缓存 `items=22→25`）；
+- 2 条警告都是 `[ContentPatcher] Modifying the tech tree is not allowed (fibralt-wall.json / fibralt-wall-large.json)`：
+  CP 想改这两个方块的科技树，被上游忽略，**只警告、不阻断**，整包照样加载成功 → 无危害，不用处理；
+- 结论：**DP/ZIP 加载系统本身没有问题**（读取、校验、应用、串行同步都正常）。本轮"外部 CP 用不了"的根因
+  不在 DP 链路，而是 CP 脚本改坏后命令注册整体消失（见第 2 节）。
+
+### 2. 根因与回退：兼容改造导致脚本顶层初始化静默中断
+
+- 本轮兼容改造三次提交：`ec2678b`（资产重名不再判死整包 + `betterTeam` 主线程修复）、
+  `bf135ea`（内容/结构判断放宽 + 语言包合并）、`dd8020a`（字符串模板编译错误修复 + 控制台异步加载入口）；
+- 症状：脚本编译通过、控制台 `[Enable] wayzer/map/externalCpHotReload`、冷启动 `出错0`，
+  但游戏内 `/externalcp`、`/vote cp` 全部回"无效指令"；SA 不写任何日志（`log-0.txt` / `script-load/*.log` 无痕）；
+- 定位：控制台执行 `externalcp` 是最可靠的注册探针；把可用版本（插件仓库 `d41e7b6`）覆盖回去做对照组后命令恢复
+  → 确认由内容改动引入；在文件里插顶层 `arc.util.Log.info` 探针二分，确认**脚本顶层初始化被静默中断**，
+  `command("externalcp")` 与 `onEnable { VoteService.registerExternalCpVote() }` 之后的注册都没有执行
+  （排障细节见 `agent-debug-experience.md` 第 8 节）；
+- 处理：提交 `bc48050` 把 `externalCpHotReload.kts` **原样回退**到可用版本——回退后文件与改动前、
+  插件仓库 `d41e7b6` 的 blob 完全一致（`git hash-object` = `fa75a3a7…`；1619 行，改坏前 1777 行）；
+  实测恢复 `/externalcp` 与 `/vote cp`；
+- **回退范围只有这一个文件**：`betterTeam.kts` 的 `onGameThreadBlocking` 主线程修复（ec2678b）与
+  `contentsTweaker.kts` 的 `rewriteOutsideStrings` / `patchEngineInfo`（第十六批 db2210a）**保留**，不需要重做。
+- **根因已定位（2026-10-17 17:00，不是兼容逻辑写错）**：坏版本 `mergedDataAssets` 的 KDoc 里写了 `` `bundles/**` ``——
+  SA 3.4.0 编译管线遇到 KDoc 内嵌字面量 `/**` 会**静默产出截断的 .ktc**（实测正常 55 entries / 主类 148,894B；
+  截断 26 entries / 主类 103,508B，`mergedDataAssets` 及其后方法全缺失），日志仍「编译完成」、`[Enabled]`、出错0、
+  `sa listFailed` 为空，与"顶层注册被吞"的现象完全吻合。把该行改成「bundles 目录」后同一份改动立即全量编译成功。
+  完整证据链与预防见 `agent-debug-experience.md` 第 9 节。
+
+### 3. 兼容改造按 5 个小步重做（✅ 已完成，提交 729dff3）
+
+- **完成（2026-10-17 17:00 开始 → 17:34 提交 `729dff3`）**：由 cp-compat 分 5 步重做，每步单独落盘后
+  `sa reload wayzer/map/externalCpHotReload`，再**控制台 `externalcp`（或 `scriptdiag commands externalcp`）验证命令注册正常**
+  + `tools/scan-nested-block-comment.ps1` 扫描，三重验证全过后才进下一步。
+- **每步 `.ktc` 均为全量产物**：step1 153,023B / 55 entries → step5 **157,498B / 56 entries**（被截断的坏编译是
+  77,284B / 26 entries）；5 步全部落地后与参考实现 `dd8020a` 的差异仅是把触发 bug 的 KDoc 行 `` `bundles/**` ``
+  改为「bundles 目录」（功能等价）。
+- **最终实测**：控制台 `externalcp` 回显 `可用CP：16 个`；加载 `赛克兰特高阶科技.zip` 成功
+  （`patches=1 / content=33 / sprites=196`，2 条 techTree 警告属基线既有）；`scriptdiag count` 失败 0。
+- 操作提醒：今后每步应用时 KDoc 里**不要再写 `bundles/**`**；改完先跑扫描器
+  `tools/scan-nested-block-comment.ps1`（见 `agent-debug-experience.md` 第 9 节）再 reload。
+
+5 个小步明细（全部完成）：
+
+1. **资产冲突放宽**（ec2678b 部分）：`mergedDataAssets` 返回 `(assets, warnings)`、`readZipCp` 同名贴图警告收敛为一条；
+2. **内容/结构判断放宽**（bf135ea 部分）：content 缺类型子目录 / 不支持类型 / JSON-HJSON 预解析失败 → 跳过 + 警告；
+3. **语言包合并**（bf135ea 部分）：`bundleTexts` / `mergeBundleTexts` 按行合并，不用 `java.util.Properties`（避免中文转义）；
+4. **降级可见**（db2210a 中 `externalCpHotReload` 的那 6 行）：`applyDataAssetsAndSanitize` 收尾若非 native，
+   就往加载警告里加"贴图/字段类补丁可能不生效"；
+5. **异步入口**（dd8020a）：`loadServerCpAsync`（控制台 `js` 是 JS(Rhino) 求值器、且在主线程同步执行，
+   不能在里面直接跑需要分帧同步的 CP 加载）。
+
+### 4. 排障入口：控制台输出重定向 + 控制台命令探针
+
+- 用后台任务启动服务端时，把控制台输出（stdout+stderr）**重定向到文件**（本次 `.agents/server-console.log` /
+  `.agents/server-console.err.log`；不要用管道，见 `agent-debug-experience.md` §1.1 的 ConsoleHandler 死锁），
+  SA 的 `[ScriptAgent]` 编译/加载/启用日志和 `arc.util.Log.info` 探针都能事后检索；
+  游戏侧运行日志与探针输出另见 `config/logs/log-0.txt`（SA 自己的 `[ScriptAgent]` 日志走控制台，不在 log-0.txt 里）；
+- 本轮这两个控制台文件里**始终只有"编译完成 / 加载 / 启用"、没有任何异常堆栈**——这正是"SA 把异常吞掉"的直接证据；
+  `config/logs/script-load/current.log` 同样无痕。所以这类问题只能靠**控制台命令探针（externalcp）+ 顶层 Log.info 二分**定位，
+  不能指望翻日志找到异常。
+- 现在有更快的入口：控制台 `scriptdiag commands <关键词>` 直接列出根指令是否注册（用法见
+  `dev-workspace-guide.md`「调试工具」）；`mdtserver/start-server.ps1` 已改为把 java 控制台输出 tee 到
+  `config/logs/console-<yyyyMMdd-HHmmss>.log`（**下次重启生效**），SA 不进 Mindustry 日志的输出以后不必再手工重定向。
+
+> 验证（本机开发服，同一次运行内）：控制台 `externalcp` 回显 `可用CP：16 个`；`赛克兰特高阶科技.zip` 加载成功
+> （`patches=1 / content=33 / sprites=196`，2 条 techTree 警告）；`/externalcp` 与 `/vote cp` 入口恢复。
+> 逐步重做复验（2026-10-17 17:18 / 17:19）：`scriptdiag commands externalcp` 输出 `根指令匹配 'externalcp'：1`
+> + `externalcp(ecp/外部cp/热重载cp)`；期间 `.ktc` 从 26 entries / 77KB 恢复为 55 entries / ≈153KB。
+> 完成复验（`729dff3`，17:34 后）：`.ktc` 最终 **56 entries / 157,498B**；同包加载成功（2026-10-17 17:41 `log-0.txt`
+> `外部CP已加载：赛克兰特高阶科技`）；`scriptdiag count` 失败 0。
+
 ## 2026-10-16（第十六批）：跟进 MindustryX 到 B509/v160.7 + CP 两处小优化（引号外改写、降级可见）
 
 类型：版本跟进 + 小优化（用户口径："简单查看情况即可，不是必须改的东西；脚本有明确优化点再改"）。

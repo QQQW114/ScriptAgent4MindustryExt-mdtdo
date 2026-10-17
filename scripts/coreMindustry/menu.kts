@@ -147,6 +147,7 @@ private val playerHelpEntries = listOf(
     HelpEntryDef("pressure", "[green]服务器压力", "查看TPS/上行压力"),
     HelpEntryDef("team", "[yellow]队伍管理(3++)", "3++级/4级可调整自己的队伍；3+级可用 /pvpteam 在PVP图切换自己；指定他人需管理员权限", "/team"),
     HelpEntryDef("pvpteam", "[yellow]PVP换队(3+)", "3+级/4级仅PVP模式切换自己队伍（活跃且有核心、未被@banTeam禁用）", "/pvpteam"),
+    HelpEntryDef("punishreport", "[red]检举惩罚", "被禁言/强制观战/禁建时可发起检举投票自救（弹窗关闭后可用本命令重开）", "/punishreport"),
 )
 
 private val voteHelpEntries = listOf(
@@ -158,7 +159,7 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("vote", "投票踢出", "发起踢出玩家投票", "/vote kick"),
     HelpEntryDef("votekick", "原版投票踢出兼容", "兼容旧 /votekick；实际转为强制观战投票", "/votekick"),
     HelpEntryDef("vote", "投票强制观战", "发起强制观战投票", "/vote ob"),
-    HelpEntryDef("vote", "投票解除观战", "为自己发起解除强制观战投票", "/vote quitOb"),
+    HelpEntryDef("vote", "投票解除观战", "为自己发起解除强制观战投票（别名 quob/退出观战；被禁言者也可用）", "/vote quitOb"),
     HelpEntryDef("vote", "投票创建存档", "为当前游戏创建投票存档", "/vote save"),
     HelpEntryDef("vote", "投票跳波", "投票快速出波", "/vote skipWave"),
     HelpEntryDef("vote", "暂停波次", "投票临时暂停波次计时", "/vote pauseWave"),
@@ -230,6 +231,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("votestartban", "[red]禁止发起投票", "3++/4级：禁止指定玩家发起投票（玩家信息菜单也可快速操作）"),
     HelpEntryDef("voteunban", "[red]解除禁止投票", "解除指定玩家的禁止发起投票状态"),
     HelpEntryDef("votelist", "[cyan]禁止投票名单", "查看当前被禁止发起投票的玩家与理由"),
+    HelpEntryDef("punishreport", "[red]检举封禁管理", "查看检举封禁名单与玩家检举状态（3++可查）；4级可清除检举封禁记录", "/punishreport bans"),
     HelpEntryDef("cp", "[green]CP/DP管理", "查看v159完整Data Assets、属性Patch，并可 /cp load 快速加载服务器CP"),
     HelpEntryDef("externalcp", "[purple]外部CP", "管理 scripts/external-cp 下的外部JSON/HJSON CP热重载"),
     HelpEntryDef("worldprocessor", "[green]世界处理器", "查看/开启/关闭世界处理器与编辑权限"),

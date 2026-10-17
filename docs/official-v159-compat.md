@@ -1,9 +1,11 @@
-# 官方 Mindustry 兼容层说明（v160.x / MindustryX B495 起，含 X37/B493/B491/B485 历史）
+# 官方 Mindustry 兼容层说明（v160.x / MindustryX B509 起，含 B495/X37/B493/B491/B485 历史）
 
-> 当前生产候选基线为 MindustryX **预览版 `prerelease-2026.09.13.B495`** / Mindustry **v160.3**（2026-09-13 跟进；
-> `prerelease-2026.09.13.B495` 对应提交 `92471dd`，其 `work` 子模块即 Mindustry `v160.3` 提交 `254fd3e`），
-> 上一基线为正式发行版 `v2026.09.X37` / v160.1（= 预发行 `prerelease-2026.09.12.B493`，提交 `dc388e9`），
-> 再往前为 `prerelease-2026.09.11.B491`（v160.1）与 `prerelease-2026.08.12.B485` / v159.7。
+> **当前生产候选基线：MindustryX `prerelease-2026.10.10.B509` / Mindustry v160.7**（2026-10-16 跟进，
+> 上游提交 `703f65aa`，其 `work` 子模块 = Mindustry `v160.7` 提交 `17012d61`；JAR `server-2026.10.10.B509.jar`，
+> SHA-256 前缀 `FC1B01AB…AC74`）。上一基线为 `prerelease-2026.09.13.B495` / v160.3（提交 `92471dd`，work `254fd3e`），
+> 再往前为正式发行版 `v2026.09.X37` / v160.1（= 预发行 `prerelease-2026.09.12.B493`，提交 `dc388e9`）、
+> `prerelease-2026.09.11.B491`（v160.1）与 `prerelease-2026.08.12.B485` / v159.7。
+> **本文档其余章节是历史兼容记录**；B509 的跟进结论见 [服务器开发工作区指南](dev-workspace-guide.md)「当前候选基线」。
 > ScriptAgent 仍按项目当前版本独立维护，不与游戏版本混合升级。
 >
 > **版本跟进总体原则**：跟进新的稳定版本；无论 JAR 文件还是 SA 插件，均由用户决定跟进哪个版本，并跟进用户所要求的对应版本。本基线只是当前候选快照，跟进新版本由用户拍板后更新本文档与候选构建物。
@@ -331,6 +333,18 @@
   - `config/assets/music`
 - 启动脚本不再主动创建旧版 `config/patches`。
 
+B509/v160.7 上游行为（2026-10-17 复核，详见 [小音效通道审计](sound-effect-channel-audit.md) §1.3/§2）：
+
+- `ServerControl.loadDataAssets()` 在启动时扫描数据目录的 `assets/`（本服 `mdtserver/config/assets/`，
+  `dataAssetDirectory = dataDirectory.child("assets")`），把其中 `sounds/`、`music/` 等注册为 DataAsset，
+  并统一加 **`server-assets/`** 前缀（`String prefix = "server-assets/"`）；`Events.on(DataPatchLoadEvent)` 再按
+  「同 type + 同 path（忽略大小写）」把它们并入世界资产回合
+  （源码：参考项目 `Mindustry-master/server/src/mindustry/server/ServerControl.java:266-268,403-470,426,386-396`）。
+- 控制台 **`reloadassets`**（ServerControl:596-598）可重新扫描/重建 `dataAssets` 表，但**不会自动给在线玩家推送音频**，
+  推送仍要世界资产回合/`sendWorldAndAssets`（见 §9）；实测只输出 `Loaded 1 data asset files.`。
+- 因此运行态 `state.data` 里 SoundAsset 的真实 path 是 `server-assets/*`（如 `server-assets/omg.ogg`），脚本
+  `soundEffectMenu.kts` 的 SoundAsset 反射注册在正常流程里只是兜底（按 name+hash 命中上游资产后不重复添加）。
+
 切除方式：
 
 - 若未来只支持旧端且不使用 v159 Data Asset，可恢复旧 `config/patches` 目录逻辑。
@@ -350,6 +364,19 @@
 兼容方式：
 
 - 小音效读取 `config/assets/sounds/`。官方 v159 的 DataAsset sound 运行时 ID 从 `100001` 开始，但 `Call.sound` 仍按 `short` 序列化声音 ID，直接播放自定义 `SoundAsset` 会在客户端错位/无声；因此 `soundEffectMenu.kts` 会把同一音频同时热注册为 `SoundAsset` 与 `MusicAsset(sfx-*)`，默认通过 `Call.playMusic(String)` 的字符串通道播放。客户端 `DataAudioLoader` 会把该音乐资产注册为 `dp-sfx-*`，所以实际发送的播放名必须带 `dp-` 前缀。代价是小音效受客户端“音乐音量”影响，不再走音效音量。
+  - **2026-10-17 在 B509/v160.7 逐字节复核（详见 [小音效通道审计](sound-effect-channel-audit.md)）**：上述结论**成立且更明确**——
+    B509 的 `TypeIO.writeSound/readSound` 仍写/读 **short**（`Writes.s`/`Reads.s`），自定义 SoundAsset 的 id 从 **100001** 起
+    （`DataAudioLoader`：`soundIdOffset=100_000`、`nextSoundId=soundIdOffset+1`），写 short 后为 `0x86A1` = **-31071**，
+    客户端 `Sounds.getSound(-31071)` 返回 `Sounds.none` → **静默无声**（实测 wire 2 字节 `[0x86,0xA1]` 往返丢 id）；
+    上游源码注释明确"只支持 `Sounds` 里的标准常量、mod 音频不支持"。**所以 Sound 通道不可作为自定义音效方案。**
+  - **music 通道也不能重叠**：`Call.playMusic(String)` 线上传字符串（实测 14 字节往返、名称与 interrupt 保真），
+    但客户端 `SoundControl` 只有**单个 `current` 音乐槽**：`playMusic(music, interrupt=true)` 会先 `current.stop()`，
+    `playOnce()` 在 `current != null` 时直接 return → 两次播放要么互相打断、要么后一次被丢弃。
+  - **headless 服务端无音频后端**：`Core.assets=null`、`Core.audio` 是 `MockAudio` 且 `initialized=false`，
+    服务端从未真正加载音频数据（只有占位 `Sound` 对象），播放能力只在客户端。
+  - 结论：现状（`Call.playMusic` 字符串通道、单条播放）是 B509 协议内**唯一可行**的自定义音频方案；
+    要真正实现"可重叠音效"必须做**客户端/上游协议扩展**（审计 §5 方案 C），纯服务端脚本无最小可行方案。
+    **用户已决策（2026-10-17）：采用 A 维持现状、不做 C（"确认不行就不搞了，不做客户端"）**；B510+ 升级需按审计 §8 复跑。
 - 运行中新增/修改音效时，`soundEffectMenu.kts` 会反射创建音频资产、调用 `readOverride(...)` 并执行 `DataManager.reloadAudio()` 热注册；同时会检查明显伪装格式（如 `.mp3` 文件头实际为 `ftypM4A` 的 M4A/MP4 容器），避免菜单显示成功但客户端无法解码而无声。
 - 点歌文件不再放入 `config/assets/music/`。v159/B477 会递归扫描该目录，并在每名新玩家进服时自动协商/同步其中全部音乐；缓存歌曲放在这里会绕过点歌投票的“仅同意者同步”设计。
   - 网络缓存：`config/music-jukebox/jukebox/`

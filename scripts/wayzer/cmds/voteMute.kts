@@ -1,16 +1,23 @@
 @file:Depends("wayzer/vote", "投票实现")
 @file:Depends("wayzer/cmds/voteKick", "复用目标选择/文本输入/理由收集")
-@file:Depends("wayzer/ext/playerMute", "禁言实现")
+@file:Depends("wayzer/ext/playerMute", "禁言实现与惩罚规则")
 
 package wayzer.cmds
 
 import coreMindustry.lib.broadcast
 import wayzer.VoteEvent
+import wayzer.lib.PlayerData
 
 private val voteKick = contextScript<VoteKick>()
 private val playerMute = contextScript<wayzer.ext.PlayerMute>()
 
-/** 投票禁言时长上限：3 天（用户 2026-09-27 要求"最多 3 天"）。脚本顶层不允许 const，故用 val。 */
+/**
+ * 投票禁言时长上限：3 天（用户 2026-09-27 要求"最多 3 天"）。
+ *
+ * 注意：管理员层级（3++/4）发起时保持 3 天上限；3+ 及以下发起时还会被 playerMute 的
+ * "非管理员层级单次最多 1440 分钟"规则钳制（用户 2026-10-17 口径 Q4），并在发起前提示。
+ * 脚本顶层不允许 const，故用 val。
+ */
 private val MAX_MUTE_MINUTES = 72 * 60
 
 private val muteDurationRegex = Regex("""^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$""")
@@ -51,20 +58,44 @@ private suspend fun CommandContext.askMuteMinutes(player: Player): Int {
         return it
     }
     val input = with(voteKick) {
-        textInput.textInput(player, "请在60s内输入禁言时长（如 30 / 30m / 2h / 1d / 1d12h，上限 3 天）")
+        textInput.textInput(player, "请在60s内输入禁言时长（如 30 / 30m / 2h / 1d / 1d12h，上限 3 天；非管理员层级最长 1 天）")
     } ?: returnReply("[yellow]已取消输入，投票未发起。".with())
     return parseMuteMinutes(input)
         ?: returnReply("[red]无法识别的时长：$input（可用 30/30m/2h/1d/1d12h，最多 3 天）".with())
 }
 
-private suspend fun startMuteVote(starter: Player, target: Player, minutes: Int, reason: String): Boolean {
+private suspend fun startMuteVote(starter: Player, target: Player, requestedMinutes: Int, reason: String): Boolean {
+    // 发起者信息在投票开始前捕获：投票期间发起者可能离线，事后 PlayerData 取不到。
+    val starterData = runCatching { PlayerData[starter] }.getOrNull() ?: run {
+        starter.sendMessage("[yellow]你的玩家状态异常，投票未发起。")
+        return false
+    }
+    val starterUid = starterData.id
+    val starterUids = (starterData.ids + starterUid).filter { it.isNotBlank() }.toSet()
+    val starterName = starter.plainName()
+    val starterLevel = with(playerMute) { applierLevelOrder(starter) }
+    val targetUids = PlayerData[target].ids
+
+    // 发起前统一检查：检举封禁 → 24h 冷却 → 非管理员 1 天上限（用户口径 Q2/Q4，避免投票白跑）。
+    val decision = with(playerMute) {
+        preparePunishment(starterUids, starterLevel, targetUids, requestedMinutes, permanentRequest = false)
+    }
+    decision.blockReason?.let { reasonText ->
+        starter.sendMessage(reasonText)
+        return false
+    }
+    decision.note?.let { starter.sendMessage(it) }
+    val minutes = (decision.allowedMinutes ?: requestedMinutes).coerceAtLeast(1)
     val duration = formatMuteMinutes(minutes)
+    val adminTier = with(playerMute) { isAdminTierLevel(starterLevel) }
+    val limitNote = if (adminTier) "上限 3 天" else "非管理员层级上限 1 天（1440 分钟）"
+
     val event = VoteEvent(
         thisScript, starter,
         voteDesc = "投票禁言(目标[red]{target.name}[yellow]|[gold]{duration})".with(
             "target" to target, "duration" to duration,
         ),
-        extDesc = "[red]理由: [yellow]$reason\n[gray]时长：$duration（上限 3 天）",
+        extDesc = "[red]理由: [yellow]$reason\n[gray]时长：$duration（$limitNote）",
         // 作用于他人：禁止游客发起（2026-09-27 用户要求，与踢出/观战同一口径）
         guestForbidden = true,
     )
@@ -73,12 +104,20 @@ private suspend fun startMuteVote(starter: Player, target: Player, minutes: Int,
         broadcast("[red]错误：[white]${target.name}[red]为管理员，如有问题请与服主联系".with())
         return false
     }
-    // operator 传 null：投票不是"某个协管在动手"，避免撞上协管的目标等级边界（与 /vote kick 的口径一致）。
+    // 投票通过后走专用入口：施罚者归因为发起者，非管理员同样受 1 天/24h 冷却/检举封禁约束。
+    // operator 不能直接传 starter：那会撞上 canManagePlayerMute 的目标等级边界（原本传 null 的原因）。
     val ok = with(playerMute) {
-        mutePlayerTemporary(target, minutes, "投票禁言（发起者 ${starter.plainName()}）：$reason", null)
+        mutePlayerTemporaryByVote(
+            target,
+            minutes,
+            "投票禁言（发起者 $starterName）：$reason",
+            starterUid,
+            starterName,
+            starterUids,
+        )
     }
     if (!ok) {
-        broadcast("[red]投票已通过，但禁言未能生效：目标可能已离线。".with())
+        broadcast("[red]投票已通过，但禁言未能生效：目标可能已离线，或触发了时限/冷却/检举封禁规则。".with())
         return false
     }
     broadcast(
@@ -89,7 +128,7 @@ private suspend fun startMuteVote(starter: Player, target: Player, minutes: Int,
 
 onEnable {
     val script = this
-    VoteEvent.VoteCommands += CommandInfo(script, "mute", "[red]投票禁言玩家[gray]（需50%同意，最多3天）") {
+    VoteEvent.VoteCommands += CommandInfo(script, "mute", "[red]投票禁言玩家[gray]（需50%同意，最多3天；非管理员层级最多1天）") {
         aliases = listOf("禁言投票", "votemute", "投票禁言")
         usage = "<玩家名/id> [时长: 30/30m/2h/1d/1d12h] [理由]"
         permission = "wayzer.vote.mute"

@@ -1,5 +1,8 @@
 # v159 Data Assets / 外部 CP 热重载
 
+> 状态（2026-10-17 文档巡检）：**DP 兼容改造最终版已落地**（提交 `729dff3`，5 小步重做完成；2026-10-17 17:41 再次实测加载
+> `赛克兰特高阶科技.zip` 成功）。本文档已按最终实现更新「防护与失败回滚」里的冲突/失败口径；历史逐次验证记录保留在下文。
+
 ## 支持格式
 
 外部 CP 目录仍为：
@@ -48,6 +51,37 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 
 卸载 ZIP 时会同时撤销新增内容和资源，不只删除其中的 patches。
 
+## 兼容口径（2026-10-17 最终版，提交 729dff3）
+
+背景：2026-10-16 的兼容改造曾一次性落地，随后脚本命令入口整体消失；2026-10-17 17:00 定位真因是 **SA 编译管线在 KDoc 里
+遇到字面量 `/**` 时静默截断 `.ktc`**（见 [Agent 调试经验](agent-debug-experience.md) 第 9 节），与本节的兼容逻辑无关。
+修掉 KDoc 后按 5 个小步重做，每步 `sa reload` + 控制台 `externalcp` + 嵌套注释扫描器三重验证，全部通过（提交 `729dff3`）。
+最终行为：
+
+| 场景 | 旧行为（2026-10-16 前） | 现在（729dff3） | 实现位置 |
+|---|---|---|---|
+| 资产路径/名称冲突（跨包、与地图/服务端基础资产） | 任何冲突都抛异常 → 整包加载失败 | `mergedDataAssets` 返回 `Pair(assets, warnings)`：`bundles/**` 合并（同名键后加载覆盖先加载）、其它同路径保留先加载的、贴图重名两份都给打包器（generated 优先）只记警告、其它重名保留先加载；**不再整包失败** | `externalCpHotReload.kts` `mergedDataAssets()`（约 :1125） |
+| ZIP 内重复路径 | 直接拒绝整包 | 语言包重复 → **按行合并**；其它类型跳过后一份并记警告 | `readZipCp()`（约 :349） |
+| ZIP 内 content 缺类型子目录 / 不支持类型 / JSON-HJSON 预解析失败 | 直接拒绝整包 | 跳过该文件 + 记警告 | `readZipCp()` |
+| 同一 ZIP 内同名贴图 / 同名资产 | 只允许恰好一对 generated+源图，否则硬失败 | 同名贴图警告合并成一条（最多列 20 个名字）、其它同名资产只警告；不再硬失败 | `readZipCp()` |
+| Patch/Content 应用失败、资产缓存缺失 | 整包失败并回滚 | 汇总为一条加载警告「本次有 N 项未能生效（已按兼容口径跳过，未中断加载）」 | `applyDataAssetsAndSanitize()`（约 :1206） |
+| 动态 Content 模块容量修复失败 / 后梁节点电力校验失败 | 抛异常中断加载 | 降级为 `logger.warning` | `externalCpHotReload.kts`（约 :680 / :1015） |
+| CP 引擎降级（native → 旧版 patcher） | 只写日志，加载结果看不到 | `contentsTweaker.patchEngineInfo` 非 `native` 时并入该包加载警告（「贴图/字段类补丁可能不生效（例如 DP 贴图为空）」），管理菜单/加载结果可见 | `applyDataAssetsAndSanitize()` 收尾（约 :1240） |
+| 从控制台加载大包 | 只能 `externalcp load` / 投票路径 | 新增**异步入口** `loadServerCpAsync(target, operator)`：立刻返回，结果写 `logger.info`/管理菜单。因为控制台 `js` 是 JS(Rhino) 且在游戏主线程**同步**执行，CP 加载的分帧同步会与 js 互等卡死 | `loadServerCpAsync()`（约 :1441） |
+
+语言包合并实现：`bundleTexts`（`IdentityHashMap` 记本次读到的原文）+ `bundleTextOf` + `mergeBundleTexts`（按行合并、
+同名键后一份覆盖，**不用 `java.util.Properties`**——它会转义中文成 `\uXXXX` 导致客户端乱码）。
+
+**仍保留的硬失败底线**：ZIP 路径空/非法字符/`..` 越界、压缩比与单文件/累计解压上限、条目数、PNG/JPEG 尺寸与文件头、
+CP 文件体积 `hardExternalCpBytes` 与资产数 `maxExternalCpAssets`、ZIP 内没有任何 v159 数据资产。
+另外 `contentsTweaker.prepareForDataAssetReload` 的清理不彻底时仍会**阻止内容注销**（`仍有旧DP单位/建筑/…`），这条没有放宽。
+
+控制台异步加载用法（在控制台 `js` 里取脚本上下文；字符串参数用双引号）：
+
+```
+js contextScript<wayzer.map.ExternalCpHotReload>().loadServerCpAsync("赛克兰特高阶科技.zip", "控制台")
+```
+
 ## 防护与失败回滚
 
 默认防护：
@@ -59,9 +93,9 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 单包最多 4096 个 Data Assets；
 - 贴图按真实文件头校验：`.png` 实为 PNG 时按 PNG magic 与 IHDR 尺寸校验；实为 JPEG（部分模组/转换产物会把 JPEG 数据命名为 .png，参考项目 `DataImagePacker.pack` 用 `new Pixmap(cacheFile)` 按文件头解码，本身支持 JPEG/PNG）时按 `FF D8` 头、`FF D9` 尾与 SOF0~SOF15 标记解析真实尺寸；两者均不得超过 v159 的 2000×2000 上限，文件头与尺寸都合法才放行，否则整包拒绝；
 - 不支持的目录或扩展名不会执行，只记录警告；
-- 同一包内重复路径直接拒绝；
-- 同一包内重复名称原则上拒绝；唯一例外是恰好一张 `sprites/generated/**/<name>.png` 与一张普通同名贴图并存。该组合是 v159 原生生成资产格式，保留两项并按原版规则优先使用 `generated` 贴图，同时记录加载警告；多张 `generated`、第三张同名图或其他同名资产仍直接拒绝；
-- 与当前地图、服务器资产或其他外部包发生路径/名称冲突时仍拒绝加载，不允许借 `generated` 优先级跨包覆盖；
+- 同一包内重复路径不再判死整包：`bundles/**` 语言包合并（同名键后一份覆盖），其它类型跳过后一份并记警告（2026-10-17 口径，见上一节）；
+- 同一包内同名贴图/同名资产只记警告（同名贴图警告合并成一条），不再硬失败；v159 原生 `generated` 与源图配对仍按原版规则优先 `generated`；
+- 与当前地图、服务器资产或其他外部包的同路径/同名冲突不再让整包失败：`bundles/**` 合并、其它同路径保留先加载的、贴图重名两份都交给打包器，全部汇总为加载警告；
 - 同一时刻只允许一个加载/卸载操作；
 - v159 `DataManager.load/reloadPatches` 会重建当前 ContentAsset 对象；每次重载前都会保守清理全部旧动态 Content 的运行态引用，而不是只处理本次被卸载的一个包；
 - 原版 `Unloader.allItems` 只在方块初始化时生成一次静态物品快照。动态物品加载/卸载后会立即把该缓存刷新为当前 `Vars.content.items()`，并清除仍指向已注销物品的卸载器筛选配置，避免空筛选卸载器把旧物品传给相邻单位工厂后触发 `ItemModule.get` 越界；
@@ -70,7 +104,7 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 清场阶段只修改服务端世界，不对每个方块批量发送 `setNet`，成功后由统一完整重同步更新客户端，避免卸载时反而放大上行峰值；
 - 清理完成后会验证玩家、单位、建筑、地图格等不再引用旧 Content；任何必要引用无法清除时直接阻止内容注销，优先保留旧 Content 注册状态，不进入“无效对象已下场、但场上仍有引用”的全员掉线状态；
 - 失败明细有上限，大量地图格/实体同时失败时不会让防护器自身无限堆积错误文本；
-- Patch 或新增 Content 标记为错误、资源缓存缺失、建筑/电网校验失败时，整包视为失败；
+- Patch 或新增 Content 标记为错误、资源缓存缺失不再让整包失败（汇总为「本次有 N 项未能生效」加载警告）；动态 Content 模块容量修复/后梁节点电力校验失败降级为日志警告（2026-10-17 最终版）；
 - 失败后重新加载操作前保存的完整 Data Assets，并再次执行世界兼容修复；
 - 成功和回滚后的玩家同步都进入统一串行队列，避免同时发起多份世界流。
 
@@ -138,3 +172,33 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 - 预检：ZIP 共 2474 个非目录条目（content=321、bundles=2、sprites=2141、sounds=10），其中真 PNG 2140、伪装 JPEG 1（`sprites/gked.png`），累计解压 6,935,773 B，预检全部通过。
 - 本地冷启动后在同一命令 Socket 执行 `cp load 11` 加载该真实包成功：`assets=content=321, bundles=2, sprites=2141, sounds=10 / expanded=6.61MB slow=true warnings=165`，2141 张贴图全部进入资产表；`DataAsset运行态内容缓存刷新: items=37, unloaderItems=37->37`。warnings 全部为无害的“同名贴图 generated 优先”提示，无尺寸错误、无失败回滚。
 - 清理：测试进程树已结束，6567/6859/10099 端口释放，`server.properties` 已还原（socketInput=false），未新增任何运行产物。
+
+## 验证记录（2026-10-16 / 10-17：兼容改造与最终版）
+
+- **2026-10-16**（B509/v160.7）：加载 `赛克兰特高阶科技.zip` 成功——
+  `assets=patches=1, content=33, sprites=196 / expanded=600.5KB slow=false warnings=2`，控制台 `可用CP：16 个`；
+  2 条警告均为 `[ContentPatcher] Modifying the tech tree is not allowed (fibralt-wall.json / fibralt-wall-large.json)`
+  （上游忽略 CP 改科技树，**只警告、不阻断，属基线既有**）；加载后串行同步世界数据完成，运行态修复正常
+  （`itemArrays=234, flags=328, oldGraphs=6, graphs=6`，`items=22→25`）。
+- **2026-10-17**：修复 KDoc 截断（脚本第 1119 行 `bundles/**` 改为「bundles 目录」）后按 5 小步重做（`729dff3`），
+  每步 `sa reload` + 控制台 `externalcp` + `tools/scan-nested-block-comment.ps1` 验证通过；最终 `.ktc` 为全量
+  **56 entries / 157,498B**（被截断时 26 entries / 77,284B）；同包再次加载成功（2026-10-17 17:41，`log-0.txt`）。
+- 冷启动基线（2026-10-17 17:38，B509 + 新启动器）：`共找到159脚本,加载成功155,启用成功150,出错0`。
+
+## B509 服务器资产目录自动加载与 `reloadassets`（2026-10-17 复核）
+
+- **上游会自动扫描 `config/assets/`**：B509 `ServerControl.loadDataAssets()` 启动时扫描数据目录的 `assets/`
+  （`dataAssetDirectory = dataDirectory.child("assets")`，本服 = `mdtserver/config/assets/`），把 `sounds/`、`music/` 等文件
+  注册为 DataAsset 并加 **`server-assets/`** 前缀；随后 `Events.on(DataPatchLoadEvent)` 按「同 type + 同 path（忽略大小写）」
+  并入世界资产回合（源码：参考项目 `Mindustry-master/server/src/mindustry/server/ServerControl.java:266-268,403-470,426,386-396`）。
+- **`reloadassets`** 控制台命令（ServerControl:596-598）可重新扫描/重建 `dataAssets` 表，但**只重扫、不推送**在线玩家；
+  推送仍要世界资产回合/`sendWorldAndAssets`（见 `v159-network-sync.md`「资产的传输形态」）。实测只输出 `Loaded 1 data asset files.`。
+- **SoundAsset 与 MusicAsset 的可用性差异（2026-10-17 审计结论）**：
+  - 运行态 `state.data` 里 SoundAsset 的真实 path 是 `server-assets/*`（上游扫描产生），脚本 `soundEffectMenu.kts` 的
+    SoundAsset 反射注册在正常流程里只是兜底（按 name+hash 命中后不重复添加）；MusicAsset（`sfx-*`）仍由脚本注册。
+  - **MusicAsset**：客户端 `DataAudioLoader` 注册为 `Core.assets["dp-"+name]`，`Call.playMusic(String)` 线上传字符串、
+    **可正常播放**（受客户端音乐音量影响、单条、**不可重叠**）。
+  - **SoundAsset**：资产能注册/同步，但 `Call.sound` 走 `TypeIO` 的 **short** 声音 id——自定义 id 从 100001 起，客户端读回
+    截断为 -31071 → `Sounds.none`，**静默无声**；上游源码注释明确 mod 音频不支持短 id 通道。
+  - 所以"`config/assets` 能预置资产"不等于"自定义音频可走 sound 通道播放"；可重叠音效需客户端/上游协议扩展。
+    详见 [小音效通道审计](sound-effect-channel-audit.md) §2/§3/§5。

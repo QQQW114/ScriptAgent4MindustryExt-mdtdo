@@ -2,7 +2,7 @@
 
 > 目的：记录本项目中"卡很久、反复试错才找到根因、但解决后可复用"的经验，方便后续 Agent 不踩坑。
 > 每节格式：现象 → 根因 → 正确做法。全部来自实际验证（含证据），不是推测。
-> 更新：2026-08-22 首次整理（本轮统计 Web 与权限修复过程中沉淀）。
+> 更新：2026-08-22 首次整理（本轮统计 Web 与权限修复过程中沉淀）；2026-10-17 增补第 8 节（SA 脚本顶层初始化静默失败）、第 9 节（KDoc 内嵌 `/**` 导致编译产物被静默截断的真因）与第 10 节（SA 事件监听 `listen` / `listenTo` 静默失效）。
 
 ---
 
@@ -195,3 +195,165 @@
   git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
   ```
   先确认端口在听（`TcpClient` 连 `127.0.0.1:7897`）再推；提交已经在本地成功时，重推只是补上传，不需要重做 commit。
+
+---
+
+## 8. SA 脚本顶层初始化静默失败：显示"加载成功"，命令却整个没注册
+
+> 2026-10-17 实测记录（`wayzer/map/externalCpHotReload.kts` 兼容改造后）。现象、对照组和探针方法都是实测的；
+> **真因已于同日 17:00 定位，见第 9 节：KDoc 内嵌字面量 `/**` 让 SA 静默产出截断的 .ktc**——本节保留现象与探针方法，
+> 作为这类"显示成功、注册却全没执行"故障的通用排查路径。
+
+### 8.1 现象：编译 / 启用 / 出错计数全部正常，但命令不存在
+
+- 脚本**编译通过**，控制台打印 `[Enable] wayzer/map/xxx`，冷启动 banner 照样是 `加载成功…、出错0`；
+- 但脚本注册的东西**全都没有**：控制台/游戏内执行它注册的命令报 `无效指令"externalcp",请使用 * help 查询`，
+  `onEnable` 里注册的 `/vote cp` 子指令也一并不存在；
+- SA 不写任何日志：`config/logs/log-0.txt`（游戏运行日志）、`config/logs/script-load/current.log`（SA 逐脚本日志）
+  都没有异常痕迹；
+- 机理（2026-10-17 17:00 已定位真因，见第 9 节）：SA 编译管线遇到 KDoc 内嵌字面量 `/**` 时会**静默产出截断的 .ktc**，
+  该注释之后的函数与顶层语句全部没有生成——本例 `command("externalcp")`（文件尾部）与
+  `onEnable { VoteService.registerExternalCpVote() }` 都在被截断的那一段里，所以命令和子指令同时消失。
+  **`[Enable]` 和 banner 的"出错0"只反映编译/模块启用，不代表顶层注册跑完了。**
+
+### 8.2 唯一可靠的探针：控制台执行它注册的命令
+
+- 在服务端控制台执行该脚本注册的命令（本次 `externalcp`）：正常会回显 CP 列表（实测 `可用CP：16 个`），
+  坏了就是 `无效指令"externalcp"`。**这是唯一能直接判定"注册到底发生没有"的探针**；
+  只看 `[Enable]` 和 banner 的"出错0"都可能误判为正常。
+- 现已工具化：`scriptdiag commands <关键词>` 可直接列出根指令（如 `scriptdiag commands externalcp`
+  输出 `根指令匹配 'externalcp'：1` + `externalcp(ecp/外部cp/热重载cp)`），用法见 `dev-workspace-guide.md`「调试工具」。
+
+### 8.3 定位手法：先覆盖回原版做对照，再插顶层日志探针二分
+
+1. **对照组**：把插件仓库里上一个可用版本原样覆盖回来（本次 `d41e7b6`，1619 行），
+   `sa reload wayzer/map/externalCpHotReload` 后控制台执行 `externalcp`。命令恢复 → 问题由**本轮内容改动**引入，
+   不是服务端/框架坏了。（同一进程内 reload 就能恢复，不用重启。）
+2. **顶层探针二分**：在脚本里插 `arc.util.Log.info("[ZZPROBE] …")`（`Log.info` 输出会进
+   `config/logs/log-0.txt`，控制台重定向文件里也有），从头部往中间逐段加/移；每改一次 `sa reload <脚本>`，
+   读 `log-0.txt` 找"最后一个没有输出的探针"，抛点就在它和下一个探针之间。
+3. **探针必须插在顶层**：函数体/`onEnable` 里的探针只能证明函数被调用，定位不了顶层执行停在哪；
+   每次 reload 后都要读新日志，别拿旧日志或缓存判断。
+
+> 真因定位后不必再逐段二分；但遇到新的同类"显示成功但注册全无"故障，这套"对照组 + 顶层探针"仍然通用。
+
+### 8.4 结论与操作建议
+
+- 改这种上千行的巨型脚本（`externalCpHotReload.kts`：改坏时 1777 行 / 回退后 1619 行）**必须一步一验证**：
+  一次只落一层改动 → `sa reload` → 控制台命令验证注册 → 通过再下一步。一次堆多层改动，失败后只能整体回退
+  （本次 `bc48050`），时间成本远高于分步。
+- 本次兼容改造拆成的 5 个可独立小步（资产冲突放宽 / 内容结构放宽 / 语言包合并 / 降级可见 / 异步入口）
+  见 `scripts-maintenance.md` 第十七批。
+- "脚本可用"的验收口径：**控制台执行其注册命令有正确回显**，而不是看到 `[Enable]` 就算过。
+- 大脚本改动后的固定动作：先跑 `tools\scan-nested-block-comment.ps1` 扫描（见第 9 节），再 reload；
+  若命令仍缺失，按第 9 节看 `.ktc` 产物大小/entries 是否被截断。
+
+### 8.5 两条相关小知识（本次顺带确认）
+
+- **控制台 `js` 是 JavaScript(Rhino) 求值器，不能写 Kotlin**：`wayzer/cmds/jsCmd.kts` 走
+  `mods.scripts.runConsole(js)`。要用它调脚本函数，只能调脚本已暴露的入口；而且 `js` 在主线程**同步**执行，
+  CP/DP 加载这种需要分帧同步的操作直接跑会互等卡死（本次因此才规划 `loadServerCpAsync` 异步入口）。
+- **SA 热重载会重新注册 command**：本次同一进程内 `sa reload` 后就恢复了 `externalcp`（服务端没有重启）。
+  之前"热重载不注册指令"的判断是错的——真正原因是编译产物被截断（见第 9 节）、注册根本没执行到；
+  遇到 reload 后命令/子指令消失，先按本节查注册状态、再按第 9 节查 .ktc 是否被截断，不要先怀疑热重载机制。
+
+---
+
+## 9. SA 3.4.0 编译管线：KDoc 内嵌 `/**` 会让脚本编译产物被静默截断
+
+> 2026-10-17 17:00 定位并验证——这是第 8 节"顶层初始化静默失败"的**真正根因**（不是脚本内容逻辑写错）；
+> 本机 SA 3.4.0（参考项目 `ScriptAgent4MindustryExt-3.4.0`）。
+> 已提上游 [issue #50](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/50)（附最小复现与 `.ktc` 数据）；
+> **截至 2026-10-17 上游未确认修复**，本地仍以维护者竞态修复构建 `c2823c1` + 本节规避规则（§9.2/§9.3）为准。
+
+### 9.1 触发写法与后果
+
+- **触发**：在 KDoc 块注释（`/** … */`）内部出现**字面量 `/**`**——包括 Markdown/代码引用写法，例如 `` `bundles/**` ``。
+  本轮坏版本里就有一行：`* - \`bundles/**\`：可合并资产，两份都保留…`（`mergedDataAssets` 的 KDoc 里；
+  bf135ea/dd8020a 版本第 **1119** 行，ec2678b 版本第 1053 行）。
+- **后果（实测）**：SA 仍打印 `编译脚本完成`，但生成的 `.ktc` 是**截断的**：
+
+  | 产物 | zip entries | 主类大小 | .ktc 文件大小 |
+  |---|---|---|---|
+  | 正常 | **55** | `wayzer/map/ExternalCpHotReload.class` **148,894B（≈149KB，实测样本）** | ≈152–153KB |
+  | 截断 | **26** | 同主类 **103,508B（≈103.5KB，实测样本）** | ≈77KB |
+
+  该 KDoc **所在的函数及其后**的函数/顶层语句全部没有生成：javap 对比正常版 154 个方法 / 截断版 93 个方法，
+  从 `mergedDataAssets` 起往后连续缺失（`applyDataAssetsAndSanitize`、`applyExternalCp`、`unloadExternalCp`、
+  `externalCpListText`、`loadServerCp`、`registerExternalCpVote` 以及 `onEnable` 相关的 `_init_$lambda` 等）。
+- **表现**：脚本 `[Enabled]`、banner 出错0、`sa listFailed` 为空，但脚本尾部的 `command("externalcp")` 与
+  `onEnable { VoteService.registerExternalCpVote() }` 根本没执行 → 游戏内/控制台"无效指令"（详见第 8 节）。
+- **对照验证**：只把那处 `/**` 改掉（改写成「bundles 目录」），同一份兼容改动重新 `sa load` 后**立即恢复全量编译**
+  （回到 55 entries / 主类 ≈149KB），控制台 `scriptdiag commands externalcp` 输出
+  `根指令匹配 'externalcp'：1` + `externalcp(ecp/外部cp/热重载cp)`。
+
+### 9.2 怎么确认/定位（最快证据链）
+
+1. 看编译缓存产物：`mdtserver/config/scripts/cache/compiled/<脚本路径下划线化>/<hash>.ktc` **实际是 jar**
+   （可直接统计 zip entries）。被截断时 entries 数明显偏少、主类明显变小，与本脚本的历史正常版本一对比就能看出
+   （本轮正常 55 / 截断 26）。PowerShell 示意：
+   ```powershell
+   Add-Type -AssemblyName System.IO.Compression.FileSystem
+   $z = [System.IO.Compression.ZipFile]::OpenRead("path\to\xxx.ktc")
+   $z.Entries.Count
+   $z.Entries | Where-Object { $_.Name -like "*ExternalCpHotReload.class" } | Select-Object Name, Length
+   $z.Dispose()
+   ```
+2. 用 `javap` 看主类方法（`.ktc` 可直接当 classpath）：`javap -p -cp <xxx.ktc> wayzer.map.ExternalCpHotReload`，
+   与正常版本 diff 方法清单；**从某个函数起连续缺到文件尾** = 源码在该函数之前的注释处被截断
+   （本轮 `.agents\good-javap.txt` / `broken-javap.txt` 就是这样比出 61 个缺失方法的）。
+3. 把可疑 KDoc 里的 `/**` 改掉后 `sa load`，对比新 `.ktc` 的 entries/主类大小；或直接跑 `tools\scan-nested-block-comment.ps1`。
+
+### 9.3 预防（写 KDoc 的硬规则）
+
+- **块注释内不写 `/**`**：写「`bundles` 目录」「`generated` 目录」这类文字，不要让注释里出现 `/*` 字符序列。
+- 改完大脚本（尤其新增/修改 KDoc）先跑扫描器，再 `sa load`：
+  ```powershell
+  cd "C:\Users\qw114\Desktop\other\mdt保留\mdtdo"
+  pwsh -File tools\scan-nested-block-comment.ps1
+  ```
+  状态机扫描 `mdtserver/config/scripts` 下全部 `.kts/.kt`（本轮 206 个文件，秒级）；命中会输出
+  `文件 : 第 N 行 块注释内出现 '/*'`——对历史坏版本（`.agents\ktcs\broken.kts`）准确报出**第 1119 行**，对原版干净。
+- **行注释里的 `/**` 无害**：如 `externalCpHotReload.kts` 里一直有
+  `// DataImagePacker prioritizes generated/** and omits …` 这行普通注释，脚本正常编译；
+  **字符串/字符字面量里的 `/*` 也不影响**（扫描器已排除行注释、字符串、字符三种状态）。
+- 这类 bug **不报错、不进日志**，只能靠编译产物大小/entries，或最终"命令是否注册"发现。
+  排查顺序建议：控制台命令/`scriptdiag` → `.ktc` 大小与 javap → 扫描器 → 最后才怀疑脚本逻辑。
+
+---
+
+## 10. SA 事件监听：`listen` 只挂 arc 原生事件总线，自定义事件必须 `listenTo`
+
+> 2026-10-17 实测（提交 `69d4932`；完整审计见 [listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)）。
+
+- **现象**：`listen<SA 自定义事件>` **编译通过、脚本 `[Enabled]`、无任何报错，但监听器永远不触发**——典型表现是
+  "等级统计不迁移 / 换图后队伍或 PVP 保护没反应"，日志毫无痕迹。本次全仓审计发现 3 处：
+  `wayzer/ext/serverStats.kts:311`（`TrustLevelChangedEvent`）、`wayzer/map/betterTeam.kts:97`、
+  `wayzer/map/pvpProtect.kts:152`（`MapLoadFinishedEvent`）；其中 **PVP 保护此前完全失效**（该监听是 `startPvpProtect()`
+  的全仓唯一调用点），等级分布即时迁移也从未执行（进服路径会自愈，属"即时性丢失"）。
+- **根因**：SA 有两套**同名但互不相通**的事件总线——
+  - `listen<T> { }`（`coreMindustry/lib/ListenExt.kt`）挂到 **`arc.Events`**，由 `Events.fire(...)` 派发，适用于游戏原生
+    `EventType.*`；
+  - SA 自定义事件（实现 `cf.wayzer.scriptAgent.Event`、带 `Event.Handler`，由 `emitAsync()` / `launchEmit()` 派发）只走
+    **`listenTo<T> { }`** 的 `Event.Handler`，**永远不会进 `arc.Events`**。
+  `listen<T>` 的 `T` 约束是 `Any`，所以误用照样编译通过、只能靠审查/扫描发现。
+- **判断方法**：看事件**定义**——有 `override val handler: Event.Handler` 或 `companion object : Event.Handler()` 的就是 SA
+  自定义事件，**必须 `listenTo`**；`mindustry.game.EventType.*` / 明确 `Events.fire` 派发的用 `listen`。反向（原生事件用
+  `listenTo`）是编译错误，所以本类 bug 只有"`listen` + SA 自定义事件"一个方向。
+- **正确写法**：`listenTo<T> { ... }` 的 lambda 是**事件 receiver**（`suspend T.() -> Unit`）——事件属性直接写 `uid` /
+  `this.info`，**没有隐式 `it`**，提前返回用 `return@listenTo`（从 `listen` 迁移最容易漏改这里，会报
+  `Unresolved reference 'it'`）。可参考 `wayzer/maps.manager.kt`、`mapScript/module.kts:194`。
+- **全仓审计命令**（改动后自查，规则见审计文档 §7）：
+  ```powershell
+  # 列出所有 listen<T>，凡类型不以 EventType. 开头的逐条人工确认（查定义/派发点）
+  Get-ChildItem -Recurse mdtserver\config\scripts -Include *.kts,*.kt |
+    Select-String '\blisten\s*<' | Where-Object { $_.Line -notmatch 'listen\s*<\s*EventType\.' }
+  # 交叉核对 SA 事件派发点：应是 emitAsync/launchEmit（而不是 Events.fire）
+  Get-ChildItem -Recurse mdtserver\config\scripts -Include *.kts,*.kt |
+    Select-String 'emitAsync\(|launchEmit\('
+  ```
+  非 `EventType.` 前缀的 `listen` 只允许三类：显式 import 的原生事件、MindustryX 原生扩展（`listen<Any>(class)` 形式）、
+  经核对确认由 `Events.fire` 派发的类型。
+- **预防规则**：新增/审查监听器**先看事件定义再选 API**；自定义事件定义处加注释"必须 listenTo"；改动后跑上面的扫描命令。
+- **热重载注意**：SA 单脚本 `sa load` **不会级联重载 `contextScript<T>()` 的依赖方**（实测重载 `betterTeam` 后其 8+ 个依赖方
+  仍持旧实例）。本次 listen→listenTo 修复对监听器本身立即生效，但被依赖脚本的状态类改动建议**低峰期冷启动一次**彻底刷新。

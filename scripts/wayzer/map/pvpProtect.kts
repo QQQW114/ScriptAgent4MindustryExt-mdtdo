@@ -149,7 +149,8 @@ private fun startPvpProtect() {
     }
 }
 
-listen<MapLoadFinishedEvent> { startPvpProtect() }
+// MapLoadFinishedEvent 是 SA 自定义事件（wayzer/maps.manager.kt），必须用 listenTo；listen 只挂 arc 原生事件总线。
+listenTo<MapLoadFinishedEvent> { startPvpProtect() }
 
 listen<EventType.ResetEvent> {
     warnCooldown.clear()

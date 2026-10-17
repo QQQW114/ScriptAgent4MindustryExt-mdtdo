@@ -1,4 +1,5 @@
 @file:Depends("wayzer/user/trustLevel", "MDT信任等级")
+@file:Depends("wayzer/ext/playerMute", "惩罚规则/事件/共享状态")
 
 package wayzer.ext
 
@@ -6,10 +7,14 @@ import cf.wayzer.placehold.PlaceHoldApi.with
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.net.Administration
+import wayzer.ext.PlayerMute.PunishmentLiftedEvent
 import wayzer.lib.PlayerData
 import java.util.concurrent.ConcurrentHashMap
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
+
+// 惩罚规则/事件在 playerMute（不反向依赖），懒解析避免本脚本启用时序影响禁建本身。
+private val playerMute by lazy { contextScript<PlayerMute>() }
 private val NO_BUILD_BAN = "\u0000"
 private val WARN_INTERVAL_MILLIS = 2_000L
 private data class TemporaryBuildBan(val reason: String, val untilMillis: Long)
@@ -66,6 +71,17 @@ fun disableBuild(target: Player, reason: String, operator: Player? = null): Bool
     val data = PlayerData[target]
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
     val keys = affectedKeys(data)
+    val operatorUids = operator?.let { PlayerData[it].ids } ?: emptySet()
+    val operatorUid = operator?.let { PlayerData[it].id }
+    val operatorLevel = if (operator == null) -1 else with(playerMute) { applierLevelOrder(operator) }
+
+    // 永久禁建属于“无时长”惩罚：非管理员层级直接拒绝（用户口径 Q3）。
+    val decision = with(playerMute) { preparePunishment(operatorUids, operatorLevel, keys, null, permanentRequest = true) }
+    decision.blockReason?.let { reasonText ->
+        operator?.sendMessage(reasonText)
+        return false
+    }
+
     synchronized(buildBanLock) {
         keys.forEach { buildBanReasons[it] = finalReason }
     }
@@ -80,17 +96,39 @@ fun disableBuild(target: Player, reason: String, operator: Player? = null): Bool
     )
     operator?.sendMessage("[green]已禁止 [white]${target.name}[green] 建造/拆除，原因：[yellow]$finalReason")
     logger.info("$operatorName 禁止了 ${target.plainName()} 的建造/拆除权限，原因：$finalReason")
+    with(playerMute) {
+        markPunishmentAppliedIfNeeded(operatorUids, operatorLevel, keys)
+        emitPunishmentApplied(
+            "buildban", target, null, operatorUid, operator?.name, operatorLevel, operatorUids,
+            if (operator == null) "system" else "direct", finalReason,
+        )
+    }
     return true
 }
 
 fun disableBuildTemporary(target: Player, minutes: Int, reason: String, operator: Player? = null): Boolean {
     if (operator != null && !canManageBuildBan(operator, target)) return false
-    val fixedMinutes = minutes.coerceAtLeast(1)
     val data = PlayerData[target]
     val finalReason = reason.trim().ifEmpty { "未填写理由" }
+    val keys = affectedKeys(data)
+    val operatorUids = operator?.let { PlayerData[it].ids } ?: emptySet()
+    val operatorUid = operator?.let { PlayerData[it].id }
+    val operatorLevel = if (operator == null) -1 else with(playerMute) { applierLevelOrder(operator) }
+
+    // 非管理员层级：≤1440 分钟钳制 + 24h 重复施加冷却 + 检举封禁检查（用户口径 Q2/Q3/Q4）。
+    val decision = with(playerMute) {
+        preparePunishment(operatorUids, operatorLevel, keys, minutes, permanentRequest = false)
+    }
+    decision.blockReason?.let { reasonText ->
+        operator?.sendMessage(reasonText)
+        return false
+    }
+    decision.note?.let { operator?.sendMessage(it) }
+    val fixedMinutes = (decision.allowedMinutes ?: minutes).coerceAtLeast(1)
+
     val until = System.currentTimeMillis() + fixedMinutes * 60_000L
     val record = TemporaryBuildBan(finalReason, until)
-    affectedKeys(data).forEach { temporaryBuildBans[it] = record }
+    keys.forEach { temporaryBuildBans[it] = record }
     buildBanCache.remove(target.uuid())
     val operatorName = operator?.name ?: "系统"
     target.sendMessage(
@@ -102,6 +140,13 @@ fun disableBuildTemporary(target: Player, minutes: Int, reason: String, operator
     )
     operator?.sendMessage("[green]已临时禁止 [white]${target.name}[green] 建造/拆除 [yellow]${fixedMinutes}分钟[green]，原因：[yellow]$finalReason")
     logger.info("$operatorName 临时禁止了 ${target.plainName()} 的建造/拆除权限 ${fixedMinutes}分钟，原因：$finalReason")
+    with(playerMute) {
+        markPunishmentAppliedIfNeeded(operatorUids, operatorLevel, keys)
+        emitPunishmentApplied(
+            "buildban", target, fixedMinutes, operatorUid, operator?.name, operatorLevel, operatorUids,
+            if (operator == null) "system" else "direct", finalReason,
+        )
+    }
     return true
 }
 
@@ -127,6 +172,34 @@ fun enableBuild(target: Player, operator: Player? = null): Boolean {
     operator?.sendMessage("[green]已解除 [white]${target.name}[green] 的建造/拆除限制")
     logger.info("$operatorName 解除了 ${target.plainName()} 的建造/拆除限制")
     return true
+}
+
+/** 检举通过后按 uid 解除禁建（目标可能已离线）；返回是否确实解除了限制。 */
+fun enableBuildByUids(uids: Set<String>, targetUuid: String): Boolean {
+    val keys = uids.filter { it.isNotBlank() }.toSet()
+    if (keys.isEmpty()) return false
+    var removed = false
+    synchronized(buildBanLock) {
+        keys.forEach { key ->
+            if (temporaryBuildBans.remove(key) != null) removed = true
+            if (buildBanReasons.remove(key) != null) removed = true
+        }
+    }
+    val player = Groups.player.find { it.uuid() == targetUuid }
+    if (player != null) {
+        buildBanCache.remove(player.uuid())
+        if (removed) player.sendMessage("[green]你受到的禁止建造/拆除惩罚已被检举投票解除。")
+    }
+    return removed
+}
+
+listenTo<PunishmentLiftedEvent> {
+    if (kind != "buildban") return@listenTo
+    val lifted = this
+    launch(Dispatchers.game) {
+        runCatching { enableBuildByUids(lifted.targetUids, lifted.targetUuid) }
+            .onFailure { logger.warning("检举解除禁建失败: ${it.message}") }
+    }
 }
 
 private fun resolveOnlineTarget(text: String): Player? {

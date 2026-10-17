@@ -1,6 +1,7 @@
 # 服务器状态统计与 Web 展示
 
-> 更新记录：2026-08-22 首次实现；**2026-09-11 改版为 schema 2**（移除 MDC 发放统计、新增 14 天/24 小时曲线与社区互动、游玩时长、峰值在线；对应脚本维护记录见 `scripts-maintenance.md` 同日条目）。
+> 更新记录：2026-08-22 首次实现；**2026-09-11 改版为 schema 2**（移除 MDC 发放统计、新增 14 天/24 小时曲线与社区互动、游玩时长、峰值在线；对应脚本维护记录见 `scripts-maintenance.md` 同日条目）；
+> **2026-10-17 `stats-web/` 升级为服务器门户**（状态/事件流/上传审核/管理后台，见 [web-portal.md](web-portal.md)），统计 JSON（schema 2）本身未变。
 
 ## 概述
 
@@ -10,7 +11,7 @@ JSON 文件；独立 Web（`stats-web/`）只读该文件做展示。两者**可
 - 服务器侧统计可开关（默认开），不与 Web 是否运行相关；
 - Web 可随时启动/停止，服务器统计关闭后 Web 显示停止前的最后一次数据（并标记 `enabled: false`）。
 
-Web 页面提供两个视图（右上角切换）：
+门户首页（`index.html`）的「数据看板」区域提供两个视图（右上角切换）：
 
 - **履历视图**（默认）：面向对外展示/个人履历——运营总览 KPI、近 14 天活跃折线图、
   今日 24 小时折线图、近 14 天社区互动、等级构成、以及"可直接引用的服务器数据"摘要块；
@@ -164,21 +165,42 @@ Web 页面提供两个视图（右上角切换）：
 - `hourly` 固定输出 24 个点（今天），`hour` 为 0~23；
 - Web 对缺失字段做了兜底，旧版 JSON 也不会导致页面报错。
 
-## Web（`stats-web/`）
+## Web（`stats-web/`，2026-10-17 升级为服务器门户）
 
-- `index.html`：单文件页面（无构建、无外部依赖，折线图为原生 SVG），自动刷新 30 秒 + 手动刷新；
-  履历视图 / 运维视图切换；
-- `start-web.ps1`：PowerShell HttpListener 静态服务；`/` 提供页面，`/server-status.json`
-  映射到 JSON 文件；**默认存储位置：`mdtserver\config\stats\server-status.json`**
-  （即服务器 `config/` 下的 `stats/server-status.json`，脚本 config key `statsOutputPath` 可改）。
-  该服务只提供这两个路由，页面改动不需要新增路由（图表在单文件内实现）；
-- `web-config.ps1`：常用配置（`$WebBind`/`$WebPort`/`$WebStatsJson`），改完重启即生效；
-  命令行参数（`-Bind`/`-Port`/`-StatsJson`）优先级更高。
-- `start-web.bat`：双击启动入口，参数透传（如 `start-web.bat -Bind 0.0.0.0 -Port 8081`）。
-- 公网访问：`-InstallAcl`（管理员执行一次，注册 URL 保留）→ `-Bind 0.0.0.0` → 防火墙放行端口；
-  默认 `127.0.0.1:8081`。点击 `Ctrl+C` 停止；与服务器统计开关互不依赖。
-- 分发复制：保持 `index.html`/`start-web.ps1`/`start-web.bat`/`web-config.ps1` 四件套同目录
-  （`复制插件用\stats-web.zip` 为准）。
+> 2026-10-17 起 `stats-web/` 由「单文件静态状态站」升级为**服务器门户**：状态与图表之外新增游戏内实时事件流、
+> DP/地图上传审核与管理员后台。完整架构/API/配置/安全/审核流程见 [web-portal.md](web-portal.md)；
+> 本文件只保留与「状态统计 JSON」直接相关的 Web 说明。**统计 JSON（schema 2）与上面两个数据视图的口径未变**，
+> 下面的 `/api/status`、`/server-status.json` 即旧页面的数据入口。
+
+- **页面**：`index.html` 门户首页（欢迎页 + 状态卡 + 折线图 + 实时事件流，前端实现见 `assets/**`）、
+  `upload.html` 上传页、`admin.html` 管理后台；全部本地资源、无外网 CDN，移动端可用；
+- **后端**：`start-web.ps1`（入口）+ `server/**`（PowerShell HttpListener，零外部依赖，兼容 Windows PowerShell 5.1）；
+  默认监听 `127.0.0.1:8090`；
+- **状态数据路由**：
+  - `GET /api/status`：规范化状态对象（`online/map/mode/wave/tps/uptimeSeconds/updatedAt/available` + `stats` 完整原始 JSON），
+    前端图表直接用 `data.stats` 里的 `daily/hourly/last14Days/today/total/totalByRank/notes`；
+  - `GET /server-status.json`：**旧入口兼容**，直接回传 `mdtserver\config\stats\server-status.json` 原文
+    （脚本 config key `statsOutputPath` 可改路径）；
+  - `/api/status` 在 JSON 文件缺失时返回 200 + `available:false`（不 500），页面提示统计未启用；
+- **配置**：`web-config.json`（主配置：端口、管理员账号密码、上传/目录/队列限制、安全项；相对路径以 stats-web 目录为基准，改完重启生效）；
+  `web-config.ps1` 仅在缺少 `web-config.json` 时作为旧部署回退；命令行 `-Bind/-Port/-StatsJson` 优先级最高；
+- **公网访问**：管理员执行一次 `start-web.ps1 -InstallAcl` → 配置/命令行 `-Bind 0.0.0.0` → 防火墙放行端口；
+  默认只监听本机。**默认管理员密码必须在首次部署后立即修改**（启动横幅会警告；也支持 `-GenPasswordHash` 生成哈希）；
+- **事件流**：`GET /api/events?afterTs=&limit=` 读取游戏侧 `wayzer/ext/liveEventFeed.kts` 写入的
+  `mdtserver\config\stats\live-events.jsonl`（聊天/加入离开/投票/换图/系统事件，`text` 保留颜色标记原文；文件缺失返回空列表）；
+- **投稿审核**：`upload.html` 公开投稿 DP/地图（单文件 ≤10MB、每种待审队列 ≤10，满返回 `QUEUE_FULL`；审核通过才落盘：
+  DP → `external-cp/`、地图 → `config/maps/`）；`admin.html` 登录后审核/拒绝/移除，地图审核通过默认控制台 `maps` 刷新列表、
+  DP 热重载默认关（详见 web-portal §6）；上传/审核/删除动作记 `web-data/audit.log`；
+- **API 一览**：公开 `GET /api/status|events|catalog|health`；认证 `POST /api/login|logout`；公开上传 `POST /api/upload`；
+  Bearer 管理 `GET /api/review/list`、`POST /api/review/approve|reject`、`DELETE /api/item`；统一信封与错误码见 web-portal §4；
+- **演示模式（mock）**：URL 加 `?mock=1` 用内置假后端（`assets/mock/`，演示账号 admin/demo123，不产生真实请求），`?mock=0` 关闭；
+  前端无构建、无外网 CDN，静态资源版本号 `?v=` 需手工 bump；
+- **旧配置自动迁移**：旧部署只有 `web-config.ps1`（`$WebBind/$WebPort/$WebStatsJson`）时，首次启动自动生成 `web-config.json`、
+  旧文件改名 `web-config.ps1.bak-<时间>` 备份（幂等/失败回退/CLI 覆盖）；**生产升级不要把仓库默认 `web-config.json` 整目录覆盖**
+  （否则不会迁移、监听退回默认 `127.0.0.1:8090`），详见 web-portal §3.4；
+- **分发复制**：保持 `stats-web/` 整个目录一起复制（`index.html`/`upload.html`/`admin.html`/`assets/`/`server/`/`start-web.ps1`/
+  `start-web.bat`/`web-config.json`；`web-data/` 为运行数据不复制）；旧的「四件套」单独复制方式不再适用，
+  旧分发包 `复制插件用\stats-web.zip` 已过期。
 
 ## 已知边界与后续注意
 

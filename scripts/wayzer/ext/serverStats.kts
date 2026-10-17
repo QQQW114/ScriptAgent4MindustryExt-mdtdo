@@ -308,9 +308,12 @@ listen<EventType.PlayerChatEvent> {
     statsEventQueue.offer(StatsChatEvent(dateAt(System.currentTimeMillis())))
 }
 
-listen<TrustLevelChangedEvent> {
-    if (!statsEnabled) return@listen
-    statsEventQueue.offer(StatsLevelEvent(it.uid, normalizeStatsLevel(it.newLevel)))
+// TrustLevelChangedEvent 是 SA 自定义事件（wayzer/lib/TrustSystemEvents.kt，带 Event.Handler），
+// 必须用 listenTo 注册；listen 只挂 arc/Mindustry 原生事件总线，写错会编译通过但监听器永不触发。
+// listenTo 的 lambda 是「事件作为 receiver」：直接用 uid / newLevel，不能用 it。
+listenTo<TrustLevelChangedEvent> {
+    if (!statsEnabled) return@listenTo
+    statsEventQueue.offer(StatsLevelEvent(uid, normalizeStatsLevel(newLevel)))
 }
 
 // ---------- 快照（游戏线程每几秒刷新一次，IO 线程只读） ----------

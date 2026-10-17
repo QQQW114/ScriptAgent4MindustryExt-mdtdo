@@ -1,6 +1,6 @@
 # MDT DO 项目长期记忆与当前状态
 
-> 更新时间：2026-08-13
+> 更新时间：2026-10-17（文档巡检：版本基线 B509/v160.7、调试设施、DP 兼容最终版、IP 风控决策、惩罚体系进度）
 > 维护对象：C:\Users\qw114\Desktop\other\mdt保留\mdtdo
 > 文档性质：给新会话和接手项目的 Agent 使用的上下文、判断依据与状态面板。
 
@@ -42,6 +42,9 @@ Agent 可以在本工作区分析、编辑、构建、运行测试副本并准�
 - `mdtserver/config/logs/log-0.txt`：当前 Mindustry/MindustryX 运行日志，可确认 ScriptAgent 汇总、`Server loaded`、端口开放和地图加载；
 - `mdtserver/config/logs/script-load/current.log`：当前脚本逐项加载、编译、数据库初始化和业务模块启动日志；
 - `mdtserver/config/logs/last.log`、`mdtserver/config/logs/script-load/last.log`、`last-error.log` 及各自 `history/`：由启动脚本在上一轮归档或进程正常退出后维护，适合复查已结束/上一轮启动。
+- `mdtserver/config/logs/console-<yyyyMMdd-HHmmss>.log`（2026-10-17 起，提交 `7364043`）：启动器把 java 的 stdout/stderr
+  **逐行落盘**的控制台全量日志——SA 不进 Mindustry 日志的编译/初始化信息与异常栈只能在这里看到；排查脚本“入口消失”类问题优先看它
+  （用法见 `dev-workspace-guide.md`「调试工具」）。
 
 经验：优先直接看正式日志（config/logs）。只有正式日志缺失、未随本轮启动更新、损坏，或确实覆盖不到启动器自身输出时，才临时建一次性日志；诊断结论写进文档后顺手清掉。临时产物清理时，正式日志与数据库、外部 CP、缓存备份等运行数据不要一起删。
 
@@ -51,20 +54,22 @@ Agent 可以在本工作区分析、编辑、构建、运行测试副本并准�
 - **命令 Socket 竞态**：ServerControl 的 `Trigger.socketConfigChanged` 对每条 `config socketInput*` 执行 `toggleSocket(false)+toggleSocket(true)`；多条连续触发会让 accept 线程在重启竞态中死亡，`log-0.txt` 出现 `[E] Command input socket already in use...` 与 `java.net.SocketException: Socket is not bound yet`，TCP 能连上 6859 但命令无回显。
 - **规避**：直接以 java 命令行启动、只传单条 `config socketInput true`（不带 port/address，用默认 6859/localhost），socket server 只启动一次，命令回显正常。
 - **命令通道**：`hookGameHandler` 把 `ServerControl.handler` 反射替换为 `MyCommandHandler("", Config.serverCommands)`，命令 Socket 与游戏内 `/sa`、`/cp`、`/externalcp` 共用框架命令根；原生命令仍由原生 handler 执行。已验证 Socket 上 `cp files`、`cp load 11`、`externalcp list` 正常回显（UTF-8）。
+- **注册诊断**（2026-10-17 起）：控制台/命令 Socket 可执行 `scriptdiag commands <关键词>` 直接确认目标指令是否注册，
+  另有 `scriptdiag count|failed|state <脚本id>`；比翻日志快。原理与用法见 `dev-workspace-guide.md`「调试工具」。
 - **自动化启动**：`java <JVM参数> -jar server-2026.07.20.B480-mdtdo.jar "config name ...,config port 6567,...,config socketInput true,playerlimit 16,shuffle all,host"`，stdin 走管道即可（JLine 退化为 dumb terminal），命令回显在 stdout 与日志文件。
 - **退出与清理**：socket `exit` 在脚本停用后可能不生效；stdin EOF 触发 JLine 退出路径并遇到项目既有的 ScriptAgent 集中卸载停滞，进程可能不退出。清理时结束 java 进程树并确认 6567/6859/10099 端口释放；临时改过的 `server.properties` 要从备份还原。
 
-## 1. 当前快照（最近核对：2026-08-13）
+## 1. 当前快照（最近核对：2026-10-17）
 
 | 项目 | 当前记录 | 解释 |
 |---|---|---|
 | 工作区 | C:\Users\qw114\Desktop\other\mdt保留\mdtdo | MDT DO 服务器独立开发项目；与 `mdt保留` 下其他项目（mod-dp-bridge、参考项目等）并列，不等同生产目录。 |
 | Git 基线 | 本地分支 master；提交号以 `git rev-parse HEAD` 现场核对 | 本文档不嵌入“当前提交号”，避免文档随提交自身变化而循环失效；写新改动前仍需检查 git status。 |
-| 游戏/服务端候选 | **当前基线：Mindustry v160.3，MindustryX 预览版 `prerelease-2026.09.13.B495`（2026-09-13 起启用；提交 `92471dd`，其 `work` 子模块 = Mindustry v160.3 提交 `254fd3e`）** | **版本跟踪口径：常态化跟进上游最新版本**（Mindustry/MindustryX/参考项目）；**ScriptAgent 以本项目自行维护为主**，仅在较大变动的发行版更新时评估是否跟进。历史上由用户拍板升级基线；本轮"跟最新 MindustryX 预览版"由用户明确要求。MindustryX 正式发行版仍是 X37（v160.1），160.3 目前只在预览通道；X36 是 v159.7。 |
-| 基线 JAR | `mdtserver/server-2026.09.13.B495.jar`（**MindustryX 预览构建**，`version.properties` 内 `build=160.3`、`mod.hjson` 的 `minGameVersion="160.3"`），已在 `server.properties` 的 `jar=` 显式指定 | SHA-256 `D2872D30598BFC2557A8122BF1A622F7263AF783B3636E09CFF5BCF2778E4C09`；回滚线 `server-2026.09.X37.jar`（v160.1 正式发行版，上一基线）、`server-2026.09.11.B491.jar`（同 v160.1）与 `server-2026.08.12.B485.jar`（v159.7 最后稳定发行）都保留在目录内，改 `jar=` 即可回滚；`server.properties.bak-x37` 保留了切换前的整份配置。脚本硬依赖 MindustryX（`trafficMonitor.kts` → `mindustryX.events.SendPacketEvent`），**不能用官方 Mindustry 的 jar 顶替**。 |
-| JAR 与脚本时点 | B495（160.3）于 2026-09-13 完成**清空编译缓存**的冷启动验证并设为基线（`157/153/148/出错0`） | 启动脚本优先读 `server.properties` 的 `jar=`，缺省才按 `server-*.jar` 最新修改时间自动选择——切换版本时务必同步 `jar=`；`jar=` 指向的文件不存在时启动脚本会直接报错而不是静默换 jar。 |
-| 脚本运行时 | 工作区脚本已按 ScriptAgent 3.4.0 迁移；2026-07-29 已替换为维护者提供的未发行竞态修复构建 | 构建文件名为 `ScriptAgent4MindustryExt-e4b136c.jar`，运行时显示 `ScriptAgent c2823c1`；旧本地字节码 workaround 已备份。该构建尚未进入正式发行版，也不能推断生产正在使用。 |
-| 最近本地证据 | 2026-09-13 **B495 / Mindustry 160.3 清空编译缓存冷启动 `157/153/148/出错0`**（`ScriptAgent c2823c1`），无异常、6567/6859/10099 正常、命令 Socket 可用；同日 **X37 / Mindustry 160.1 冷启动 157/153/148/0** 与 **B491 同脚本集 157/153/148/0** 完全一致，编译错误 0、异常 0、Socket 正常、端口全释放。此前 2026-09-12 B491 冷启动 157/153/148/0（含当时已实装的火焰链路运行期实测，**该实测随 09-13 删除 `limitFire.kts` 作废**）；08-14 B485 冷启动 156/152/147/0 并实测上行网卡统计 | 160 适配前同环境为 `157/131/129/出错22`（`Groups.fire`/`Groups.puddle` 被 160 移除导致 3 个根脚本编译失败并级联）。脚本数由 158 降到 157 是 09-13 删除 `limitFire.kts` 的预期结果。各轮测试进程均已清理、端口释放；`server.properties` 除按版本跟进改 `jar=` 外，还在用户授权下把本机开发服的 `socketInput` 置为 `true`（见 `agent-debug-experience.md`）。 |
+| 游戏/服务端候选 | **当前基线：Mindustry v160.7，MindustryX 预览版 `prerelease-2026.10.10.B509`（2026-10-16 起启用；上游提交 `703f65aa`，其 `work` 子模块 = Mindustry v160.7 提交 `17012d61`）** | **版本跟踪口径：常态化跟进上游最新版本**（Mindustry/MindustryX/参考项目）；**ScriptAgent 以本项目自行维护为主**，仅在较大变动的发行版更新时评估是否跟进。历史上由用户拍板升级基线。MindustryX 正式发行版仍是 X37（v160.1），160.7 目前只在预览通道；上一基线 B495/v160.3 保留回滚。 |
+| 基线 JAR | `mdtserver/server-2026.10.10.B509.jar`（**MindustryX 预览构建**，`version.properties` 内 `build=160.7`），已在 `server.properties` 的 `jar=` 显式指定 | SHA-256 `FC1B01AB9F90B3F761AFB0045547FE2C0347B645BB050C648CB230698676AC74`；回滚线 `server-2026.09.13.B495.jar`（v160.3）、`server-2026.09.X37.jar`（v160.1 正式发行版）、`server-2026.09.11.B491.jar`（同 v160.1）与 `server-2026.08.12.B485.jar`（v159.7 最后稳定发行）都保留在目录内，改 `jar=` 即可回滚；`server.properties.bak-x37` 保留了切换前的整份配置。脚本硬依赖 MindustryX（`trafficMonitor.kts` → `mindustryX.events.SendPacketEvent`），**不能用官方 Mindustry 的 jar 顶替**。 |
+| JAR 与脚本时点 | B509（160.7）于 2026-10-16 切换、2026-10-17 17:38 完成冷启动验证（`159/155/150/出错0`，含当时已提交的 `wayzer/cmds/scriptDiag.kts`），设为当前基线 | 启动脚本优先读 `server.properties` 的 `jar=`，缺省才按 `server-*.jar` 最新修改时间自动选择——切换版本时务必同步 `jar=`；`jar=` 指向的文件不存在时启动脚本会直接报错而不是静默换 jar。开发中未提交脚本会让冷启动计数变化，以实际 banner 为准。 |
+| 脚本运行时 | 工作区脚本已按 ScriptAgent 3.4.0 迁移；运行的是维护者提供的未发行竞态修复构建 `config/mods/ScriptAgent4MindustryExt-3.4.0-allInOne.jar`（2026-07-29 替换，SHA-256 `9D51FCD…C2214`） | 运行时显示 `ScriptAgent c2823c1`；旧字节码 workaround 与更早包都已备份（`*.bak`）。**已知上游编译 bug**：KDoc 块注释内嵌字面量 `/**` 会静默截断 `.ktc`（已提上游 issue [#50](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/50)）；规避=块注释不写 `/**` + 扫描器 + reload 后 `scriptdiag` 验证（`agent-debug-experience.md` §9）。该构建尚未进入正式发行版，不能推断生产正在使用。 |
+| 最近本地证据 | 2026-10-17 **B509 / v160.7 冷启动 `159/155/150/出错0`**（`ScriptAgent c2823c1`，新启动器控制台日志实时落盘），`scriptdiag count` 显示失败 0；同轮 DP 兼容改造最终版（`729dff3`）实测加载 `赛克兰特高阶科技.zip` 成功（patches=1 / content=33 / sprites=196，2 条 techTree 警告属基线既有） | 2026-10-16 跟进 B509 时冷启动为 `158/154/149/出错0`；2026-09-13 B495 清空缓存冷启动 `157/153/148/出错0`；各轮测试进程均已清理、端口释放。开发服 `server.properties` 的 `socketInput=true`（用户授权）。DP 细节见 `v159-data-assets-hot-reload.md`，调试设施见 `dev-workspace-guide.md`「调试工具」。 |
 | 生产状态 | 生产待用户/运维确认（生产服不存在于本机，Agent 无法推送/部署） | Agent 无法完成生产部署、停启、替换、推送或回滚；当前 HEAD 之后的改动尤其不能默认已经部署。 |
 | 远程仓库状态 | mdtdo 服务器仓库无远程、不直接推送；推送统一经 `ScriptAgent4MindustryExt-mdtdo`（origin=github.com/QQQW114/ScriptAgent4MindustryExt-mdtdo，upstream=way-zer/ScriptAgent4MindustryExt） | 每次推送前，先把 docs 与 scripts 的改动同步进插件仓库再提交推送；推送默认包含 scripts 与 Agent 开发文档。 |
 | 工作区漂移 | 有外部 CP、资产缓存、SA 备份、服务器配置备份等未跟踪运行/临时内容 | 不要把运行数据、缓存、数据库、备份、外部内容或会话提取物自动纳入源码提交。 |
@@ -107,8 +112,12 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - 远程推送流程（2026-08-13 明确）：mdtdo 服务器仓库只做本地维护、不直接推送；每次推送前，**先同步 docs 与 scripts 的改动**到 `ScriptAgent4MindustryExt-mdtdo` 仓库，再从该仓库提交并推送；**推送默认包含 scripts 与 Agent 开发文档（docs）**。
 - 提交与推送的当前状态（2026-09-11 用户明确）：**默认提交但不推送**——完成一轮工作后按上述流程把改动提交到 mdtdo 与插件仓库即可，插件仓库可以处于“领先 origin/main 若干提交”的状态；**未经用户明确指示不要执行 `git push`**，也不要为了推送反复询问。
 - 版本跟进总体原则（2026-08-13 明确）：**跟进新的稳定版本**；无论 JAR 文件还是 SA 插件，**均由用户决定跟进哪个版本，并跟进用户所要求的对应版本**。文档中的版本号只是“当前时点状态”，Agent 不自行锁定基线、也不因上游更新自动改基线；需要升级时由用户提出并按新版本重新核对。
-- 版本跟踪与 SA 维护口径（2026-09-12 明确）：**常态化跟进上游最新版本**——Mindustry / MindustryX / 参考项目持续跟到最新，发现新版本按流程记录并适配；**ScriptAgent 插件以本项目自行维护为主**（不再逐版跟随上游 SA），**只在出现较大变动的发行版更新时再评估是否跟进**。当前基线为 Mindustry v160.3 / MindustryX 预览版 `prerelease-2026.09.13.B495`（2026-09-13 起，提交 `92471dd`；上一基线为正式发行版 X37 / v160.1）。
+- 版本跟踪与 SA 维护口径（2026-09-12 明确）：**常态化跟进上游最新版本**——Mindustry / MindustryX / 参考项目持续跟到最新，发现新版本按流程记录并适配；**ScriptAgent 插件以本项目自行维护为主**（不再逐版跟随上游 SA），**只在出现较大变动的发行版更新时再评估是否跟进**。当前基线为 Mindustry v160.7 / MindustryX 预览版 `prerelease-2026.10.10.B509`（2026-10-16 起，上游提交 `703f65aa`；上一基线为 B495 / v160.3，再前为正式发行版 X37 / v160.1）。
 - 文档跟进规则（2026-08-22 明确）：**每次更新内容都要跟进文档**——凡是代码/脚本行为、配置、指令、版本或功能变化，都需要在对应专项文档与维护记录中同步，不留未记录的变化。
+- **文档防偏移（2026-10-17 用户明确"文档不能偏移"）**：文档里的版本、工具、已完成/未完成状态必须能对上当前代码/提交/日志；改完代码要同步对应专项文档，发现过期内容要当场修正，并在 [文档偏移巡检报告](doc-sync-audit.md) 留记录。
+- 已明确否决（2026-10-17，**勿再提议**）：IP 风控补"行为规则"（互骂/刷屏/票滥用等行为语义判定）；禁言拦截扩展 `/r`/私聊；
+  `/vote text|sc` 加冷却/敏感词；名称规范化/同名冒充检测/投票文案加 UUID 或等级后缀。详见 `ip-risk-control-report.md` §11 与
+  `punishment-system-design.md` §7.1。
 - 汇报以中文、结构化、简洁、可追溯为宜；信息不足的会话如实记录，不为凑篇幅臆测扩写。
 
 “直接做”和“重大改动先确认”并不矛盾：按风险、影响范围和授权范围判断。用户对当前任务的新要求优先于这里的默认偏好。
@@ -157,14 +166,16 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 | 领域 | 当前高层状态 | 主要风险/验证边界 | 详细真源 |
 |---|---|---|---|
-| 版本与上游兼容 | v159.7/B480 是当前开发候选，保留兼容降级思路 | 候选文件和生产实际版本需现场核对；上游更新不能与业务迁移混为一轮 | [官方兼容层](official-v159-compat.md)、[上游复核](upstream-review-2026-07-16.md) |
-| ScriptAgent 与运行时 | 脚本已迁移到 3.4.0 的模块/数据库模型；并行加载竞态已由上游维护者修复，未发行构建已本地验证 | 尚需等待正式发行版并核对对应提交/版本；未确认生产采用，类加载器与集中卸载边界仍需保守处理 | [数据库说明](database-system.md)、[竞态 Issue 与修复验证](issue-scriptagent-load-race.md) |
+| 版本与上游兼容 | v159.7/B480 是历史候选；**当前开发候选 v160.7 / MindustryX B509**（2026-10-16 跟进，B495/X37/B491/B485 保留回滚），保留兼容降级思路 | 候选文件与生产实际版本需现场核对；B509 的真实客户端观感/内容同步未验证；上游更新不能与业务迁移混为一轮 | [官方兼容层](official-v159-compat.md)、[工作区指南](dev-workspace-guide.md) |
+| ScriptAgent 与运行时 | 脚本已迁移到 3.4.0 的模块/数据库模型；运行维护者竞态修复构建 `c2823c1`；**KDoc 内嵌 `/**` 静默截断 bug 已定位并提上游 issue #50**，规避与诊断工具已落地 | 等上游修复；未确认生产采用；改大脚本后要跑嵌套注释扫描器并用 `scriptdiag` 验证注册 | [Agent 调试经验](agent-debug-experience.md) §8/§9、[竞态 Issue 与修复验证](issue-scriptagent-load-race.md) |
 | 网络同步与性能保护 | 已把网络传输压力和游戏性能压力分开；首次入服插件门控已移除；保护措施以原生语义和可恢复性为优先 | 真实多人、高上行、断线、换图、重同步和长时间运行仍需生产/测试副本证据 | [网络同步](v159-network-sync.md)、[性能保护](performance-guard.md) |
-| Data Assets、CP 与热加载 | 外部 CP 支持多种数据资产形态；动态 Content 重载前会清除旧DP运行态引用，并同步修复旧建筑物品/液体模块容量及原版卸载器静态物品缓存 | 大型真实包、内存、上行、回滚耗时及多人卸载仍属观察项；“附身DP单位后卸载”仍未做破坏性回归 | [Data Assets/CP](v159-data-assets-hot-reload.md) |
-| 音乐与音效 | 依赖 v159 资产/完整重同步链路，已做队列和风险收敛；不应把完整世界握手当作轻量单资产操作 | 运行中新增资产可能重置玩家状态，属于实验/受限能力，生产行为需谨慎验证 | [兼容层](official-v159-compat.md)、[网络同步](v159-network-sync.md) |
+| Data Assets、CP 与热加载 | 外部 CP 支持多种数据资产形态；**2026-10-17 兼容改造最终版（`729dff3`）已落地**——资产冲突不再判死整包、语言包合并、内容/结构判断放宽、降级可见、控制台异步入口；动态 Content 重载前清理与模块容量修复保留 | 大型真实包、内存、上行、回滚耗时及多人卸载仍属观察项；“附身DP单位后卸载”仍未做破坏性回归；“清理未完成阻止注销”的严格守卫仍在 | [Data Assets/CP](v159-data-assets-hot-reload.md) |
+| 音乐与音效 | 依赖 v159 资产/完整重同步链路，已做队列和风险收敛；**2026-10-17 审计：小音效不能走 Sound 通道**（声音 id 按 short 传输，自定义 id 100001 客户端读回截断为 -31071 → `Sounds.none`），**music 通道也不能重叠**（客户端 `SoundControl` 单 `current` 槽）；现状 `Call.playMusic(String)` 是协议内唯一可行方案 | 运行中新增资产可能重置玩家状态，属于实验/受限能力；**"小音效可重叠"已决策不做**（用户 2026-10-17 拍板：方案 A 维持现状、不做客户端/上游扩展 C）；B510+ 升级需按审计 §8 复跑；生产行为需谨慎验证 | [兼容层](official-v159-compat.md)、[网络同步](v159-network-sync.md)、[小音效通道审计](sound-effect-channel-audit.md) |
 | 地图与杂交玩法 | 159/B477 后主动收缩到重点地图/标签和已维护玩法，旧地图不因历史存在就自动恢复 | 重点玩法的真实客户端、卸载、换图和长时压力回归仍按需进行 | [地图清单](map-scripts.md)、[杂交设计](hybrid-system-design.md) |
 | 账号、数据库、社区与经济 | 旧服务器测试模式已废弃；五项通用服务器设置之外，数据库业务又拆为总开关与九个独立开关；已绑定默认等级同时约束信任与资历，H2磁盘预热可运行中管理 | 总开关不物理断库且不影响账号/权限/封禁/风控；多人真实负载、慢 IO、生产大库和游戏内菜单交互仍需受控验证 | [账号](account-system.md)、[数据库](database-system.md)、[信任系统](trust-system.md)、[技能系统](skill-system.md) |
-| 权限、安全与管理 | 风控、封禁、最小权限协管和目标边界已收口，强调执行时复核 | 真实敏感数据上的解封/破坏性操作不由 Agent 擅自点击；生产权限需用户确认 | [安全风控](security-guard.md)、[帮助菜单](help-menu.md)、[信任系统](trust-system.md) |
+| 权限、安全与管理 | 风控、封禁、最小权限协管和目标边界已收口；**2026-10-17 完成账号/IP 防熊审计**（`ip-risk-control-report.md`），用户决策方案 C：只留报告、不改代码，并否决风控行为规则 | 报告已记录缺陷（风险期可续期、2次/24h 阈值被旁路、`/login` 封禁校验缺失等）**用户接受现状暂不修**；生产权限与敏感操作需用户确认 | [安全风控](security-guard.md)、[IP 风控审计](ip-risk-control-report.md)、[帮助菜单](help-menu.md) |
+| 惩罚与检举体系 | **已落地（2026-10-17）**：检举系统 + 非管理员 24h 钳制/冷却 + 永久封禁范围 + 禁言豁免自救投票（N4/D5）；实现提交 `f845d19`，设计文档已回填最终接口、`/punishreport` 菜单与第二十一批维护记录见 `1293765` | 真实玩家完整链路（弹窗→检举投票→解罚/封权、24h 冷却/禁建、N4 自救豁免）未在线验证；口径以 `punishment-system-design.md` §3/§7 为准 | [惩罚体系设计](punishment-system-design.md) |
+| 服务器门户 Web（stats-web） | **2026-10-17 由单文件状态页升级为三页门户 + 独立后端 API**：首页（状态/趋势图/实时事件流/原数据看板）、公开投稿、管理员后台；DP/地图审核、控制台桥、旧配置自动迁移（`64b194f`/`8e1dc99`/`a5b7f06`） | 真实多 IP 登录、DP 热重载端到端、地图审核后客户端换图、真实玩家事件未验证；生产升级不要整目录覆盖默认 `web-config.json`（详见 web-portal §3.4） | [门户 Web](web-portal.md)、[统计与 Web](server-status-stats.md)、[事件流](live-events-feed.md) |
 | 运维与自动恢复 | 进程异常退出自动重启和退避已实现；H2磁盘预热默认开启并可用 `/diskwarmup` 管理；文档/日志/监控持续维护 | 磁盘预热只能缓解休眠后的首次数据库IO，不是TPS优化器；监督器不能替代活进程卡死监控；真实生产启停和回滚由用户/运维执行 | [脚本维护总览](scripts-maintenance.md)、[数据库说明](database-system.md) |
 
 ## 6. 重大变化时间线（高层）
@@ -192,6 +203,43 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - **2026-08-06**：压力等级改 L1-L4 命名并统一去 `[服务器提示]` 文案；移除 L4 性能自动暂停（极端低 TPS 仍走兜底换图）；新增出波暂停管理指令与 50% 投票（`/wavepause`、`/vote wavepauseon|off`，内存态、默认开启、不落盘）。冷启动 156/152/147/0 并完成控制台阈值/开关实测。
 - **2026-08-13**：工作区重组：mdtdo 服务器项目独立成目录（`mdt保留\mdtdo`），与 mod-dp-bridge、参考项目等并列；仓库根由 `mdt保留` 迁移至 `mdtdo`（历史完整保留），README 改为容器/项目双入口口径；`ScriptAgent4MindustryExt-mdtdo` 作为插件脚本开源仓库（独立 Git，origin/upstream）纳入项目目录并被服务器仓库 gitignore。
 - **2026-08-13**：按用户要求移除上行压力检测（`trafficMonitor`）的官方端回退：改为直接 `import mindustryX.events.SendPacketEvent` 强类型监听，删除 `Class.forName` 反射检测、字段探测、旧 MDX 双事件去重与无调用方兼容函数；官方端不再受支持（单端 MindustryX 口径）。冷启动 156/152/147/0 通过。
+- **2026-08-14**：跟进 B485 官方发行版（`server-2026.08.12.B485.jar`），修复 `trafficMonitor` `const val` 编译错误，
+  冷启动 156/152/147/0；上行统计改为 Windows 网卡计数器（仅 Windows）。
+- **2026-09-12～09-13**：跟进 Mindustry 160.1/B491 → X37 正式发行版 → v160.3/B495（清空缓存冷启动 `157/153/148/出错0`）；
+  期间定位并撤回 `Groups.fire`/`Groups.puddle` 移除引发的 `Group` 适配与 `limitFire.kts` 方案。详见 `official-v159-compat.md`。
+- **2026-09-27**：4x4 核心区"无任何反应/只扣 MDC"根因定为 `with(x){ 同名函数 }` 自递归 → `StackOverflowError`（`Error` 穿透
+  SA 的 `catch (Exception)` 杀死主线程，表现为服务端"假活"）；同日修投票三项（游客闸门/投票禁言上限3天/quitOb 自救豁免）
+  与出生点保护重做（范围 ∩ `Blocks.spawn` 即拒绝）；冷启动 `158/154/149/出错0`。详见 `scripts-maintenance.md`、`current-issues.md`。
+- **2026-10-16**：跟进 MindustryX `prerelease-2026.10.10.B509` / Mindustry v160.7（上游 `703f65aa`，work `17012d61`；
+  JAR SHA-256 `FC1B01AB…AC74`），上一基线 B495/v160.3 保留回滚；冷启动 `158/154/149/出错0`。上游 DP 侧 v160.3→v160.7 仅 9 个
+  `mod/`+`io/` 提交、DP 字段未动，native 反射路径可用。详见 `dev-workspace-guide.md`、`scripts-maintenance.md` 第十六批。
+- **2026-10-17（DP 兼容改造最终版）**：提交 `729dff3`，5 小步重做完成——资产冲突不再判死整包（`mergedDataAssets` 返回
+  `Pair(assets,warnings)`）、语言包按行合并、内容/结构判断放宽为跳过+警告、降级(native→legacy)可见、控制台异步入口
+  `loadServerCpAsync`；冷启动 `159/155/150/出错0`、`externalcp` 16 个 CP、`赛克兰特高阶科技.zip` 加载成功
+  （patches=1/content=33/sprites=196）。详见 `v159-data-assets-hot-reload.md`。
+- **2026-10-17（KDoc 截断 bug 与调试设施）**：SA 3.4.0 编译管线在 KDoc 内嵌字面量 `/**` 时静默截断 `.ktc`
+  （正常 55 entries/主类 ~149KB → 截断 26 entries/主类 ~103.5KB），致脚本仍 `[Enabled]` 但命令入口消失；根因修复后
+  兼容改造全部落地。同步落地调试设施（`cdc8b17` + `7364043`）：`scriptdiag` 诊断指令、启动器控制台输出逐行落盘
+  `config/logs/console-<时间>.log`、`tools/scan-nested-block-comment.ps1`，并已提上游 issue [#50](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/50)。
+  详见 `agent-debug-experience.md` §8/§9、`dev-workspace-guide.md`「调试工具」。
+- **2026-10-17（惩罚体系/风控决策）**：IP 风控审计报告完成（`ip-risk-control-report.md`，11+1 类规则、生产日志 60 次风险 IP
+  标记/8 个 IP 的行为证据），用户决策**方案 C：只留报告、不改代码**，并**否决**风控行为规则（`ip-risk-control-report.md` §11）。
+  惩罚体系设计定稿到 N4/D5（检举、24h 钳制/冷却、永久封禁范围、禁言豁免自救投票），实现脚本由 punish-system 进行中、未提交；
+  用户否决项 N1-N3（禁言不扩 `/r`/私聊、`vote text|sc` 不加冷却、不做名称规范化）已记入 `punishment-system-design.md` §7.1。
+- **2026-10-17（文档防偏移巡检）**：用户明确要求"文档不能偏移"。全量核对 `docs/` 与当前代码/提交/运行态，产出
+  [文档偏移巡检报告](doc-sync-audit.md)；更新了本文档、`current-issues.md`、`deploy-sync-checklist.md`、
+  `v159-data-assets-hot-reload.md`、`official-v159-compat.md`、`security-guard.md`、`account-system.md` 的过期内容。
+  `scripts-maintenance.md` 的 2026-10-17 批次仍由 Lead / punish-docs 统一补。
+- **2026-10-17（小音效通道审计）**：完成 [小音效通道审计](sound-effect-channel-audit.md)——B509/v160.7 下**不能**把服务器
+  小音效切到 Sound 通道（`TypeIO` 按 short 序列化，自定义 id 100001 → 客户端读回 -31071 → `Sounds.none` 静默；
+  实测 2 字节 wire 往返），**music 通道也不能重叠**（客户端 `SoundControl` 单 `current` 槽）；现状 `Call.playMusic(String)`
+  是协议内唯一可行方案。未改任何脚本。**用户决策（2026-10-17）：采用方案 A 维持现状、明确不做客户端/上游协议扩展（C）**；
+  B510+ 升级需按审计 §8 复跑验证。
+- **2026-10-17（服务器门户 Web 升级）**：`stats-web/` 从单文件状态页升级为**三页门户 + 独立后端 API**（PowerShell HttpListener，
+  默认 127.0.0.1:8090）：欢迎页/状态卡/原生 SVG 趋势图/实时消息流（Mindustry 彩色文字渲染）、公开投稿页、管理员登录+
+  审核后台、DP/地图审核落盘与控制台桥、`liveEventFeed.kts` 实时事件流、旧 `web-config.ps1` 自动迁移（提交
+  `64b194f`/`8e1dc99`/`a5b7f06`，事件流 `588169c`）。验证：后端 21 项自测、前端 mock 28/28 + 真实联调 35/35、
+  迁移 18/18，游戏服全程未重启。未验证：真实多 IP 登录、DP 热重载端到端、地图审核后客户端换图、真实玩家事件。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -206,6 +254,16 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - 不把运行中的完整世界/资产握手宣传为无副作用的单资产热同步；
 - 不恢复旧的 ScriptAgent 本地字节码 workaround；当前上游维护构建仍是未发行候选，不能自动视为正式版本、稳定生产基线或已部署状态。
 - 不恢复旧 `[危险]服务器测试模式`、`test:<account:id>` 临时主体、临时MDC/资历覆盖或固定结算×10；测试需求应通过已拆分的最小服务器功能开关处理。
+- **不提议、不实施 IP 风控"行为规则"**（同 IP/同 UUID 多身份互骂、刷屏、票滥用；风险 IP 覆盖同 IP 多账号反复进出等）——
+  用户 2026-10-17 明确"太复杂，推掉不做"；`ip-risk-control-report.md` §8 的其余建议也只是**方案 C：只留报告、不改代码**，
+  除非用户另行指示，不要转成实现任务。
+- 不扩展禁言拦截到 `/r`、私聊或其它聊天类命令；不给 `/vote text`/`/vote sc` 加冷却/敏感词；不做名称规范化/同名冒充检测/
+  投票文案 UUID 或等级后缀（`punishment-system-design.md` §7.1 N1-N3，2026-10-17 用户否决）。
+- **自定义事件不要用 `listen`**：实现 `cf.wayzer.scriptAgent.Event`（带 `Event.Handler`、`emitAsync()` 派发）的事件必须
+  `listenTo<T>`；`listen` 只挂 arc 原生总线，误用会**静默不触发**（详见 `agent-debug-experience.md` §10、
+  `listener-listen-vs-listenTo-audit.md`）。
+- 不把"文档里写过"当成已实现：`current-issues.md`、`project-memory.md` 等只描述**已核验**状态；设计文档里的 N4/D5 等
+  口径在 punish-system 落地并由 punish-docs 回写前，不能当成已上线功能。
 
 如果未来上游提供了新的可靠能力，应重新阅读源码、验证时序和回滚行为后再决定，不因“过去曾经这样做过”直接恢复。
 
@@ -213,14 +271,32 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 这些事项的优先级会随用户目标和生产窗口变化，以下是最近核对后仍需保持可见的风险：
 
-1. **生产状态未由 Agent 确认**：当前 HEAD、B480 候选 JAR、ScriptAgent 未发行修复候选以及 7 月 25 日后的脚本变化是否进入生产，需要用户/运维提供证据。
+1. **生产状态未由 Agent 确认**：当前 HEAD、B509 候选 JAR、ScriptAgent 未发行修复构建（`c2823c1`）以及 2026-07 之后的脚本变化是否进入生产，需要用户/运维提供证据。
 2. **真实运行期验证不足**：多人高上行、高单位、首次进服、死亡/附身、换队/观战、换图、断线、CP/音乐/杂交并发和长时间运行尚未由冷启动证明。
-3. **ScriptAgent 修复发行与生产状态**：维护者提供的未发行修复构建已在本地两轮启动通过，但正式发行版尚未提供，生产是否采用也未确认。正式发布后仍需核对修复提交、构建版本与本地候选的差异。
+3. **ScriptAgent 修复发行与上游 bug**：本地仍用维护者竞态修复构建 `c2823c1`，正式发行版尚未提供；另 SA 3.4.0 的
+   KDoc 截断 bug 已提上游 issue [#50](https://github.com/way-zer/ScriptAgent4MindustryExt/issues/50)，等修复/正式版后
+   需重新核对构建差异与 issue 状态。
 4. **大型资产包和运行中重同步**：真实音乐、音效、贴图/CP 包的内存、带宽、回滚时延和玩家状态影响仍需受控观察。
    动态 Content 卸载前清理已覆盖玩家附身旧DP单位的失效引用，但“真实多人+附身DP单位+运行中卸载”仍需首次生产/受控窗口观察 `failures=0` 与客户端状态。
 5. **游戏内交互仍待验证**：帖子关闭提示、社交按钮隐藏、注册验证码流程、服务器功能/数据库业务菜单、数据库业务关闭提示与资料隐藏、`/cp` 新DP菜单排版、纯净模式管理员技能、`/vote` 新排版、`/help` 搜索和导弹齐射的客户端提示需要真实客户端受控验证；控制台、数据库副本和冷启动不能代替该证据。
 6. **生产大库迁移边界**：本地160账号的一次性信任/资历补齐已通过，但生产数据量更大；首次部署前仍应备份数据库，并观察单事务扫描耗时与磁盘IO。
-7. **文档状态可能漂移**：临时任务、current-issues.md、专项文档和工作区运行产物的更新时间不同；接手时应以最新证据重新核对，而不是把“暂无待办”理解成“没有风险”。
+7. **文档状态可能漂移**：临时任务、current-issues.md、专项文档和工作区运行产物的更新时间不同；接手时应以最新证据重新核对，而不是把“暂无待办”理解成“没有风险”。2026-10-17 已做一次全量文档防偏移巡检（`doc-sync-audit.md`），后续每次代码/版本/决策变化仍需同步对应专项文档。
+8. **B509/v160.7 客户端侧未验证**：预览版在真实客户端（含安卓）的观感、内容同步与 DP 表现需用户实测；冷启动与命令 Socket 不能替代该证据。
+9. **惩罚体系真实链路未验证**：实现已提交（`f845d19`）、文档已回填，但真实玩家完整链路（检举弹窗→投票→解罚/封权、
+   24h 冷却/禁建、N4 禁言自救豁免）尚未在有人环境实测；不要把设计口径当成已验证行为。
+10. **`scripts-maintenance.md` 2026-10-17 批次已补齐**（第十七～二十二批：DP 回退与重做、KDoc bug/调试设施、IP 审计、
+    惩罚体系、小音效、门户 Web）；后续新增改动继续按批记录，不要再写"待补"。
+11. **小音效重叠播放：✅ 已决策（2026-10-17）——方案 A（维持现状），不做客户端/上游协议扩展（C）**。用户口径"确认不行
+    就不搞了，不做客户端"；B509/v160.7 下 Sound 通道不可用、music 不可重叠，现状 `Call.playMusic(String)` 维持；
+    **B510+ 升级时需按 [小音效通道审计](sound-effect-channel-audit.md) §8 复跑验证**。
+12. **服务器门户 Web 未验证项**：真实多 IP 公网登录、DP 热重载端到端（审核通过 + `externalcp load`，危险，避免线上误操作）、
+    地图审核后玩家客户端换图验收、事件流真实 chat/join/leave/vote；生产升级须按 [web-portal](web-portal.md) §3.4
+    **不要整目录覆盖默认 `web-config.json`**，迁移后立即修改默认管理员密码。
+13. **SA 事件监听 listen/listenTo 已审计修复（2026-10-17，提交 `69d4932`）**：全仓 208 文件（`listen` 186 / `listenTo` 70）
+    发现误用 3 处（`serverStats.kts:311`、`betterTeam.kts:97`、`pvpProtect.kts:152`），已修为 `listenTo`；
+    PVP 保护此前**完全失效**、等级分布即时迁移此前从未触发。未验证：`TrustLevelChangedEvent` 真实玩家等级变化；
+    `betterTeam` 有 8+ 个 `contextScript` 依赖方，单脚本热重载不级联，建议低峰冷启动一次。详见
+    [listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)。
 
 ## 9. 给新会话 Agent 的柔性接手提示
 
@@ -228,6 +304,9 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 - 先用本文档和 README 建立整体认识，再阅读与当前任务直接相关的专项文档和最新会话摘要；
 - 先核对工作区、版本、JAR、加载日志、未提交改动和生产状态，确认是否存在前一轮遗留；
+- 怀疑“脚本加载了但指令/菜单入口消失”时：先 `scriptdiag commands <关键词>` / `scriptdiag count|failed`，再看
+  `config/logs/log-0.txt` 与 `config/logs/console-<时间>.log`，最后跑 `tools/scan-nested-block-comment.ps1` 排查 KDoc 截断
+  （`agent-debug-experience.md` §8/§9）；不要先怀疑热重载机制；
 - 对大范围或高风险改动，优先说明影响、取舍、验证范围和回滚思路；已明确授权的小改动可直接推进；
 - 测试深度按风险选择：至少让报告能说明改了什么、在哪个环境验证、覆盖了什么、还缺什么；冷启动通过不自动代表生产通过；
 - 行为、逻辑、版本基线或长期决策变化时，通常在对应专项文档或本文档留下简短记录；README 主要保持入口和当前基线，不复制完整历史；
@@ -256,16 +335,43 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 - [统一性能与网络保护](performance-guard.md)：压力分层、可逆措施和诊断。
 - [Data Assets / 外部 CP](v159-data-assets-hot-reload.md)：资产格式、校验、热加载和回滚边界。
 - [数据库说明](database-system.md)：持久化、服务注册和类加载器隔离。
-- [服务器状态统计与 Web](server-status-stats.md)：统计口径、存储、线程/缓存设计、开关与独立 Web。
-- [Agent 调试经验与常见坑](agent-debug-experience.md)：服务器冷启动/启动器、编码、ScriptAgent 编译、H2/Exposed、验证与提交惯例——**新会话先读**。
+- [服务器状态统计与 Web](server-status-stats.md)：统计口径、存储、线程/缓存设计、开关；Web 门户的统计 JSON 契约与 `/api/status`/旧 `/server-status.json` 入口。
+- [服务器门户 Web（后端权威）](web-portal.md)：三页前端/后端 API 契约/配置与默认值/审核与控制台桥/安全设计/自测记录/排障/生产升级。
+- [实时事件流](live-events-feed.md)：`liveEventFeed.kts` 数据契约、写入模型与线程、配置键、验证与已知边界。
+- [Agent 调试经验与常见坑](agent-debug-experience.md)：服务器冷启动/启动器、编码、ScriptAgent 编译、H2/Exposed、验证与提交惯例——**新会话先读**；§8/§9 记录 SA 3.4.0「KDoc 内嵌 `/**` → 脚本静默截断」的排障与预防。
 - [地图脚本清单](map-scripts.md)：当前重点地图、兼容范围和恢复门槛。
-- [上游复核](upstream-review-2026-07-16.md)：历史版本比较；当前结论以更新的 B480/v159.7 文档为准。
+- [上游复核](upstream-review-2026-07-16.md)：历史版本比较；当前结论以更新的 B509/v160.7 文档为准。
 - [ScriptAgent 竞态 Issue 与修复验证](issue-scriptagent-load-race.md)：记录原始问题、本地 workaround、维护者修复与未发行构建的验证证据。
+- [IP 风控审计报告](ip-risk-control-report.md)：账号/IP 防熊（`accountIpGuard`）的规则清单、生产日志行为证据、风险与用户决策（方案 C、不做行为规则）。
+- [惩罚体系设计](punishment-system-design.md)：检举系统、非管理员 24h 钳制/冷却、永久封禁范围与 Lead 口径、实现偏离、用户否决项；实现落地后由 punish-docs 回写最终接口。
+- [文档偏移巡检报告](doc-sync-audit.md)：2026-10-17 `docs/` 全量核对结果、已修正项与留给其它 owner 的待办。
 
 各领域的账号、信任、技能、商店、成就、帖子、Wiki、私聊、排行榜、安全和管理细节，继续以 docs 下的专项文档为准。
 
 ## 12. 本文档更新记录
 
+- **2026-10-17（SA 事件监听审计修复）**：`listen`（arc 原生事件）/`listenTo`（SA 自定义事件）两套总线混用，导致 3 处监听器
+  静默失效（PVP 保护此前完全失效、等级分布即时迁移从未触发、换图后禁用队伍兜底未跑），已修复（`69d4932`）并新增
+  [listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)；教训写入 `agent-debug-experience.md` §10 与
+  `scripts-maintenance.md` 第二十三批；`live-events-feed.md` 的"顺带发现"同步为"已修复"。
+- **2026-10-17（服务器门户 Web 升级）**：`stats-web/` 由单文件状态页升级为三页门户 + 独立后端 API + DP/地图投稿审核 +
+  管理员后台 + 实时事件流 + 旧配置自动迁移；同步 `server-status-stats.md` Web 段、`deploy-sync-checklist.md` §4.1、
+  `dev-workspace-guide.md`（门户段/目录结构/控制台落盘措辞）、`current-issues.md` 与 `scripts-maintenance.md` 第二十二批；
+  同轮顺带修正惩罚体系"进行中"的过期表述（实现已提交 `f845d19`、文档回填 `1293765`）。
+- **2026-10-17（小音效通道审计同步）**：新增 [小音效通道审计](sound-effect-channel-audit.md) 的结论并同步
+  `official-v159-compat.md` §10/§11、`v159-network-sync.md`、`v159-data-assets-hot-reload.md`、`current-issues.md`、
+  `scripts-maintenance.md` 第二十批与本文档：**小音效不能切 Sound 通道、music 不能重叠**，现状音乐通道是协议内唯一方案。
+  用户随后（2026-10-17）已决策：**采用方案 A 维持现状、明确不做客户端方案（C）**；B510+ 升级需复跑验证。
+- **2026-10-17（文档防偏移巡检，用户要求"文档不能偏移"）**：产出 [文档偏移巡检报告](doc-sync-audit.md)；修正版本基线（B509/v160.7）、
+  调试工具（`scriptdiag`/控制台落盘/嵌套注释扫描器）、DP 兼容最终版（`729dff3`）、IP 风控审计与用户决策、惩罚体系进行中在
+  `current-issues.md` / `deploy-sync-checklist.md` / `v159-data-assets-hot-reload.md` / `official-v159-compat.md` /
+  `security-guard.md` / `account-system.md` 与本文档的过期记录。
+- **2026-10-17**：SA 3.4.0 KDoc 内嵌 `/**` 静默截断 `.ktc` 的 bug 定位（正常 55 entries/主类 ~149KB → 截断 26 entries/主类 ~103.5KB），
+  修复后 DP 兼容改造按 5 小步重做完成（`729dff3`）；调试设施 `cdc8b17`（`scriptdiag`、`tools/scan-nested-block-comment.ps1`、
+  `agent-debug-experience.md` §9）与启动器控制台逐行落盘 `7364043` 落地；已提上游 issue #50。
+- **2026-10-17**：IP 风控审计报告完成 + 用户决策（方案 C：只留报告、不改代码；否决风控行为规则）；惩罚体系设计定稿 N4/D5、
+  实现由 punish-system 进行中（未提交）。
+- **2026-10-16**：跟进 MindustryX B509 / v160.7（JAR SHA-256 `FC1B01AB…AC74`），冷启动 `158/154/149/出错0`。
 - **2026-09-12（第四批，实验功能）**：尝试基于 **Mindustry 160.1 的服务端下发自定义菜单**（`Call.menuBuilder` +
   `mindustry.ui.builder`）把 wiki、帖子列表、商店、成就改成"论坛式"界面（新增两个 `coreMindustry/lib/*.kt` 库文件并接入四个入口）。
   **当日按用户实测反馈全部回退**：按钮缩放异常、界面无法适配、缺失贴图——"实际几乎全是问题"。

@@ -68,13 +68,20 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 **该口径已于 2026-09-13 撤回**，见 [性能保护](performance-guard.md#火焰处理2026-09-13移除全部实体遍历)），
 但已作为"160 下需重点回归"的项记录：真实多人 + 运行中卸载 DP 仍需受控观察。
 
-## 局内热重载可行性核对（2026-09-13，Mindustry 160.3 源码）
+## 局内热重载可行性核对（2026-09-13，Mindustry 160.3 源码；音频部分 2026-10-17 在 B509/v160.7 复核）
 
 **问题**：杂交 / 音乐 / 小音效 / CP-DP 这几套系统在让客户端同步改动时统一走
 `worldResyncCoordinator.resyncWorldAndAssets()`（= `Call.worldDataBegin(con)` + `sendWorldAndAssets(player)`），
 客户端表现为**重新加载地图**（等价原版 `/sync`）。是否存在"局内热重载、不重载地图"的更优雅方案？
 
 **结论：内容/音频类改动做不到——这是 v160.3 协议强制的，不是脚本写法问题。** 依据（全部为 v160.3 源码）：
+
+**B509/v160.7 复核（2026-10-17）**：直接相关的音频类已在 B509 上逐字节核对一致（`TypeIO`/`DataAudioLoader`/`Sounds`/
+`SoundControl`/`NetClient`/`PlayMusicCallPacket`/`SoundCallPacket`/`ServerControl`）；新增一条字节码级事实——
+声音按 **short** 传输（`TypeIO.writeSound → Writes.s`），自定义 SoundAsset id 从 **100001** 起、客户端读回截断为 **-31071**
+→ `Sounds.getSound` 返回 `Sounds.none`，即**自定义音效的 Sound 通道不可用**（实测 2 字节 wire 往返）；music 通道可播但
+**不能重叠**（客户端 `SoundControl` 单 `current` 槽）。详见 [小音效通道审计](sound-effect-channel-audit.md) §2.1/§3.3。
+资产/世界重同步路径本次**未逐条 diff**，本节其余结论仍以 v160.3 源码为准。
 
 | 环节 | 源码事实 | 后果 |
 |---|---|---|
@@ -99,7 +106,9 @@ image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户�
 而客户端**建立内容对象的唯一入口**是 `state.data.load(assets)` ← `readDataPatches` ← `loadWorld`
 （`SaveVersion.java:596-598`）——所以"新增内容"必然要重载世界（但**不必重连**，连接会被复用）。
 附带结论：**没有音频推送通道**（运行期只有 `TextureStream` 这一条推送通道，仅 PNG 且落在 `net-` 前缀区），
-缺音频在客户端表现为"静默无声"。
+缺音频在客户端表现为"静默无声"。**2026-10-17 B509 复核补充**：声音 id 还按 **short** 序列化，自定义 SoundAsset
+（id 从 100001 起）即使资产已同步，客户端读回也会截断成 `Sounds.none` —— **自定义音效的 sound 通道不可用**；
+音乐走 `PlayMusicCallPacket(String)` 可播但**不重叠**（单 `current` 槽）。证据见 [小音效通道审计](sound-effect-channel-audit.md)。
 
 ### 唯一存在的"不重载"通道：纹理
 
@@ -168,6 +177,8 @@ image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户�
    协调器可直接跳过回合（不 `worldDataBegin`）→ **不重载地图**。需要：给常驻曲目设下载量上限
    （`musicJukebox.kts:407-413` 已有该顾虑）、逐玩家记账并在 `PlayerConnectionConfirmed` 时重新播种。
 2. **小音效改为窗口期注册**：同样在进服/换图时注册，只有新增/变更时才手动同步（`soundEffectMenu.kts:436-486`）。
+   （2026-10-17 审计：音效 Sound 通道不可用，本项只能减少同步回合、**不能实现重叠播放**；重叠需审计 §5 方案 C 的
+   客户端/上游协议扩展，**用户已决策不做**（A 维持现状，2026-10-17）。）
 3. **外部 CP 择时批量**：内容变更无法避免重载，但可固定在换图/世界加载窗口批量应用，
    而不是游戏中途逐玩家重载（`externalCpHotReload.kts:1136-1155`、`worldProcessorAdmin.kts:217-243`）。
 4. **杂交**：短期做法是"服务端改内容 + 不主动重载，等下次自然世界流"（`skillsHybrid.kts` 已有

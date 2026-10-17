@@ -27,6 +27,7 @@
   - 未登录玩家强制观战/解除强制观战的投票与管理控制。
 - `mdtserver/config/scripts/wayzer/user/accountIpGuard.kts`
   - IP防熊：允许单IP多账号；同IP换账号/UUID入服会广播可能小号提示；管理禁封会立即标记风险IP，投票踢出按“同IP 24小时内2次”触发风险IP，随后限制该IP注册新账号，并让该IP的未登录玩家强制观战+禁言。
+  - **2026-10-17 审计补充**：上述「2 次/24h」阈值路径在生产日志窗口内**从未实际触发**，且风险期会被「被封账号重连」反复刷新 `now+24h`（可无限续期）；`/login` 登录已被封禁账号不校验封禁、登录成功还会解除风险观战（静态推导，日志未证被利用）。完整证据见 [IP 风控审计报告](ip-risk-control-report.md) §6/§7；用户决策为方案 C（只留报告、不改代码），见该报告 §11。
 - `mdtserver/config/scripts/wayzer/user/ext/whiteList.kts`
   - 旧白名单兼容入口；不再实现外部统一登录，也不再注册 `/login`。
 - `mdtserver/config/scripts/wayzer/lib/MdtStorage.kt`

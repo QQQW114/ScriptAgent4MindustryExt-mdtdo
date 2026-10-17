@@ -1116,7 +1116,7 @@ private fun baseAssetsExcluding(records: Collection<LoadedExternalCp>): List<Dat
  * 旧实现遇到重复路径/重名就直接抛 `IllegalArgumentException`，于是"包里带了个
  * `bundles/bundle_zh_CN.properties` 或 `sounds/explosionbig.ogg` 与别人撞名"就会让整个 DP 加载失败
  * （生产上反复出现"外部CP加载失败 … 数据资产路径冲突"）。现在：
- * - `bundles/**`：可合并资产，两份都保留（后加载的同名键覆盖先加载的）；
+ * - bundles 目录：可合并资产，两份都保留（后加载的同名键覆盖先加载的）；
  * - 其它同路径资产：保留先加载的那份，后加载的跳过并记录；
  * - 贴图重名但不同路径：两份都保留交给打包器（v159 规则下 generated 版优先），只记一条警告；
  * - 其它重名（content 等）：保留先加载的那份。
@@ -1126,8 +1126,8 @@ private fun mergedDataAssets(
     base: List<DataAsset>,
     records: Collection<LoadedExternalCp>,
 ): Pair<List<DataAsset>, List<String>> {
-    val out = mutableListOf<DataAsset>()
     val warnings = mutableListOf<String>()
+    val out = mutableListOf<DataAsset>()
     val pathOwners = linkedMapOf<String, String>()
     val nameOwners = linkedMapOf<String, String>()
     val nameOwnerRecords = linkedMapOf<String, LoadedExternalCp?>()
@@ -1162,7 +1162,6 @@ private fun mergedDataAssets(
             }
             return
         }
-
         val nameKey = dataAssetNameKey(asset)
         val nameConflict = nameKey?.let(nameOwners::get)
         if (external && nameConflict != null && nameKey != null) {
@@ -1191,7 +1190,6 @@ private fun mergedDataAssets(
         } else {
             out += asset
         }
-
         pathOwners[pathKey] = owner
         if (nameKey != null && nameConflict == null) {
             nameOwners[nameKey] = owner

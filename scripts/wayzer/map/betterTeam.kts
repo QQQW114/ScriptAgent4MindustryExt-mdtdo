@@ -94,7 +94,8 @@ onEnable {
     updateBannedTeam(true)
 }
 listen<EventType.WorldLoadEvent> { updateBannedTeam(true) }
-listen<MapLoadFinishedEvent> { updateBannedTeam(true) }
+// MapLoadFinishedEvent 是 SA 自定义事件（wayzer/maps.manager.kt），必须用 listenTo；listen 只挂 arc 原生事件总线。
+listenTo<MapLoadFinishedEvent> { updateBannedTeam(true) }
 
 val savedTeams = mutableMapOf<String, Team>()
 private val trustLevel = contextScript<TrustLevel>()

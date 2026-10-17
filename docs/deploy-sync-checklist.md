@@ -8,7 +8,7 @@
 
 | 项 | 来源 | 说明 |
 |---|---|---|
-| 游戏服务端 JAR | `mdtserver\server-2026.09.13.B495.jar` | **必须是 MindustryX 构建**，不能用官方 Mindustry 的 jar（`trafficMonitor.kts` 直接依赖 `mindustryX.events.SendPacketEvent`） |
+| 游戏服务端 JAR | `mdtserver\server-2026.10.10.B509.jar`（MindustryX `prerelease-2026.10.10.B509` / Mindustry **v160.7**，SHA-256 `FC1B01AB…AC74`） | **必须是 MindustryX 构建**，不能用官方 Mindustry 的 jar（`trafficMonitor.kts` 直接依赖 `mindustryX.events.SendPacketEvent`）；回滚线 B495/X37/B491/B485 都保留 |
 | `jar=` 指向 | `server.properties` | 只改这一个键；`jar=` 指向的文件不存在时启动脚本会直接报错（不会静默换 jar） |
 | 脚本代码 | `mdtserver\config\scripts\`（**排除** `data`、`external-cp`、`cache`） | 等价于插件仓库 `ScriptAgent4MindustryExt-mdtdo` 里被 git 跟踪的那套文件；插件仓库的 `.gitignore` 已经把 `*.db`、`logs`、`external-cp/*` 排除掉 |
 | ScriptAgent 插件本体 | `mdtserver\config\mods\ScriptAgent4MindustryExt-3.4.0-allInOne.jar` | 文件名不变但内容已是维护者提供的**未发行竞态修复构建**（运行时 `ScriptAgent c2823c1`）。生产若在用更旧的包必须替换（并保留旧包备份） |
@@ -36,11 +36,12 @@
 3. 正式同步时把 `/L` 去掉；**若生产 `config\scripts` 下还有本仓库没有的自有文件，改用 `/E`（只增改不删）**。
 4. 放入新 JAR、替换 SA 插件包（旧包改名 `*.bak`）、同步 `libs\`。
 5. 清空 `config\scripts\cache\`，启动，检查：
-   - 控制台/日志 `共找到N脚本,加载成功N,启用成功N,出错0`（当前脚本集在 160.3/B495 上为 `157/153/148/出错0`）；
+   - 控制台/日志 `共找到N脚本,加载成功N,启用成功N,出错0`（当前工作区在 **B509/v160.7** 上冷启动实测
+     `159/155/150/出错0`，2026-10-17 17:38；开发中未提交脚本会让脚本数变化，以实际 banner 为准）；
    - `config\logs\script-load\last-error.log` 为空；
    - 6567 开服正常，`status` 可用。
-6. 客户端侧：159 → 160.3 是**游戏版本跳跃**，玩家需要兼容的客户端（`allowCustomClients=true` 已开）；
-   首次进服会重新协商资产（DP/CP 与音频会被重新下载）属正常现象。
+6. 客户端侧：生产若仍在 v159.7/B485，同步到 **v160.7/B509** 是**跨大版本跳跃**，玩家需要兼容的客户端（`allowCustomClients=true` 已开）；
+   首次进服会重新协商资产（DP/CP 与音频会被重新下载）属正常现象；B509 的真实客户端观感/内容同步**尚未验证**（见 current-issues.md）。
 
 ## 4. 「例程集」与变更声明惯例（2026-09-13 与用户约定）
 
@@ -64,46 +65,57 @@
 
 | 项 | 最后一次变动 | 凭据 | 159 → 160.x 是否需要动 |
 |---|---|---|---|
-| 启动器 | 2026-07-22（提交 `e3fe7fc`） | `start-server.ps1` 2026-07-22 01:17、SHA-256 前缀 `80638876C379E205`；`start-server.sh` `0456FAAB24F3E4EE`；`启动服务器.bat` 2026-05-19 `36BF0D2076DAC394` | **不需要**（除非生产在用的启动器比 7-22 更旧） |
-| ScriptAgent 插件包 | 2026-07-29 23:05（维护者竞态修复构建，运行时 `ScriptAgent c2823c1`） | `config\mods\ScriptAgent4MindustryExt-3.4.0-allInOne.jar`，SHA-256 `9D51FCDCB65D21C16564F544B83E2EDB4AAD5765427A791A577FB1F6DDDC2214` | **不需要**（160 适配全部在脚本侧，插件包未动） |
-| `libs\` | 2026-07-17（随 SA 3.4.0 迁移的 kotlin 2.3.20 一批，最新文件 mtime 2026-07-17 15:23） | 目录内无 7-17 之后的文件 | **不需要**（生产若已含 7-17 那批即可） |
-| `server.properties` 非 `jar=` 键 | 未变（`java`/`javaOptions`/`autoRestartOnCrash`/`crashRestart*` 等启动器功能键自 7-22 起） | 仅在使用本仓库启动器时需要这些键 | 只改 `jar=` |
-| 脚本代码 | 持续变动（最近：2026-09-13 菜单/缩放/版本跟进） | `config\scripts\**` | **需要同步** |
+| 启动器 | **2026-10-17（提交 `7364043`：控制台输出逐行落盘，修掉 PS5.1 `Tee-Object` 不实时刷盘 + 顶部 `$ErrorActionPreference=Stop` 中断两个坑）** | `start-server.ps1` 2026-10-17 17:38、SHA-256 前缀 `AB5240E81EA2F17F`；`start-server.sh` 仍 2026-07-22 `0456FAAB…`；`启动服务器.bat` 仍 2026-05-19 `36BF0D20…` | **需要**（若生产用本仓库启动器：新启动器会多生成 `config\logs\console-<时间>.log` 控制台全量日志；旧版缺该日志，但启动功能不受影响） |
+| ScriptAgent 插件包 | 2026-07-29 23:05（维护者竞态修复构建，运行时 `ScriptAgent c2823c1`；2026-10-17 复核仍是该包） | `config\mods\ScriptAgent4MindustryExt-3.4.0-allInOne.jar`，SHA-256 `9D51FCDCB65D21C16564F544B83E2EDB4AAD5765427A791A577FB1F6DDDC2214` | **不需要**（160 适配全部在脚本侧，插件包未动；上游官方 3.4.0 release 包只在 `.agents\SA-3.4.0-release.jar` 留档，**未替换运行包**） |
+| `libs\` | 2026-07-17（随 SA 3.4.0 迁移的 kotlin 2.3.20 一批，最新文件 mtime 2026-07-17 16:02，2026-10-17 复核未变） | 目录内无 7-17 之后的文件 | **不需要**（生产若已含 7-17 那批即可） |
+| `server.properties` 非 `jar=` 键 | 启动器功能键未变（`java`/`javaOptions`/`autoRestartOnCrash`/`crashRestart*` 等自 7-22 起）；`jar=` 已切换为 B509 | 仅在使用本仓库启动器时需要这些键 | 只改 `jar=`（指向 `server-2026.10.10.B509.jar`） |
+| 脚本代码 | 持续变动（最近：2026-10-17 DP 兼容改造最终版 `729dff3`、调试设施 `cdc8b17`（含 `wayzer/cmds/scriptDiag.kts`、`tools/`）；惩罚体系改造进行中、未提交） | `config\scripts\**` | **需要同步** |
 
-> 2026-09-13 核对口径：`git log --name-only` 最近 22 个提交里，落在例程集之外的改动只有 `README.md`、
-> `mdtserver\启动说明.md`、`.gitignore` 与 `docs\**`，**没有一次涉及启动器、插件包或 `libs\`**。
+> 2026-10-17 核对口径：`git log --name-only --since=2026-09-13` 里落在例程集之外的改动是 `mdtserver/start-server.ps1`、
+> `tools/scan-nested-block-comment.ps1`、`README.md`、`mdtserver/启动说明.md`——**启动器已变（`7364043`）**，插件包与 `libs\` 未变
+> （`config/mods`、`libs` 在 `.gitignore` 里，靠哈希与 mtime 核对）；插件仓库 `ScriptAgent4MindustryExt-mdtdo` 仍停在
+> 2026-10-16 的 `5f76efb`，2026-10-17 的 scripts/docs 变更尚未同步（由 Lead 统一安排）。
 
 ### 4.1 Web 端（`stats-web\`）：第二类同步目标
 
-**Web 改动 = 同步 `stats-web\` 目录**（**无构建、无 npm 依赖**，纯静态页面 + PowerShell 静态服务）：
+**Web 改动 = 同步 `stats-web\` 整个目录**（2026-10-17 起为**三页门户 + 后端 API**：无构建、无 npm、无外网依赖，
+Windows PowerShell HttpListener；权威说明见 `docs/web-portal.md`、`stats-web/README.md`）：
 
-| 文件 | 是否要同步 | 说明 |
+| 文件/目录 | 是否要同步 | 说明 |
 |---|---|---|
-| `index.html` | ✅ 要 | 26KB 单文件页面（HTML/CSS/JS 全内联），改动后**刷新页面**即可（静态服务每次请求读盘） |
-| `start-web.ps1` | ✅ 要 | 静态 HTTP 服务；改动后必须**重启服务** |
-| `start-web.bat` | ✅ 要 | 双击启动入口（参数透传给 ps1） |
-| `web-config.ps1` | ⚠️ **不要覆盖** | **机器相关配置**：`$WebBind` / `$WebPort` / `$WebStatsJson`。公网那台通常是 `0.0.0.0`、端口可能不同、JSON 可能是绝对路径——按目标机器实际值合并 |
-| `README.md` | 可带 | 说明与口径 |
+| `index.html` / `upload.html` / `admin.html` | ✅ 要 | 门户首页 / 公开投稿 / 管理后台；静态文件改动后**刷新页面**即可 |
+| `assets/`（整个目录） | ✅ 要 | 前端 css/js/mock/自测页；全部本地、无外网 CDN；资源版本 `?v=` 改了要同步 |
+| `server/`（整个目录） | ✅ 要 | 后端 6 个模块（API/上传审核/会话/控制台桥）；改动后必须**重启 Web 服务** |
+| `start-web.ps1` / `start-web.bat` | ✅ 要 | 启动入口（默认 `127.0.0.1:8090`；兼容旧参数，新增 `-Config`/`-GenPasswordHash`） |
+| `web-config.json` | ⚠️ **不要用仓库默认值覆盖** | **主配置**：监听地址/端口、管理员账号密码、上传/目录/队列限制、热重载开关。生产按目标机器实际值维护；仓库里这份含默认凭据 |
+| `web-config.ps1` | ⚠️ 旧部署兼容/迁移用 | 旧部署（只有 ps1）首次启动会自动迁移成 `web-config.json` 并改名备份；**升级时保留线上旧文件、不要覆盖** |
+| `README.md` | 可带 | 门户版说明（分发/升级/默认凭据必改） |
 
-三条容易踩的连带关系（都来自实际踩坑）：
+容易踩的连带关系（都来自实际踩坑）：
 
-1. **数据契约**：页面读的是 `mdtserver\config\stats\server-status.json`，由服务器脚本
-   `wayzer/ext/serverStats.kts` 写出（config key `statsOutputPath`，默认 `stats/server-status.json`，60 秒刷新）。
-   凡涉及**新增/改名 JSON 字段**的 Web 改动（例如 2026-09-11 的 schema 2 改版），必须**同时同步服务器脚本**
-   ——脚本本来就在例程集里，一起上即可；只更新 web 会出现新字段空/显示 0。
-2. **生效方式**：`index.html` 刷新即可；`web-config.ps1`、端口或绑定变更需重启服务。
-   公网访问还有三个**不在仓库里**的前置条件：`$WebBind=0.0.0.0`、管理员执行一次
-   `.\start-web.ps1 -InstallAcl -Port <端口>`（换端口/换机器要重做）、VPS 防火墙放行。
-3. **备份缺口**：`stats-web\` 只存在于本地 `mdtdo` 仓库（该仓库**没有远程**），插件仓库
+1. **数据契约（两路）**：状态页读 `mdtserver\config\stats\server-status.json`（`wayzer/ext/serverStats.kts` 写出，
+   60 秒刷新）；实时事件流读 `mdtserver\config\stats\live-events.jsonl`（`wayzer/ext/liveEventFeed.kts` 异步写）。
+   凡涉及**新增/改名 JSON 字段或事件字段**的 Web 改动，必须**同时同步对应服务器脚本**——只更新 Web 会出现字段空/无事件。
+2. **生效方式**：静态页刷新即可；`server/`、`web-config.json`、端口或绑定变更需**重启 Web**。
+   公网访问的前置条件：管理员执行一次 `.\start-web.ps1 -InstallAcl -Port <端口>`（换端口/换机器要重做）、
+   `-Bind 0.0.0.0`（或改 `bind`）、VPS 防火墙放行；**默认监听仅 127.0.0.1:8090（旧静态站默认 8081 已变）**，
+   公网前务必先改默认管理员密码（`admin / ChangeMe_123456`）并建议反代 HTTPS。
+3. **旧部署升级（重点）**：替换新版目录时**不要把仓库默认 `web-config.json` 一起带过去**，否则门户会优先用它
+   （`127.0.0.1:8090`）而**不会自动迁移**旧 `web-config.ps1`，公网访问会失效；保留线上旧 `web-config.ps1` + 旧 `web-data/`，
+   首次启动确认日志 `[升级] 已把旧配置迁移到…` 后**立即修改默认密码**。完整 6 步见 `docs/web-portal.md` §3.4。
+4. **备份缺口**：`stats-web\` 只存在于本地 `mdtdo` 仓库（该仓库**没有远程**），插件仓库
    `ScriptAgent4MindustryExt-mdtdo` 只镜像 `docs/` 与 `scripts/`，**不包含 stats-web**。
-   即"推送一轮"不会把它推到任何远程，异地备份需要另行安排。
+   即"推送一轮"不会把它推到任何远程，异地备份需要另行安排；`stats-web/web-data/` 是运行数据（已 gitignore，不打包）。
 
 > 因此 Web 改动同样属于"需要显式声明生产同步范围"的一类：提交信息里写清是同步 `stats-web\`
-> 还是脚本、还是两者都要（字段契约变更时两者都要）。
+> 还是脚本、还是两者都要（字段/事件契约变更时两者都要）。
+> **旧分发包 `复制插件用\stats-web.zip` 已过期**（只含旧的单文件静态页）：请改为整目录复制，或按
+> `stats-web/README.md` 的打包示例（排除 `web-data/`）重新打包。
 
 ## 5. 已知风险 / 未验证项
 
-- 当前脚本集**只在 160.x（B491/X37/B495）上验证过**；"只把新脚本推到仍在 159 的生产、不动 JAR"属于**未验证组合**
+- 当前脚本集已在 **v160.7/B509** 冷启动验证（`159/155/150/出错0`，2026-10-17）并完成 DP 实测加载（`赛克兰特高阶科技.zip`）；
+  但整体仍只在 160.x（B491/X37/B495/B509）上验证过。"只把新脚本推到仍在 159 的生产、不动 JAR"属于**未验证组合**
   （需要时可在隔离副本用 B485 跑一次冷启动确认）。
 - ScriptAgent 使用的是**未发行的修复构建**，正式发行版尚未提供，生产是否采用需用户/运维确认（`project-memory.md` 风险项）。
 - 真实多人 / 高上行 / 运行中卸载 DP / 生产大库的观察项见
