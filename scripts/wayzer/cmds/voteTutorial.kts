@@ -97,6 +97,7 @@ private val tutorialPages = listOf(
             |
             |[gray]· 这个投票只作用于你自己，是自救入口；
             |[gray]· 即使你被禁言，也可以使用 /vote quitob。
+            |[gray]· 如果被禁言，可用 [green]/vote quitMute[] 发起解除禁言投票（仅临时禁言；永久禁言需联系管理员）。
         """.trimMargin()
     ),
     TutorialPage(

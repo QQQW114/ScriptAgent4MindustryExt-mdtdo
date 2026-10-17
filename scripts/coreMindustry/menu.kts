@@ -161,6 +161,7 @@ private val voteHelpEntries = listOf(
     HelpEntryDef("votekick", "原版投票踢出兼容", "兼容旧 /votekick；实际转为强制观战投票", "/votekick"),
     HelpEntryDef("vote", "投票强制观战", "发起强制观战投票", "/vote ob"),
     HelpEntryDef("vote", "投票解除观战", "为自己发起解除强制观战投票（别名 quob/退出观战；被禁言者也可用）", "/vote quitOb"),
+    HelpEntryDef("vote", "取消禁言投票", "为自己发起解除禁言投票（别名 解除禁言/解禁；仅临时禁言，永久禁言需联系管理员；被禁言者也可用）", "/vote quitMute"),
     HelpEntryDef("vote", "投票创建存档", "为当前游戏创建投票存档", "/vote save"),
     HelpEntryDef("vote", "投票跳波", "投票快速出波", "/vote skipWave"),
     HelpEntryDef("vote", "暂停波次", "投票临时暂停波次计时", "/vote pauseWave"),

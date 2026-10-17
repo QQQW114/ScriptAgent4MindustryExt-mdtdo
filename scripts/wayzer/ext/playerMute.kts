@@ -635,6 +635,21 @@ fun muteReason(player: Player): String? {
 
 fun isMuted(target: Player): Boolean = muteReason(target) != null
 
+/**
+ * 该玩家是否处于"永久/无期限禁言"（MdtSettings 落库记录，无到期时间）。
+ *
+ * 只读数据库记录：临时禁言仅存在于内存 temporaryMutes，不会命中这里。
+ * 供 /vote quitMute 自救投票判断口径 —— 永久禁言不允许自救解除，需管理员处理。
+ */
+fun isPermanentMuted(target: Player): Boolean {
+    val data = runCatching { PlayerData[target] }.getOrNull() ?: return false
+    for (id in affectedKeys(data)) {
+        val reason = runCatching { MdtStorage.getMuteReason(id) }.getOrNull() ?: continue
+        if (reason.isNotBlank()) return true
+    }
+    return false
+}
+
 fun canManagePlayerMute(operator: Player, target: Player): Boolean =
     with(trustLevel) { canDirectRestrictTrustTarget(operator, target) }
 
@@ -823,9 +838,10 @@ fun unmutePlayer(target: Player, operator: Player? = null): Boolean {
     return true
 }
 
-// 被禁言者自救投票豁免（用户 2026-10-17 批准）：只放行"解除自己观战限制"的投票。
-// 允许的写法 = quitOb 的真实命令名/别名（见 voteOb.kts 的 quitOb 注册），大小写不敏感。
-private val SELF_RESCUE_VOTE_SUBCOMMANDS = setOf("quitob", "quob", "解除观战", "退出观战")
+// 被禁言者自救投票豁免（用户 2026-10-17 批准/扩展）：放行"解除自己限制"的自救投票。
+// 允许的写法 = quitOb / quitMute 的真实命令名/别名（见 voteOb.kts、voteMute.kts 的注册），大小写不敏感。
+private val SELF_RESCUE_VOTE_SUBCOMMANDS =
+    setOf("quitob", "quob", "解除观战", "退出观战", "quitmute", "解除禁言", "解禁")
 
 private fun shouldBlockMutedInput(text: String): Boolean {
     val trimmed = text.trimStart()

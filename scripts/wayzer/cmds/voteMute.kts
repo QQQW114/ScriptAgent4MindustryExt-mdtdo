@@ -126,8 +126,76 @@ private suspend fun startMuteVote(starter: Player, target: Player, requestedMinu
     return true
 }
 
+/**
+ * 被禁言者自救投票：解除自己的禁言（对称 `/vote quitOb`）。
+ *
+ * 口径（用户 2026-10-17 需求）：
+ * - 仅"当前确实被禁言"的玩家可发起，未禁言直接拒绝并提示；
+ * - 只解除**临时禁言**；永久禁言（数据库无期限记录）拒绝并提示联系管理员，
+ *   避免自救投票反向解掉管理员处罚（若为管理员层级以下玩家施加，提示可用 /punishreport 检举）；
+ * - 自救入口：`ignoreStartBan = true`（即使被禁止发起投票也可用），
+ *   `bypassDenyVote = { it == player }`（本人可投自己，不受强制观战/教程等 deny predicate 影响）；
+ * - 阈值沿用 VoteEvent 默认（50% 同意、fastSuccess），通过后调用 playerMute.unmutePlayer 解禁；
+ *   玩家投票期间离线时按投票前捕获的 uid 兜底（liftMuteByUids）。
+ */
+private suspend fun startQuitMuteVote(player: Player): Boolean {
+    val muteReasonText = with(playerMute) { runCatching { muteReason(player) }.getOrNull() }
+        ?: run {
+            player.sendMessage("[yellow]你当前没有被禁言，无需发起解除禁言投票。".with())
+            return false
+        }
+    if (with(playerMute) { runCatching { isPermanentMuted(player) }.getOrDefault(false) }) {
+        player.sendMessage(
+            (
+                "[red]你当前是永久禁言（无期限），自救投票只能解除临时禁言。\n" +
+                    "[gray]永久禁言需联系管理员处理；若该惩罚由管理员层级以下玩家施加，可用 [white]/punishreport[] 发起检举。"
+                ).with()
+        )
+        return false
+    }
+    val data = runCatching { PlayerData[player] }.getOrNull() ?: run {
+        player.sendMessage("[yellow]你的玩家状态异常，投票未发起。".with())
+        return false
+    }
+    val targetUid = data.id
+    val targetUids = (data.ids + targetUid).filter { it.isNotBlank() }.toSet()
+    val targetUuid = player.uuid()
+    val playerName = player.plainName()
+
+    val event = VoteEvent(
+        thisScript, player,
+        voteDesc = "解除自己的禁言".with(),
+        extDesc = "[yellow]禁言原因: $muteReasonText",
+        bypassDenyVote = { it == player },
+        // 自救入口：即使被管理员禁止发起投票也允许发起（与 quitOb 同口径）。
+        ignoreStartBan = true,
+    )
+    if (!event.awaitResult()) return false
+
+    val removed = runCatching { with(playerMute) { unmutePlayer(player) } }.getOrDefault(false) ||
+        runCatching { with(playerMute) { liftMuteByUids(targetUids, targetUuid) } }.getOrDefault(false)
+    if (removed) {
+        broadcast("[yellow]投票已通过：[white]$playerName[yellow] 的禁言已被解除。".with())
+    } else {
+        broadcast("[yellow]投票已通过，但禁言记录已不存在（可能已到期或已被管理员解除）。".with())
+    }
+    return removed
+}
+
 onEnable {
     val script = this
+    // 只作用于自己：quitMute（解除自己的禁言）不受"禁止发起投票"拦截，给被禁言者留自救入口。
+    VoteEvent.registerStartBanExemptVote("quitMute", "解除禁言", "解禁")
+    VoteEvent.VoteCommands += CommandInfo(
+        script,
+        "quitMute",
+        "[yellow]解除自己的禁言[gray]（被禁言者自救，需50%同意；仅临时禁言，永久禁言需联系管理员）"
+    ) {
+        aliases = listOf("解除禁言", "解禁")
+        body {
+            startQuitMuteVote(player!!)
+        }
+    }
     VoteEvent.VoteCommands += CommandInfo(script, "mute", "[red]投票禁言玩家[gray]（需50%同意，最多3天；非管理员层级最多1天）") {
         aliases = listOf("禁言投票", "votemute", "投票禁言")
         usage = "<玩家名/id> [时长: 30/30m/2h/1d/1d12h] [理由]"
