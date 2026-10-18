@@ -22,6 +22,122 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-18（第二十七批）：检举系统第二阶段——投票限制可检举(理由菜单) + 3次/6次永久封禁 + 面板/帮助/教程
+
+类型：功能新增 + 规则调整（核心提交 `62283bf`、玩家可见部分 `764b3e6`）。设计文档已追加
+「2026-10-18 第二阶段改造」一节；**未改游戏主逻辑以外的脚本**（`playerMute/punishmentReport/voteOb/voteMute/playerInfoTripleTap/menu/voteTutorial`）。
+
+### 1. 两种检举入口
+
+- **直接限制**（菜单/命令/玩家信息面板施加的禁言/强制观战/禁建）→ 仍走原弹窗（`PunishmentAppliedEvent`）；
+- **投票限制成功**（`/vote ob`、`/vote mute` 通过后）→ **两段式**：先弹**理由菜单**（默认「对方恶意投票/对方投错了/对方判断错了」，
+  可自定义输入）→ 再发起检举投票；`PunishmentAppliedEvent` 新增只读 `fromVote`（`source=="vote"`），说明会标注来源投票与理由。
+
+### 2. 新封禁规则（替换旧 >3 口径）
+
+- 每次检举成功 → 禁止施罚者**直接限制权限 1 天**；
+- 若来源是**投票限制** → **额外**禁止其发起**限制类投票（ob/mute）1 天**；
+- 累计成功检举 **≥3 次 → 永久禁直接限制**；**≥6 次 → 附加永久禁发起限制类投票**（任何来源累计）；
+- **3++/4 管理员豁免**；自救类 `quitOb`/`quitMute` 不受「限制类投票封禁」影响；检举投票文案重写（含「已被成功检举 N 次」与完整规则）。
+
+### 3. 配置 / 持久化 / API
+
+- 新增配置：`wayzer.ext.playerMute.reportVoteStartBanHours=24`、`permanentDirectBanStrikes=3`、
+  `permanentVoteStartBanStrikes=6`；`wayzer.user.punishmentReport.voteReportReasonOptions=[对方恶意投票, 对方投错了, 对方判断错了]`；
+  旧 `permanentReportStrikeThreshold` 删除（旧配置残留无害）。
+- 持久化：键不变 `punishment.report.bans`，值扩展为 `uid|untilMillis|strikeCount|voteStartUntilMillis|name`，
+  **旧 4 字段格式兼容读取**（旧记录 voteStart=0、strike 保留）；沿用异步预加载/异步落库。
+- 公开 API（playerMute）：`strikeCount/canDirectRestrict/canStartRestrictVote/directRestrictBanLeftMillis/
+  restrictVoteStartBanLeftMillis/isDirectRestrictPermanentlyBanned/isRestrictVoteStartPermanentlyBanned/
+  restrictionBlockReason/restrictVoteStartBlockReason/applyReportStrikeForVote`；
+  punishmentReport：`reportPermissionStatus/permissionStatusText/punishmentRuleSummaryText`。**既有函数签名未改**。
+
+### 4. 面板 / 帮助 / 教程（`764b3e6`）
+
+- `playerInfoTripleTap`：查看者被检举封禁时，强制观战/禁言/禁建（及「投票强制观战」）按钮替换为「（已被检举封禁）」+
+  点击看剩余/永久原因；解救类不受限、3++/4 实时豁免；面板显示目标「被成功检举：N 次」与双封禁状态。
+- `menu.kts`：`/punishreport` 帮助改新口径（两种入口、投票类需选理由、3次/6次规则；管理区补累计次数与双封禁剩余）。
+- `voteTutorial.kts`：quitob 页后新增「检举 — 对方滥用权力时怎么办」页（两种入口/理由/1天+额外1天/3次/6次/检举说明原文）；
+  教程 7 页变 **8 页**，游客流程与 deny predicate 未动。
+
+### 5. 验证与未验证
+
+- 验证：`sa listFailed` 空；`scriptdiag` **163/159/154/失败0**、根指令 160；三脚本 Enabled；KDoc **210 文件**干净。
+  fake player 实测：1/2/3 次 → 24h/24h/永久直接限制；投票来源 1 次 → 双 24h；第 6 次 → 双永久；拦截生效；
+  事件 `fromVote` 正确；持久化回读（清内存后从库恢复 strike=3/6 双永久）。
+- **未验证**：真实两段式弹窗渲染/点击、真实投票限制端到端、真实封禁态面板按钮渲染/点击、真实客户端教程渲染、
+  旧 4 字段格式的真实历史数据实例（仅代码兼容分支）。
+- **维护注意**：`playerInfoTripleTap` 现依赖 `punishmentReport`；**单独重载惩罚脚本后需再重载面板脚本**
+  （`sa load wayzer/ext/playerInfoTripleTap`）。
+
+## 2026-10-18（第二十六批）：服务器门户 Web 第二期：日志下载/历史消息/上行带宽/玩家名放宽 + 生产日志噪声修复
+
+类型：Web 端功能升级（提交 `1831084`；后端 +958/−81 新增 3 模块、前端 +1347/−71、游戏侧 `liveEventFeed.kts` 多份轮转；
+权威文档 `docs/web-portal.md` 已由后端 agent 更新到 627 行）。**未改游戏主逻辑**。
+
+### 1. 功能
+
+- **服务器日志（管理后台）**：`GET /api/logs`（列表，白名单 `log-<数字>.txt`/`console-<时间>.log`/`last.log`/`restart-supervisor.log`，
+  白名单+不递归+不可穿越）、`GET /api/logs/download?name=`（流式下载，**Bearer 或 `?token=`** 直链鉴权、单段 Range 206/416、
+  `Content-Disposition: attachment`、**异步写泵不阻塞主循环**）、`GET /api/logs/tail?name=&lines=`（尾部预览，行/字节上限）。
+  默认 `requireLogin=true`（日志含玩家 IP/聊天等敏感信息）；**50MB→413**、并发闸门默认 2→**429 BUSY+Retry-After**、
+  每 IP 5 次/5 分钟→**429 RATE_LIMITED**；全程审计（`download_start/done/abort/client_abort/busy/rate_limited`）。
+- **历史消息查询**：`GET /api/events/history` 跨「当前 + 旋转历史」**倒序分页**；`cursor=ts`（只返回 `ts<cursor`）、
+  `fromTs/toTs` 闭区间、`type`、`keyword`（匹配原始 JSON 行，中文需 percent-encoding）、`limit` 默认 100 最大 200；
+  `nextCursor` 仅 `hasMore` 时返回；每 IP 60 次/分钟；文件+行文本缓存有上限；`/api/events` 增加
+  `mainFileAvailable/historyAvailable/hint`（主文件轮转暂缺时中性提示）。
+- **上行带宽**：`GET /api/status` 的 `data.net`（宿主机网卡 `SentBytes` 差分，默认 10s 采样 / 5 分钟滑动平均 / 30 点；
+  `unit=bytes_per_second`（**B/s，不是 bit/s**）、`avgUpBps`/`avgUpBytesPerSec`/`series`/`interface` 等；失败降级
+  `available:false` 不影响其它接口）。口径=**宿主机网卡上行总量**（含游戏服/Web/系统），**游戏服与 Web 不同机时无意义**。
+- **控制台可选化**：`/api/health.console`（`optional:true`，`status=ok/not-reachable/disabled`，500ms 探测/10s 缓存，中性 hint）。
+  **生产不开调试端口是常态**：控制台不可达时审核/删除仍 `ok:true`，仅返回中性 `reloadHint`/`warnings`，**无 WARN/ERROR**。
+- **前端**：玩家名显示上限 512（上游 `maxPlayerChars` 256 的 2 倍）+ 残缺颜色标记收尾 + title/点击详情；管理后台「服务器日志」
+  面板（列表/尾部预览/直链下载、BUSY·限流人话化、中性控制台状态、审核 reloadHint 信息提示）；首页「上行带宽（最近 5 分钟平均）」
+  + sparkline；消息流「历史」抽屉（1h/6h/今天/全部 + 类型 + 关键词 + 分页）；mock 全量演示；资源版本 **20261018b**。
+- **游戏侧** `liveEventFeed.kts`：轮转保留 **12 份**（`live-events.1..12.jsonl`，`.1` 最新、链式移位、超出删最旧）；
+  `maxPlayerChars` 默认 **256**（最低按 128 钳制）——修复 Web 玩家名被 64 字符截断的根因；多文件轮转运行时验证通过。
+
+### 2. 配置项（`web-config.json` 新增三段；**旧配置缺键自动用默认值**）
+
+- `logs`：`enabled=true`、`requireLogin=true`、`dir=../mdtserver/config/logs`、`maxConcurrentDownloads=2`、
+  `rateLimitPerWindow=5`/`rateWindowMinutes=5`、`maxFileBytes=52428800`(50MB)、`tailMaxLines=2000`、`tailMaxBytes=2097152`；
+- `bandwidth`：`enabled=true`、`interface=auto`、`intervalSeconds=10`、`windowMinutes=5`、`seriesPoints=30`；
+- `events`：`historyMaxFiles=13`（= `liveEventFeed.keepRotatedFiles` 12 + 1）、`historyCacheMaxBytes=8388608`、
+  `historyRateLimitPerMinute=60`、`historyMaxKeywordChars=100`。
+- `/api/health` 新增 `version=portal-1.1.0`、`console/logs/activeDownloads/bandwidth/clientDisconnects/eventHistoryFiles` 等字段。
+
+### 3. 生产日志分析修复（`D:\weblog.txt`，16.5 小时运行）
+
+- 80 条 ERROR 中 **77 条为客户端断开写失败**（浏览器提前关页/断网）→ 已降噪：识别中英文断开类异常后**静默计数**
+  `/api/health.clientDisconnects`，不再打 ERROR 堆栈；真异常 ERROR 限频（同签名 60s 一条、堆栈 3 帧）。
+- 控制台 `connect timeout` 改为**可选中性提示**（不再 WARN）；公网登录爆破由登录限流阻断（保持）；单次启动稳定运行。
+- 查询参数改为从 RawUrl 做 UTF-8 percent-decode（修中文 `keyword` 乱码）。
+
+### 4. 安全
+
+- 日志默认**需管理员登录**；`?token=` 仅用于浏览器直链下载，token 会出现在 URL/浏览器历史，**勿复制分享**
+  （页面已设 `Referrer-Policy: no-referrer`；一次性 download token 为已知 TODO）；日志目录白名单、不可路径穿越。
+- 带宽只暴露宿主机网卡上行总量（不含任何玩家信息）；历史查询只能读 `live-events*.jsonl`，不暴露任意文件。
+
+### 5. 验证（提交时）
+
+- 后端自测 **38/38**（A 21：日志白名单/404/55MB→413/并发第 3 个 BUSY/Range/tail/审计/慢下载不阻塞其它 API/客户端断开计数 +
+  历史分页/游标/type/keyword/时间区间/limit 钳制/非法 type 400 + 旧 `afterTs` 语义不变；B 限频；C 控制台不可达仍 ok:true 中性；
+  D requireLogin=false；E console disabled；R 真实数据 10/10）。
+- 前端 **mock 51/51**、真实联调 **58/58**；Lead 冒烟：登录/日志列表(7)/tail/带 token 下载(attachment)/history(2 文件 5 条)/
+  `status.net`/`health.console=ok optional`/敏感路径 404/穿越 404/旧 `/server-status.json` 200。
+- `livefeed status` 显示「旋转历史保留：12 份」「玩家名上限=256 字符」；`livefeed rotate` 实测链式轮转；
+  KDoc 扫描 210 文件干净、`sa listFailed` 空、`scriptdiag` 失败 0；**游戏服全程未重启**。
+
+### 6. 未验证 / 注意
+
+- 未验证：**带宽数值与实际游戏流量的对照压测**、**真实超大日志的 413**（已用 55MB 模拟）、**真实并发下载 BUSY**（已用配置模拟）、
+  真机移动端布局、真实多 IP 登录、DP 热重载端到端、地图审核后客户端换图、真实玩家事件；日志下载深分页/大历史 IO 放大的实测。
+- 生产注意：**控制台是可选增强**（不开调试端口是常态，不要为此开端口）；日志下载需登录且含敏感信息；旧 `web-config.json`
+  缺新段会自动用默认值，但**升级仍不要用仓库默认 json 覆盖生产配置**（详见 web-portal §3.4 / `deploy-sync-checklist.md` §4.1）。
+- 文档提醒：`docs/live-events-feed.md` 仍写「只保留 1 份旧文件 / `maxPlayerChars=64`」，与本期游戏侧改动（12 份 / 256）
+  **尚未同步**（不在本批写作用域，见 `current-issues.md` 待办）。
+
 ## 2026-10-17（第二十五批）：被禁言者自救投票 /vote quitMute（解除临时禁言）
 
 类型：功能新增（提交 `7140bed`；4 个脚本：`wayzer/cmds/voteMute.kts` +68、`wayzer/ext/playerMute.kts` +22、

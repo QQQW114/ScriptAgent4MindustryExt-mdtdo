@@ -1,6 +1,8 @@
 # 实时事件流（游戏内 live events feed）
 
 > 状态：2026-10-17 实现并在本机开发服（MindustryX B509）完成验证；与 Web 门户（`web-portal`）按本文数据契约对接。
+> **2026-10-18 更新**：轮转改为保留 **12 份**旋转历史（`keepRotatedFiles=12`）、`maxPlayerChars` 默认 **256（最低按 128 钳制）**；
+> Web 端 `/api/events/history` 会消费这些旋转文件（见 `web-portal.md` §4.5/§7.4）。
 > 实现文件：`mdtdo/mdtserver/config/scripts/wayzer/ext/liveEventFeed.kts`。
 > 运行数据：`mdtdo/mdtserver/config/stats/live-events.jsonl`（位于 `config/stats/`，该目录不进 git）。
 
@@ -12,7 +14,7 @@
 - **不占用游戏主线程**：事件监听器只做「取字段 + 内存入队」，文件 IO 全部在 `Dispatchers.IO` 的单一写者协程；
 - **可分离**：脚本不依赖 Web 后端、不联网、不读写数据库，Web 起停与脚本互不影响；
 - **可增量消费**：`ts` 严格递增，Web 端用 `afterTs`（严格大于）轮询即可不丢事件；
-- **文件有界**：单文件约 2MB 自动轮转到 `live-events.1.jsonl`，只保留 1 份旧文件；
+- **文件有界**：单文件约 2MB 自动轮转，保留 **12 份**旋转历史（`live-events.1.jsonl`…`live-events.12.jsonl`，`.1` 最新、编号越大越旧，超出删最旧）；
 - **失败不影响游戏**：写盘/轮转异常只记录限频日志并自动重试。
 
 ## 数据契约（Web 端按此读取，脚本侧不要单方面修改）
@@ -102,18 +104,27 @@ Vote 轮询(Dispatchers.game) ─offer──>     │  每批 ≤200 条
 - **批量写**：默认 400ms 一次（约 2.5 次/秒，符合「≤2-4 次/秒」），每批一次 `append`，避免逐行开关文件；
 - **行完整性**：整批先拼接成完整字符串再一次性写；每行 JSON 都完整，`text` 内换行转义为 `\n`，不会写半行；
 - **ts 严格递增**：写者分配 `ts = max(事件时间, 当前时间, 上一条 ts + 1)`；初始化时从文件尾部 16KB 内恢复最后一条 `ts`，保证热重载后仍严格递增；
-- **轮转**：写一批前若「当前大小 + 本批字节数」超过阈值，则先把主文件 rename 为 `live-events.1.jsonl`（覆盖旧 .1），本批写入随后新建的主文件。**先 rename 再新建**，读取端不会读到半截文件；启动时若主文件已超阈值也会先轮转（实测见下文）；
+- **轮转**：写一批前若「当前大小 + 本批字节数」超过阈值，则做**链式移位**：先删最旧的第 `keepRotatedFiles+1` 份，再把 `.N` 依次后移
+  （`.1→.2`、`.2→.3`…），最后把主文件 rename 为 `live-events.1.jsonl` 并新建主文件。**先移位/rename 再新建**，读取端不会读到半截文件；
+  默认保留 12 份（`keepRotatedFiles`，钳制 1~100），启动时若主文件已超阈值也会先轮转（实测见下文）；
 - **异常降级**：写失败时把该批事件放回队列，下一轮重试；错误日志最多每 60 秒一条，不影响游戏。轮转失败（例如读取端正占用文件）也会在下轮重试；
 - **内存有界**：队列上限 `maxQueueSize`（默认 4096），极端过载时丢弃最旧事件并限频告警（门户可能缺事件，但游戏/内存不受影响）；
 - **停用收尾**：`onDisable` 补一条 `system` 停止事件并用 `runBlocking(Dispatchers.IO)` 同步 flush 一次（仅停用/关服路径，正常运行时不会在主线程做 IO）。
 
-性能量级：聊天高峰按 20 条/秒估算，每 400ms 约 8 行、单次 append 约 2KB；写者协程空闲时每 400ms 只做一次空队列检查。文件上限 = 主文件 ≤ 阈值 + 一批（最坏多一批，≤200 条 × 500 字符 ≈ 130KB）+ `.1` 一份。
+性能量级：聊天高峰按 20 条/秒估算，每 400ms 约 8 行、单次 append 约 2KB；写者协程空闲时每 400ms 只做一次空队列检查。
+文件上限 = 主文件 ≤ 阈值 + 一批（最坏多一批，≤200 条 × 500 字符 ≈ 130KB）+ 12 份旋转文件（各 ≤阈值+一批），默认合计 ≤约 26MB，可用 `keepRotatedFiles` 调整。
 
 ## 读取方式（给 Web 后端）
 
-后端已实现 `GET /api/events?afterTs=<ms>&limit=<n>`，读取建议：
+后端已实现两个接口：
+- `GET /api/events?afterTs=<ms>&limit=<n>`：**增量**，只读主文件 `live-events.jsonl`；
+- `GET /api/events/history`：**历史查询**，跨「主文件 + 旋转历史」倒序分页（`cursor=ts` 只返回更早、支持 type/keyword/fromTs/toTs、
+  limit 100/最大 200），见 `web-portal.md` §4.5/§7.4。
 
-1. **只读主文件** `live-events.jsonl`，不要读 `live-events.1.jsonl`（旧文件会被覆盖，仅作最近一份归档）；
+读取建议：
+
+1. **增量接口只读主文件** `live-events.jsonl`；`live-events.N.jsonl` 是旋转历史（`.1` 最新、`.12` 最旧），
+   由历史查询接口按「当前 → .1 → .2 …」倒序消费——不要用增量接口去读它们；
 2. 每次读取整个主文件（≤约 2MB，开销可控）→ 按行 `JSON.parse` → 过滤 `ts > afterTs` → 按 `ts` 升序取前 `limit` 条；
 3. 建议在进程内记录 `lastSeenTs`（不要按字节 offset，轮转后 offset 会失效）；
 4. 容错要求（后端已确认）：文件不存在 / 轮转瞬间为空 / 半行 / 坏行 / 非 UTF-8 都要跳过而不是报 500；轮转后 `ts` 仍严格递增，不会回退。
@@ -130,8 +141,9 @@ SA 配置键全名 = `wayzer.ext.liveEventFeed.<键名>`，可用 `sa config get
 | `flushIntervalMillis` | `400` | 批量写入间隔（ms），钳制在 100~5000 |
 | `maxQueueSize` | `4096` | 内存队列上限，超出丢弃最旧事件 |
 | `maxTextChars` | `500` | `text` 最大字符数，超出截断（按 code point 边界，不会切坏 emoji） |
-| `maxPlayerChars` | `64` | `player` 显示名最大字符数 |
+| `maxPlayerChars` | `256` | `player` 显示名最大字符数（Web 展示用；**最低按 128 钳制**，默认 256 以容纳颜色标记/长名） |
 | `rotateBytes` | `2097152`（2MB） | 单文件轮转阈值；下限 4096 字节防误配 |
+| `keepRotatedFiles` | `12` | 保留的旋转历史份数（`live-events.1` 最新；钳制 1~100，超出删最旧） |
 | `votePollMillis` | `250` | 投票状态轮询间隔（ms），钳制在 100~2000 |
 
 修改示例：
@@ -144,7 +156,7 @@ sa config set wayzer.ext.liveEventFeed.rotateBytes 2097152
 
 ```
 /livefeed                 （别名：事件流、实时事件）status，查看状态
-/livefeed rotate          手动轮转：主文件 rename 为 live-events.1.jsonl，主文件在下一条事件时重建
+/livefeed rotate          手动轮转：链式移位后把主文件 rename 为 live-events.1.jsonl（最旧一份被删），主文件在下一条事件时重建
 ```
 
 权限：`wayzer.livefeed.admin`（默认 `@admin` 组；控制台可用）。
@@ -154,7 +166,7 @@ sa config set wayzer.ext.liveEventFeed.rotateBytes 2097152
 ```
 实时事件流
 输出文件：config\stats\live-events.jsonl
-状态：运行中  文件大小：1728 B  轮转阈值：2097152 B
+状态：运行中  文件大小：1728 B  轮转阈值：2097152 B 保留旋转历史=12份 玩家名上限=256字符
 已写事件：10  批次：3  轮转：2  队列：0
 最后 ts：1792236508193  丢弃：0  最近错误：无
 ```
@@ -174,7 +186,7 @@ sa config set wayzer.ext.liveEventFeed.rotateBytes 2097152
 | 轮转-启动时 | 临时把阈值调成 4096B 后重载：主文件 4186B → 自动 rename 成 `live-events.1.jsonl`，新主文件 89B |
 | 轮转-运行中 | 主文件 3545B + 下批 1728B 超过阈值 → 写前轮转：`.1`=3545B、主文件=1728B |
 | 轮转-手动 | `/livefeed rotate` 后主文件 1728B → `.1`，主文件待下条事件重建 |
-| 轮转唯一性 | 反复轮转始终只有 `live-events.1.jsonl`，无 `.2` |
+| 轮转-多份（2026-10-18） | `livefeed status` 显示「保留旋转历史：12 份」「玩家名上限=256字符」；`livefeed rotate` 生成 `live-events.1.jsonl` 并打印「实时事件流已轮转：live-events.jsonl -> live-events.1.jsonl（保留旋转历史 12 份）」；链式移位按 `.1→.2…`，超出 12 份删最旧 |
 | 停用收尾 | 每次热重载均能看到旧实例写出的 `system` 停止行，说明 `onDisable` flush 生效 |
 | **未覆盖** | 真实 `join`/`leave`（无客户端可加入）、真实玩家 `chat`、`vote_*`（投票需真实玩家；轮询逻辑已实现但无运行实例证据）、队列溢出/磁盘写失败的降级路径（仅代码审查） |
 
@@ -185,7 +197,8 @@ sa config set wayzer.ext.liveEventFeed.rotateBytes 2097152
 - **投票快速路径漏采**：见上文「投票接入的已知边界」；彻底修复需在 `vote.lib.kt` 增加 SA 事件（本轮按写作用域限制未改，留 TODO）。
 - **`join`/`leave` 的 text 是固定文案**：未接入欢迎语/地区（需要依赖 `ipRegion` 等脚本的数据，本轮未做；契约允许 text 放欢迎语/地区，后续可补）。
 - **广播类系统消息采集不到**：Mindustry 的 `broadcast`/控制台 `say` 没有事件可监听；如需把全服公告也进门户，可后续加轻量 hook 或提供 `livefeed say <text>` 运维广播命令（本轮未做）。
-- **轮转阈值存在一批过冲**：写前检查，单文件最坏为阈值 + 一批（≤约 130KB），符合「约 2MB 轮转」的约定。
+- **轮转阈值存在一批过冲**：写前检查，单文件最坏为阈值 + 一批（≤约 130KB），符合「约 2MB 轮转」的约定；
+  保留 12 份旋转后磁盘占用上限约 26MB（主文件 + 12 份，各 ≤阈值+一批），可用 `keepRotatedFiles` 调整。
 - **热重载会产生 `system` 停/启两条事件**：属正常行为，门户可直接展示或按 type 过滤。
 - **同进程多实例**（旧实例未停干净又加载新实例）理论上可能出现双写；正常 SA 热重载是「先停旧再启新」，停用收尾会 flush，实测正常。
 

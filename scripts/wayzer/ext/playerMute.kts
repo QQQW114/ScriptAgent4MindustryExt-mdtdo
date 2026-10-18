@@ -71,6 +71,9 @@ data class PunishmentAppliedEvent(
     val durationMinutes: Int?,
     val reason: String,
 ) : Event {
+    /** 是否由限制类投票通过后施加（检举入口 b：投票限制成功也可检举，需先选检举理由）。 */
+    val fromVote: Boolean get() = source == "vote"
+
     override val handler: Event.Handler get() = Companion
 
     companion object : Event.Handler()
@@ -99,7 +102,9 @@ data class PunishmentLiftedEvent(
 private val nonAdminMaxPunishMinutes by config.key(1440, "非管理员层级(低于3++)单次带时间限制性惩罚的最大时长(分钟)")
 private val punishRepeatCooldownHours by config.key(24, "非管理员层级对同一玩家重复施加限制性惩罚的冷却(小时)，跨禁言/观战/禁建共用")
 private val reportBanHours by config.key(24, "被检举成功后禁止施罚者使用限制权限的时长(小时)")
-private val permanentReportStrikeThreshold by config.key(4, "被成功检举达到该次数后永久禁止其限制性权限（默认4=超过3次）")
+private val reportVoteStartBanHours by config.key(24, "投票类惩罚被检举成功后，额外禁止施罚者发起限制类投票(ob/mute等)的时长(小时)")
+private val permanentDirectBanStrikes by config.key(3, "累计成功检举达到该次数后永久禁止施罚者的直接限制权限")
+private val permanentVoteStartBanStrikes by config.key(6, "累计成功检举达到该次数后永久禁止施罚者发起限制类投票")
 
 /** 管理员层级的等级序（3++ = 38）。 */
 private val adminTierOrder = with(trustLevel) { trustLevelOrder("3++") }
@@ -107,7 +112,11 @@ private val adminTierOrder = with(trustLevel) { trustLevelOrder("3++") }
 // 供其它脚本/弹窗读取的规则参数（本次改动的配置都从这里取，不在调用方重复定义）。
 fun nonAdminMaxPunishMinutesValue(): Int = nonAdminMaxPunishMinutes.coerceAtLeast(1)
 fun reportBanHoursValue(): Int = reportBanHours.coerceAtLeast(1)
-fun permanentReportStrikeThresholdValue(): Int = permanentReportStrikeThreshold.coerceAtLeast(1)
+fun reportVoteStartBanHoursValue(): Int = reportVoteStartBanHours.coerceAtLeast(1)
+fun permanentDirectBanStrikesValue(): Int = permanentDirectBanStrikes.coerceAtLeast(1)
+fun permanentVoteStartBanStrikesValue(): Int = permanentVoteStartBanStrikes.coerceAtLeast(1)
+/** 兼容旧调用（原“永久封禁阈值”）：现对应“永久禁止直接限制”的阈值。 */
+fun permanentReportStrikeThresholdValue(): Int = permanentDirectBanStrikesValue()
 fun punishRepeatCooldownMillisValue(): Long = punishRepeatCooldownHours.coerceAtLeast(0).toLong() * 3_600_000L
 
 // ---------- 持久化状态：检举封禁 + 24h 冷却 ----------
@@ -121,17 +130,25 @@ private val PUNISH_LOCK = Any()
 
 /**
  * 检举封禁记录（限制性权限封禁）。
- * untilMillis = Long.MAX_VALUE 表示永久；strikeCount 为累计被成功检举次数（跨重启保留）。
+ * - untilMillis：直接限制权封禁到期，Long.MAX_VALUE 表示永久；
+ * - voteStartUntilMillis：额外封禁“发起限制类投票”的到期时间，0=未封，Long.MAX_VALUE=永久；
+ * - strikeCount：累计被成功检举次数（跨重启保留；记录过期后也保留，用于阈值判断）。
  */
 data class RestrictionBanInfo(
     val uid: String,
     val name: String,
     val untilMillis: Long,
     val strikeCount: Int,
+    val voteStartUntilMillis: Long = 0L,
 ) {
     val permanent: Boolean get() = untilMillis == PERMANENT_UNTIL
 
+    val voteStartPermanent: Boolean get() = voteStartUntilMillis == PERMANENT_UNTIL
+
     fun active(now: Long = System.currentTimeMillis()): Boolean = permanent || untilMillis > now
+
+    fun voteStartActive(now: Long = System.currentTimeMillis()): Boolean =
+        voteStartPermanent || voteStartUntilMillis > now
 }
 
 private val restrictionBans = linkedMapOf<String, RestrictionBanInfo>()
@@ -167,8 +184,11 @@ private fun loadPunishStateFromDb(): Pair<Int, Int> {
             if (uid.isEmpty() || restrictionBans.containsKey(uid)) return@forEach
             val until = parts[1].toLongOrNull() ?: return@forEach
             val strikes = parts[2].toIntOrNull() ?: 0
-            val name = parts.drop(3).joinToString("|")
-            restrictionBans[uid] = RestrictionBanInfo(uid, name, until, strikes)
+            // 兼容旧格式 `uid|until|strikes|name`；新格式多一个 voteStartUntil：`uid|until|strikes|voteStart|name`。
+            // name 在写入时已把 '|' 替换为 '/'，所以按字段数即可安全区分新旧格式。
+            val voteStartUntil = if (parts.size >= 5) parts[3].toLongOrNull() ?: 0L else 0L
+            val name = parts.drop(if (parts.size >= 5) 4 else 3).joinToString("|")
+            restrictionBans[uid] = RestrictionBanInfo(uid, name, until, strikes, voteStartUntil)
         }
         cooldownRaw?.lineSequence()?.forEach { line ->
             val parts = line.split('|')
@@ -219,7 +239,7 @@ private fun requestPunishStateLoad() {
  */
 private fun schedulePunishPersistLocked() {
     pendingBanSnapshot = restrictionBans.values.joinToString("\n") {
-        "${it.uid}|${it.untilMillis}|${it.strikeCount}|${sanitizePersistText(it.name)}"
+        "${it.uid}|${it.untilMillis}|${it.strikeCount}|${it.voteStartUntilMillis}|${sanitizePersistText(it.name)}"
     }
     pendingCooldownSnapshot = punishCooldowns.entries.joinToString("\n") { "${it.key}|${it.value}" }
     if (punishPersistInFlight) return
@@ -325,6 +345,83 @@ fun restrictionBanInfo(uids: Iterable<String>): RestrictionBanInfo? {
 fun restrictionBanBlockMessage(leftMillis: Long, action: String = "使用限制性权限"): String =
     if (leftMillis >= PERMANENT_UNTIL) "[red]你已被永久禁止${action}（多次被检举成功）。"
     else "[red]你当前被禁止${action}（剩余 [white]${formatPunishLeft(leftMillis)}[red]）。"
+
+// ---------- 检举封禁公开查询 API（供 UI / 入口脚本使用；全部内存查询，无 DB） ----------
+
+/** 玩家全部主体 uid（会话 uuid + 账号主体），供 UI/入口统一口径。 */
+fun punishSubjectUids(player: Player): Set<String> =
+    runCatching { (PlayerData[player].ids + PlayerData[player].id).filter { it.isNotBlank() }.toSet() }
+        .getOrDefault(setOf(player.uuid()))
+
+/** 累计被成功检举次数（含已过期封禁记录；旧数据兼容）。 */
+fun strikeCount(uid: String): Int =
+    if (uid.isBlank()) 0 else (restrictionBanInfo(listOf(uid))?.strikeCount ?: 0)
+
+fun strikeCount(uids: Iterable<String>): Int = restrictionBanInfo(uids)?.strikeCount ?: 0
+fun strikeCount(player: Player): Int = strikeCount(punishSubjectUids(player))
+
+/** 直接限制权封禁剩余毫秒；0=未封，Long.MAX_VALUE=永久。 */
+fun directRestrictBanLeftMillis(uids: Iterable<String>): Long = restrictionBanLeftMillis(uids)
+fun directRestrictBanLeftMillis(player: Player): Long = directRestrictBanLeftMillis(punishSubjectUids(player))
+
+fun isDirectRestrictPermanentlyBanned(uids: Iterable<String>): Boolean =
+    restrictionBanInfo(uids)?.permanent == true
+fun isDirectRestrictPermanentlyBanned(player: Player): Boolean =
+    isDirectRestrictPermanentlyBanned(punishSubjectUids(player))
+
+/** 发起限制类投票权封禁剩余毫秒；0=未封，Long.MAX_VALUE=永久。 */
+fun restrictVoteStartBanLeftMillis(uids: Iterable<String>): Long {
+    val keys = uids.filter { it.isNotBlank() }.toSet()
+    if (keys.isEmpty()) return 0L
+    if (!punishStateLoaded) {
+        requestPunishStateLoad()
+        return 0L // 状态未加载完成：按“未封禁”放行，不在游戏线程阻塞等 DB
+    }
+    val now = System.currentTimeMillis()
+    var best = 0L
+    synchronized(PUNISH_LOCK) {
+        keys.forEach { uid ->
+            val record = restrictionBans[uid] ?: return@forEach
+            if (!record.voteStartActive(now)) return@forEach
+            val left = if (record.voteStartPermanent) PERMANENT_UNTIL else (record.voteStartUntilMillis - now).coerceAtLeast(0L)
+            if (left > best) best = left
+        }
+    }
+    return best
+}
+
+fun restrictVoteStartBanLeftMillis(player: Player): Long = restrictVoteStartBanLeftMillis(punishSubjectUids(player))
+
+fun isRestrictVoteStartPermanentlyBanned(uids: Iterable<String>): Boolean =
+    restrictionBanInfo(uids)?.voteStartPermanent == true
+fun isRestrictVoteStartPermanentlyBanned(player: Player): Boolean =
+    isRestrictVoteStartPermanentlyBanned(punishSubjectUids(player))
+
+/** 是否可以“直接限制他人”（禁言/观战/禁建；UI 按钮显隐/入口检查用）。 */
+fun canDirectRestrict(uid: String): Boolean = canDirectRestrict(listOf(uid))
+fun canDirectRestrict(uids: Iterable<String>): Boolean = directRestrictBanLeftMillis(uids) <= 0L
+fun canDirectRestrict(player: Player): Boolean = canDirectRestrict(punishSubjectUids(player))
+
+/** 是否可以“发起限制类投票（ob/mute 等）”（UI 按钮显隐/入口检查用；自救类 quitOb/quitMute 不受此限）。 */
+fun canStartRestrictVote(uid: String): Boolean = canStartRestrictVote(listOf(uid))
+fun canStartRestrictVote(uids: Iterable<String>): Boolean = restrictVoteStartBanLeftMillis(uids) <= 0L
+fun canStartRestrictVote(player: Player): Boolean = canStartRestrictVote(punishSubjectUids(player))
+
+/** 直接限制被禁时的提示文案（null=可施加）。 */
+fun restrictionBlockReason(uids: Iterable<String>): String? {
+    val left = restrictionBanLeftMillis(uids)
+    return if (left > 0L) restrictionBanBlockMessage(left) else null
+}
+fun restrictionBlockReason(player: Player): String? = restrictionBlockReason(punishSubjectUids(player))
+
+/** 发起限制类投票被禁时的提示文案（null=可发起）。 */
+fun restrictVoteStartBlockReason(uids: Iterable<String>): String? {
+    val left = restrictVoteStartBanLeftMillis(uids)
+    if (left <= 0L) return null
+    if (left >= PERMANENT_UNTIL) return "[red]你已被永久禁止发起限制他人（观战/禁言等）的投票。"
+    return "[red]你因被检举成功，当前被禁止发起限制类投票（剩余 [white]${formatPunishLeft(left)}[red]）。"
+}
+fun restrictVoteStartBlockReason(player: Player): String? = restrictVoteStartBlockReason(punishSubjectUids(player))
 
 /** (施罚者, 目标) 24h 冷却剩余毫秒；0 = 可施加。 */
 fun punishCooldownLeftMillis(operatorUids: Iterable<String>, targetUids: Iterable<String>): Long {
@@ -442,40 +539,113 @@ fun preparePunishment(
 }
 
 /**
- * 检举投票成功：给施罚者累计一次“成功检举”，并按阈值封禁其限制性权限（1 天/永久）。
+ * 检举投票成功：给施罚者累计一次“成功检举”，并按阈值封禁其权限。
+ *
+ * 用户口径（2026-10-18，替换原“>3 次”规则）：
+ * - 每次检举成功：禁止其**直接限制他人** 1 天；累计 ≥3 次 → 永久禁止直接限制；
+ * - 若被检举行为来自**投票限制**（fromVote）：额外禁止其**发起限制类投票**（ob/mute 等）1 天；
+ *   累计 ≥6 次 → 永久禁止发起限制类投票（任何来源的检举达到阈值都生效）。
+ *
  * 返回 null 表示施罚者 uid 无效。
  */
 data class ReportStrikeResult(
     val uid: String,
     val name: String,
     val strikeCount: Int,
+    /** 直接限制权是否已永久封禁。 */
     val permanent: Boolean,
-    /** 本次封禁时长（毫秒）；永久时为 Long.MAX_VALUE。 */
+    /** 本次直接限制权封禁时长（毫秒，永久为 Long.MAX_VALUE）。 */
     val banLeftMillis: Long,
+    /** 本次是否额外封禁“发起限制类投票”。 */
+    val voteStartBanned: Boolean = false,
+    /** 发起限制类投票权是否已永久封禁。 */
+    val voteStartPermanent: Boolean = false,
+    /** 本次发起限制类投票权封禁时长（毫秒，永久为 Long.MAX_VALUE）；0=本次未新封。 */
+    val voteStartBanLeftMillis: Long = 0L,
 )
 
+/** 直接限制（菜单/命令）被检举成功时调用。 */
 fun applyReportStrike(
     operatorUid: String,
     operatorName: String,
     operatorUids: Iterable<String>,
+): ReportStrikeResult? = applyReportStrikeInternal(operatorUid, operatorName, operatorUids, fromVote = false)
+
+/** 投票类限制（/vote ob、/vote mute 生效）被检举成功时调用：除直接限制权外，额外封“发起限制类投票”。 */
+fun applyReportStrikeForVote(
+    operatorUid: String,
+    operatorName: String,
+    operatorUids: Iterable<String>,
+): ReportStrikeResult? = applyReportStrikeInternal(operatorUid, operatorName, operatorUids, fromVote = true)
+
+private fun applyReportStrikeInternal(
+    operatorUid: String,
+    operatorName: String,
+    operatorUids: Iterable<String>,
+    fromVote: Boolean,
 ): ReportStrikeResult? {
     val primary = operatorUid.trim()
     if (primary.isEmpty()) return null
     val keys = (operatorUids.filter { it.isNotBlank() } + primary).distinct()
     if (!punishStateLoaded) requestPunishStateLoad()
     val now = System.currentTimeMillis()
-    val threshold = permanentReportStrikeThresholdValue()
+    val directThreshold = permanentDirectBanStrikesValue()
+    val voteThreshold = permanentVoteStartBanStrikesValue()
     synchronized(PUNISH_LOCK) {
         val existing = keys.mapNotNull { restrictionBans[it] }
             .maxWithOrNull(compareBy<RestrictionBanInfo> { it.strikeCount }.thenBy { if (it.permanent) 1 else 0 })
         val strikeCount = (existing?.strikeCount ?: 0) + 1
-        val permanent = existing?.permanent == true || strikeCount >= threshold
-        val banLeft = if (permanent) PERMANENT_UNTIL else reportBanHoursValue().toLong() * 3_600_000L
-        val until = if (permanent) PERMANENT_UNTIL else now + banLeft
-        val record = RestrictionBanInfo(primary, sanitizePersistText(operatorName.ifBlank { primary }), until, strikeCount)
+
+        // 直接限制权：每次成功封 1 天；累计 ≥3 次永久。
+        val directPermanent = existing?.permanent == true || strikeCount >= directThreshold
+        val directBanLeft = if (directPermanent) PERMANENT_UNTIL else reportBanHoursValue().toLong() * 3_600_000L
+        val directUntil = if (directPermanent) PERMANENT_UNTIL else now + directBanLeft
+
+        // 发起限制类投票权：仅投票来源的检举额外封 1 天；累计 ≥6 次永久（任何来源都生效）。
+        val votePermanent = existing?.voteStartPermanent == true || strikeCount >= voteThreshold
+        val existingVoteUntil = existing?.voteStartUntilMillis ?: 0L
+        val voteBanLeft: Long
+        val voteUntil: Long
+        val voteBanned: Boolean
+        when {
+            votePermanent -> {
+                voteBanLeft = PERMANENT_UNTIL
+                voteUntil = PERMANENT_UNTIL
+                voteBanned = true
+            }
+
+            fromVote -> {
+                voteBanLeft = reportVoteStartBanHoursValue().toLong() * 3_600_000L
+                voteUntil = maxOf(existingVoteUntil, now + voteBanLeft)
+                voteBanned = true
+            }
+
+            else -> {
+                voteBanLeft = 0L
+                voteUntil = existingVoteUntil
+                voteBanned = false
+            }
+        }
+
+        val record = RestrictionBanInfo(
+            uid = primary,
+            name = sanitizePersistText(operatorName.ifBlank { primary }),
+            untilMillis = directUntil,
+            strikeCount = strikeCount,
+            voteStartUntilMillis = voteUntil,
+        )
         keys.forEach { restrictionBans[it] = record }
         schedulePunishPersistLocked()
-        return ReportStrikeResult(record.uid, record.name, strikeCount, permanent, banLeft)
+        return ReportStrikeResult(
+            uid = record.uid,
+            name = record.name,
+            strikeCount = strikeCount,
+            permanent = directPermanent,
+            banLeftMillis = directBanLeft,
+            voteStartBanned = voteBanned,
+            voteStartPermanent = votePermanent,
+            voteStartBanLeftMillis = voteBanLeft,
+        )
     }
 }
 
@@ -492,7 +662,7 @@ fun clearRestrictionBan(uids: Iterable<String>): Boolean {
     }
 }
 
-/** 当前生效的检举封禁列表（去重后按剩余时间排序，管理命令/菜单用）。 */
+/** 当前生效的检举封禁列表（直接限制/发起限制类投票任一生效即展示；管理命令/菜单用）。 */
 fun activeRestrictionBans(): List<RestrictionBanInfo> {
     if (!punishStateLoaded) {
         requestPunishStateLoad()
@@ -501,9 +671,12 @@ fun activeRestrictionBans(): List<RestrictionBanInfo> {
     val now = System.currentTimeMillis()
     return synchronized(PUNISH_LOCK) {
         restrictionBans.values
-            .filter { it.active(now) }
-            .distinctBy { "${it.uid}|${it.untilMillis}|${it.strikeCount}" }
-            .sortedWith(compareByDescending<RestrictionBanInfo> { it.permanent }.thenByDescending { it.untilMillis })
+            .filter { it.active(now) || it.voteStartActive(now) }
+            .distinctBy { "${it.uid}|${it.untilMillis}|${it.strikeCount}|${it.voteStartUntilMillis}" }
+            .sortedWith(
+                compareByDescending<RestrictionBanInfo> { it.permanent || it.voteStartPermanent }
+                    .thenByDescending { maxOf(it.untilMillis, it.voteStartUntilMillis) }
+            )
     }
 }
 

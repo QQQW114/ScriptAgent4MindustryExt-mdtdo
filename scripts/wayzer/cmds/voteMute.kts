@@ -76,6 +76,15 @@ private suspend fun startMuteVote(starter: Player, target: Player, requestedMinu
     val starterLevel = with(playerMute) { applierLevelOrder(starter) }
     val targetUids = PlayerData[target].ids
 
+    // 被检举封禁“发起限制类投票”时拦截（2026-10-18 用户口径：投票类限制被检举成功额外封此权限）。
+    // 自救类投票（quitMute）走独立入口，不受这里影响。
+    if (!with(playerMute) { isAdminTierLevel(starterLevel) }) {
+        with(playerMute) { restrictVoteStartBlockReason(starterUids) }?.let { blockReason ->
+            starter.sendMessage(blockReason)
+            return false
+        }
+    }
+
     // 发起前统一检查：检举封禁 → 24h 冷却 → 非管理员 1 天上限（用户口径 Q2/Q4，避免投票白跑）。
     val decision = with(playerMute) {
         preparePunishment(starterUids, starterLevel, targetUids, requestedMinutes, permanentRequest = false)

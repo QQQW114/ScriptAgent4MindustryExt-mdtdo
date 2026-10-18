@@ -78,24 +78,25 @@
 
 ### 4.1 Web 端（`stats-web\`）：第二类同步目标
 
-**Web 改动 = 同步 `stats-web\` 整个目录**（2026-10-17 起为**三页门户 + 后端 API**：无构建、无 npm、无外网依赖，
-Windows PowerShell HttpListener；权威说明见 `docs/web-portal.md`、`stats-web/README.md`）：
+**Web 改动 = 同步 `stats-web\` 整个目录**（**三页门户 + 后端 API**：无构建、无 npm、无外网依赖，Windows PowerShell HttpListener；
+第二期起含日志下载/历史消息/上行带宽模块；权威说明见 `docs/web-portal.md`、`stats-web/README.md`）：
 
 | 文件/目录 | 是否要同步 | 说明 |
 |---|---|---|
 | `index.html` / `upload.html` / `admin.html` | ✅ 要 | 门户首页 / 公开投稿 / 管理后台；静态文件改动后**刷新页面**即可 |
-| `assets/`（整个目录） | ✅ 要 | 前端 css/js/mock/自测页；全部本地、无外网 CDN；资源版本 `?v=` 改了要同步 |
-| `server/`（整个目录） | ✅ 要 | 后端 6 个模块（API/上传审核/会话/控制台桥）；改动后必须**重启 Web 服务** |
+| `assets/`（整个目录） | ✅ 要 | 前端 css/js/mock/自测页；全部本地、无外网 CDN；资源版本 `?v=` 改了要同步（当前 `20261018b`） |
+| `server/`（整个目录） | ✅ 要 | 后端模块（API/上传审核/会话/控制台桥 + 第二期 `portal-logs`/`portal-history`/`portal-metrics`，共 9 个）；改动后必须**重启 Web 服务** |
 | `start-web.ps1` / `start-web.bat` | ✅ 要 | 启动入口（默认 `127.0.0.1:8090`；兼容旧参数，新增 `-Config`/`-GenPasswordHash`） |
-| `web-config.json` | ⚠️ **不要用仓库默认值覆盖** | **主配置**：监听地址/端口、管理员账号密码、上传/目录/队列限制、热重载开关。生产按目标机器实际值维护；仓库里这份含默认凭据 |
+| `web-config.json` | ⚠️ **不要用仓库默认值覆盖** | **主配置**：监听/管理员凭据/上传限制/目录/热重载；第二期新增 `logs`/`bandwidth`/`events` 段（**旧配置缺键自动用默认值**，但生产仍按目标机器实际值维护，仓库这份含默认凭据） |
 | `web-config.ps1` | ⚠️ 旧部署兼容/迁移用 | 旧部署（只有 ps1）首次启动会自动迁移成 `web-config.json` 并改名备份；**升级时保留线上旧文件、不要覆盖** |
 | `README.md` | 可带 | 门户版说明（分发/升级/默认凭据必改） |
 
 容易踩的连带关系（都来自实际踩坑）：
 
-1. **数据契约（两路）**：状态页读 `mdtserver\config\stats\server-status.json`（`wayzer/ext/serverStats.kts` 写出，
-   60 秒刷新）；实时事件流读 `mdtserver\config\stats\live-events.jsonl`（`wayzer/ext/liveEventFeed.kts` 异步写）。
-   凡涉及**新增/改名 JSON 字段或事件字段**的 Web 改动，必须**同时同步对应服务器脚本**——只更新 Web 会出现字段空/无事件。
+1. **数据契约（三路）**：状态页读 `mdtserver\config\stats\server-status.json`（`serverStats.kts`，60 秒刷新）；
+   实时/历史事件读 `mdtserver\config\stats\live-events*.jsonl`（`liveEventFeed.kts` 异步写，**当前+12 份旋转历史**）；
+   日志面板只读 `mdtserver\config\logs\` 白名单文件（`log-<数字>.txt`/`console-<时间>.log`/`last.log`/`restart-supervisor.log`）。
+   凡涉及**新增/改名 JSON/事件字段或日志命名**的 Web 改动，必须**同时同步对应服务器脚本/命名**。
 2. **生效方式**：静态页刷新即可；`server/`、`web-config.json`、端口或绑定变更需**重启 Web**。
    公网访问的前置条件：管理员执行一次 `.\start-web.ps1 -InstallAcl -Port <端口>`（换端口/换机器要重做）、
    `-Bind 0.0.0.0`（或改 `bind`）、VPS 防火墙放行；**默认监听仅 127.0.0.1:8090（旧静态站默认 8081 已变）**，
@@ -103,7 +104,11 @@ Windows PowerShell HttpListener；权威说明见 `docs/web-portal.md`、`stats-
 3. **旧部署升级（重点）**：替换新版目录时**不要把仓库默认 `web-config.json` 一起带过去**，否则门户会优先用它
    （`127.0.0.1:8090`）而**不会自动迁移**旧 `web-config.ps1`，公网访问会失效；保留线上旧 `web-config.ps1` + 旧 `web-data/`，
    首次启动确认日志 `[升级] 已把旧配置迁移到…` 后**立即修改默认密码**。完整 6 步见 `docs/web-portal.md` §3.4。
-4. **备份缺口**：`stats-web\` 只存在于本地 `mdtdo` 仓库（该仓库**没有远程**），插件仓库
+   **第二期新增配置段缺键会自动用默认值**（无需手工补全），但升级后请重启 Web 让新模块加载。
+4. **日志下载与带宽（第二期，生产注意）**：日志默认 `logs.requireLogin=true`（**含玩家 IP/聊天等敏感信息，需管理员登录**），
+   下载直链的 `?token=` 会出现在 URL/浏览器历史、勿分享；带宽是**宿主机网卡总上行**（B/s，含游戏服/Web/系统），
+   游戏服与 Web 不同机时无意义。**控制台桥是可选增强**：生产不开 6859 调试端口是常态，审核/删除仍成功，仅不热重载/不刷新列表。
+5. **备份缺口**：`stats-web\` 只存在于本地 `mdtdo` 仓库（该仓库**没有远程**），插件仓库
    `ScriptAgent4MindustryExt-mdtdo` 只镜像 `docs/` 与 `scripts/`，**不包含 stats-web**。
    即"推送一轮"不会把它推到任何远程，异地备份需要另行安排；`stats-web/web-data/` 是运行数据（已 gitignore，不打包）。
 

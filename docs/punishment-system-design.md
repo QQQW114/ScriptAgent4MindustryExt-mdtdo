@@ -641,3 +641,60 @@ punishmentReport.kts ───────────────────�
 - 配套：`playerMute.SELF_RESCUE_VOTE_SUBCOMMANDS` 增加 `quitmute`/`解除禁言`/`解禁`，新增 `isPermanentMuted(target)`；
   `coreMindustry/menu.kts` 帮助条目、`voteTutorial.kts` 教程提及。
 - **未做运行时行为验证**（按用户要求，写入未验证项）。
+
+## 2026-10-18 第二阶段改造：投票限制可检举 / 3次·6次永久封禁 / 面板与教程
+
+> 用户 2026-10-18「检举系统第二阶段」需求已实现：核心提交 `62283bf`（`playerMute.kts` +209、`punishmentReport.kts` 重构、
+> `voteOb/voteMute` 拦截），玩家可见部分提交 `764b3e6`（`playerInfoTripleTap.kts` +65/−8、`menu.kts`、`voteTutorial.kts` +20）。
+> 本节为**追加记录**，不改上文历史口径（§1 G1、§3 接口、§5 测试、§7 决策表均为第一阶段/改造前表述，以本节与当前代码为准）。
+
+### 1. 两种检举入口
+
+- **直接限制**（菜单/命令/玩家信息面板施加的禁言/强制观战/禁建）→ 仍走原弹窗（`PunishmentAppliedEvent` 监听）；
+- **投票限制成功**（`/vote ob`、`/vote mute` 通过后）→ **两段式**：先弹**理由菜单**（默认「对方恶意投票 / 对方投错了 /
+  对方判断错了」，可自定义输入）→ 再发起检举投票。`PunishmentAppliedEvent` 新增只读 `fromVote`（= `source == "vote"`），
+  弹窗/检举说明会标注「由玩家投票通过（发起者：…）」与检举理由。
+
+### 2. 新封禁规则（替换第一阶段 >3 口径）
+
+- 每次检举成功 → 禁止施罚者**直接限制权限 1 天**；
+- 若该次惩罚来自**投票限制** → **额外**禁止其**发起限制类投票（ob/mute 等）1 天**；
+- 累计成功检举 **≥3 次** → **永久禁止直接限制**；**≥6 次** → **附加永久禁止发起限制类投票**（任何来源累计）；
+- **3++/4 管理员豁免**；自救类 `quitOb`/`quitMute` **不受**「限制类投票被封禁」影响。
+- 检举投票说明文案重写：「本检举投票的发起者认为对方滥用权力，如果检举成功会禁止其一天使用权力；
+  此人已被成功检举了 N 次。」+ 完整 1 天 / 3 次 / 6 次规则。
+
+### 3. 配置与持久化
+
+- 新增配置：`wayzer.ext.playerMute.reportVoteStartBanHours=24`、`permanentDirectBanStrikes=3`、
+  `permanentVoteStartBanStrikes=6`；`wayzer.user.punishmentReport.voteReportReasonOptions=[对方恶意投票, 对方投错了, 对方判断错了]`；
+  旧 `permanentReportStrikeThreshold` **删除**（旧配置键残留无害，兼容函数映射到新阈值）。
+- 持久化：键不变 `punishment.report.bans`，值格式扩展为 `uid|untilMillis|strikeCount|voteStartUntilMillis|name`
+  （**旧 4 字段格式兼容读取**：旧记录 `voteStart=0`、strike 保留）；冷却键不变；沿用异步预加载/异步落库（游戏线程无同步 DB）。
+
+### 4. 公开 API（供面板/UI，既有函数签名未改）
+
+- `playerMute`：`strikeCount`/`canDirectRestrict`/`canStartRestrictVote`/`directRestrictBanLeftMillis`/
+  `restrictVoteStartBanLeftMillis`/`isDirectRestrictPermanentlyBanned`/`isRestrictVoteStartPermanentlyBanned`/
+  `restrictionBlockReason`/`restrictVoteStartBlockReason`/`applyReportStrikeForVote` 等；
+- `punishmentReport`：`reportPermissionStatus`/`permissionStatusText`/`punishmentRuleSummaryText` 等。
+
+### 5. 面板 / 帮助 / 教程（`764b3e6`）
+
+- `playerInfoTripleTap`：新增依赖 `punishmentReport`；查看者被检举封禁时，强制观战/禁言/禁建（及「投票强制观战」）直接限制按钮
+  替换为「（已被检举封禁）」+ 点击显示剩余/永久原因；**解救类操作不受限、3++/4 实时等级豁免**；面板统一显示目标
+  「被成功检举：N 次」与「直接限制：正常/被封禁(剩余/永久)｜限制类投票：…」。
+- `menu.kts`：`/punishreport` 帮助改新口径（两种入口、投票类需选理由、≥3 次永久禁直接限制、≥6 次永久禁限制类投票；
+  管理区补累计次数与双封禁剩余）。
+- `voteTutorial.kts`：quitob 页后新增「检举 — 对方滥用权力时怎么办」页（两种入口/理由/1天+额外1天/3次/6次/检举说明原文），
+  教程由 7 页变 **8 页**；游客流程与 deny predicate 未动。
+
+### 6. 验证与未验证
+
+- 验证（提交时）：`sa listFailed` 空、`scriptdiag` 163/159/154/失败0、根指令 160；三个脚本 Enabled；KDoc 210 文件干净。
+- fake player 实测：第 1/2/3 次 → 24h/24h/永久直接限制；投票来源第 1 次 → 双 24h；第 6 次 → 双永久；拦截生效；
+  事件 `fromVote` 正确；持久化回读（清内存后从库恢复 strike=3/6 双永久）。
+- **未验证**：真实两段式弹窗渲染/点击、真实投票限制端到端、真实封禁态面板按钮渲染/点击、真实客户端教程渲染、
+  旧 4 字段格式的真实历史数据实例（仅代码兼容分支）。
+- **维护注意**：`playerInfoTripleTap` 现依赖 `punishmentReport`；**单独重载惩罚脚本后需再重载面板脚本**
+  （`sa load wayzer/ext/playerInfoTripleTap`）。

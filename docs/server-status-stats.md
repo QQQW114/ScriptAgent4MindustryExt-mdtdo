@@ -193,6 +193,22 @@ JSON 文件；独立 Web（`stats-web/`）只读该文件做展示。两者**可
   DP 热重载默认关（详见 web-portal §6）；上传/审核/删除动作记 `web-data/audit.log`；
 - **API 一览**：公开 `GET /api/status|events|catalog|health`；认证 `POST /api/login|logout`；公开上传 `POST /api/upload`；
   Bearer 管理 `GET /api/review/list`、`POST /api/review/approve|reject`、`DELETE /api/item`；统一信封与错误码见 web-portal §4；
+- **第二期（2026-10-18，提交 `1831084`）新增能力**：
+  - **服务器日志**：`GET /api/logs|/api/logs/tail|/api/logs/download`（管理后台有「服务器日志」面板：列表/尾部预览/直链下载）。
+    白名单 `log-<数字>.txt`/`console-<时间>.log`/`last.log`/`restart-supervisor.log`；**默认需管理员登录**（Bearer 或
+    `?token=` 直链）；单文件 50MB→413、并发默认 2→429 `BUSY`+`Retry-After`、每 IP 5 次/5 分钟→429 `RATE_LIMITED`；
+    支持 Range 206/416、异步流式输出；审计 `web-data/audit.log`；
+  - **历史消息**：`GET /api/events/history` 跨「当前 + 旋转历史」倒序分页（`cursor=ts` 只返回更早、`fromTs/toTs` 闭区间、
+    `type`/`keyword`（匹配原始 JSON 行，中文需 percent-encoding）、`limit` 100/最大 200、`nextCursor` 仅 hasMore）；
+    每 IP 60 次/分钟；主文件轮转暂缺时 `/api/events` 给 `mainFileAvailable/historyAvailable/hint` 中性提示；
+  - **上行带宽**：`/api/status` 的 `data.net` = 宿主机网卡 `SentBytes` 差分（默认 10s 采样、5 分钟平均、30 点），
+    单位 **B/s**（`unit=bytes_per_second`；`avgUpBps`/`avgUpBytesPerSec`/`series`/`interface`）；口径为**宿主机网卡总上行**
+    （含游戏服/Web/系统），**游戏服与 Web 不同机时无意义**；失败降级 `available:false`；
+  - **控制台可选**：`/api/health.console`（`optional:true`，`ok/not-reachable/disabled`，500ms 探测/10s 缓存）；
+    **生产不开调试端口是常态**——控制台不可达不影响审核/删除（仍 `ok:true` + 中性 `reloadHint`/`warnings`，无 WARN/ERROR）；
+  - **健康与降噪**：`/api/health` 新增 `version=portal-1.1.0`、`console/logs/activeDownloads/bandwidth/clientDisconnects/
+    eventHistoryFiles`；客户端断开写失败静默计数（`clientDisconnects`），真异常 ERROR 限频（同签名 60s、堆栈 3 帧）；
+  - **配置**：`web-config.json` 新增 `logs`/`bandwidth`/`events` 三段（旧配置缺键自动用默认值）；前端资源版本 `20261018b`；
 - **演示模式（mock）**：URL 加 `?mock=1` 用内置假后端（`assets/mock/`，演示账号 admin/demo123，不产生真实请求），`?mock=0` 关闭；
   前端无构建、无外网 CDN，静态资源版本号 `?v=` 需手工 bump；
 - **旧配置自动迁移**：旧部署只有 `web-config.ps1`（`$WebBind/$WebPort/$WebStatsJson`）时，首次启动自动生成 `web-config.json`、

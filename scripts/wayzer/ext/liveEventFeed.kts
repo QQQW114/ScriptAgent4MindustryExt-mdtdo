@@ -41,8 +41,8 @@ import java.util.concurrent.atomic.AtomicLong
 //     一次拼接整批 JSON 行，再一次性 append 到文件（每批最多 200 条）；
 //   - 投票没有现成事件回调，用 Dispatchers.game 上的轻量轮询观察 VoteEvent.current()
 //     状态变化（只在内存读 AtomicReference，不做 IO）；不需要改 vote.lib.kt；
-//   - 单文件超过阈值（默认约 2MB）先 rename 成 live-events.1.jsonl 再新建主文件，
-//     只保留 1 份旧文件；启动时若文件已超限也会先轮转；
+//   - 单文件超过阈值（默认约 2MB）先 rename 轮转再新建主文件；旋转历史保留 keepRotatedFiles 份
+//     （默认 12，命名 live-events.1.jsonl 最新、.2 更旧…，超出删最旧）；启动时若文件已超限也会先轮转；
 //   - 写文件/轮转异常只记录限频日志并重试，绝不影响游戏主线程。
 // ============================================================================
 
@@ -55,8 +55,12 @@ private val outputPath by config.key("stats/live-events.jsonl", "输出路径（
 private val flushIntervalMillis by config.key(400L, "批量写入间隔(ms)，约 2-4 次/秒")
 private val maxQueueSize by config.key(4096, "内存队列上限，超出时丢弃最旧事件")
 private val maxTextChars by config.key(500, "text 最大字符数，超出截断")
-private val maxPlayerChars by config.key(64, "player 显示名最大字符数")
+// 玩家显示名会进入 Web 门户历史消息/实时消息展示，默认保留 128 字符（最低也按 128 处理，
+// 避免运行时持久化过小配置把长名/颜色标记截断成残缺文本）。只影响 Web 数据链路，不改游戏内名字。
+private val maxPlayerCharsRaw by config.key(256, "player 显示名最大字符数（Web 展示用，最低 128；默认 256 以容纳颜色标记/长名）")
+private val maxPlayerChars: Int get() = maxPlayerCharsRaw.coerceAtLeast(128)
 private val rotateBytes by config.key(2L * 1024L * 1024L, "单文件轮转阈值(字节)")
+private val keepRotatedFiles by config.key(12, "保留的旋转历史文件份数(默认12，live-events.1 最新)")
 private val votePollMillis by config.key(250L, "投票状态轮询间隔(ms)")
 
 private val EVENT_TYPES = setOf(
@@ -251,33 +255,51 @@ private var writerFile: File? = null
 
 private fun resolveOutputFile(): File = File(Vars.dataDirectory.file(), outputPath)
 
-// live-events.jsonl 的轮转目标是 live-events.1.jsonl（只保留 1 份旧文件）。
-private fun rotatedFileOf(file: File): File {
+// live-events.jsonl 的旋转历史文件：live-events.1.jsonl（最新）… live-events.N.jsonl（最旧）。
+private fun rotatedFileOf(file: File, index: Int): File {
     val name = file.name
     val dot = name.lastIndexOf('.')
-    val oldName = if (dot > 0) name.substring(0, dot) + ".1" + name.substring(dot) else "$name.1"
+    val oldName = if (dot > 0) name.substring(0, dot) + "." + index + name.substring(dot) else "$name.$index"
     return File(file.parentFile, oldName)
 }
 
-// 先 rename 旧文件为 .1，主文件由后续 append 新建；读取端只看主文件，避免读到半行。
+private fun moveFile(source: File, target: File): Boolean = runCatching {
+    runCatching {
+        Files.move(
+            source.toPath(), target.toPath(),
+            StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE
+        )
+    }.getOrElse {
+        Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+    true
+}.getOrDefault(false)
+
+// 先轮转历史链（.N → .N+1 … 删除最旧），再把主文件 rename 成 .1；主文件由后续 append 新建。
+// 读取端只看主文件（增量）；历史查询读 .1…N（倒序）。
 private fun rotateFile(file: File): Boolean {
     if (!file.exists() || file.length() == 0L) return false
-    val rotated = rotatedFileOf(file)
-    val moved = runCatching {
-        runCatching {
-            Files.move(
-                file.toPath(), rotated.toPath(),
-                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE
-            )
-        }.getOrElse {
-            Files.move(file.toPath(), rotated.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    val keep = keepRotatedFiles.coerceIn(1, 100)
+    val rotated = rotatedFileOf(file, 1)
+    val chainOk = runCatching {
+        // 删除超出保留份数的最旧文件
+        val oldest = rotatedFileOf(file, keep + 1)
+        if (oldest.exists()) oldest.delete()
+        // 从最旧向新移位：.keep-1 → .keep … .1 → .2
+        for (i in keep - 1 downTo 1) {
+            val src = rotatedFileOf(file, i)
+            if (src.exists()) {
+                if (!moveFile(src, rotatedFileOf(file, i + 1))) return false
+            }
         }
         true
-    }.onFailure { recordError("rotate", it) }.getOrDefault(false)
+    }.onFailure { recordError("rotateChain", it) }.getOrDefault(false)
+    if (!chainOk) return false
+    val moved = moveFile(file, rotated)
     if (moved) {
         rotationCount.incrementAndGet()
         currentFileBytes.set(0L)
-        logger.info("实时事件流已轮转：${file.name} -> ${rotated.name}")
+        logger.info("实时事件流已轮转：${file.name} -> ${rotated.name}（保留旋转历史 ${keep} 份）")
     }
     return moved
 }
@@ -423,7 +445,11 @@ onEnable {
     startWriter()
     startVoteObserver()
     val target = runCatching { resolveOutputFile().path }.getOrDefault(outputPath)
-    logger.info("实时事件流已启用：输出=$target 批量间隔=${flushIntervalMillis}ms 轮转阈值=${rotateBytes}B")
+    logger.info(
+        "实时事件流已启用：输出=$target 批量间隔=${flushIntervalMillis}ms " +
+            "轮转阈值=${rotateBytes}B 保留旋转历史=${keepRotatedFiles.coerceIn(1, 100)}份 " +
+            "玩家名上限=${maxPlayerChars}字符"
+    )
 }
 
 onDisable {
@@ -454,7 +480,7 @@ command("livefeed", "管理指令：实时事件流状态 / 手动轮转") {
                         }
                     }
                 }
-                if (rotated) reply("[green]已轮转实时事件流，旧内容保留在 live-events.1.jsonl".with())
+                if (rotated) reply("[green]已轮转实时事件流，旧内容进入旋转历史 live-events.1.jsonl（保留 ${keepRotatedFiles.coerceIn(1, 100)} 份）".with())
                 else reply("[yellow]没有可轮转的内容（文件不存在或为空）".with())
             }
 
@@ -466,7 +492,8 @@ command("livefeed", "管理指令：实时事件流状态 / 手动轮转") {
                     (
                         "[gray]状态：[white]${if (writerReady) "运行中" else "初始化中"}" +
                             "[gray]  文件大小：[white]${currentFileBytes.get()} B" +
-                            "[gray]  轮转阈值：[white]${rotateBytes} B"
+                            "[gray]  轮转阈值：[white]${rotateBytes} B" +
+                            "[gray]  旋转历史保留：[white]${keepRotatedFiles.coerceIn(1, 100)} 份"
                         ).with()
                 )
                 reply(

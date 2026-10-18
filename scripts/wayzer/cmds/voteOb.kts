@@ -243,6 +243,15 @@ suspend fun startObVote(starter: Player, target: Player, reason: String): Boolea
     val starterName = starter.plainName()
     val targetUids = PlayerData[target].ids
 
+    // 被检举封禁“发起限制类投票”时拦截（2026-10-18 用户口径：投票类限制被检举成功额外封此权限）。
+    // 自救类投票（quitOb）走独立入口，不受这里影响。
+    if (!with(playerMute) { isAdminTierLevel(starterLevel) }) {
+        with(playerMute) { restrictVoteStartBlockReason(starterUids) }?.let { blockReason ->
+            starter.sendMessage(blockReason)
+            return false
+        }
+    }
+
     // 惩罚类投票发起前检查：检举封禁 + (施罚者,目标) 24h 冷却（用户口径 Q2/Q5，投票类同样受约束 Q4）。
     val decision = with(playerMute) {
         preparePunishment(starterUids, starterLevel, targetUids, null, false)

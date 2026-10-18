@@ -5,6 +5,7 @@
 @file:Depends("wayzer/ext/playerRecognition", "玩家认可")
 @file:Depends("wayzer/ext/playerRandomForm", "随机形态")
 @file:Depends("wayzer/ext/playerMute", "玩家禁言")
+@file:Depends("wayzer/user/punishmentReport", "检举封禁状态查询/显示")
 @file:Depends("wayzer/ext/playerBuildBan", "玩家禁建")
 @file:Depends("wayzer/user/trustPoint", "MDC")
 @file:Depends("wayzer/user/trustPromotion", "信任等级晋升检测")
@@ -93,6 +94,7 @@ private val playerReputation = contextScript<PlayerReputation>()
 private val playerRecognition = contextScript<PlayerRecognition>()
 private val playerRandomForm = contextScript<PlayerRandomForm>()
 private val playerMute = contextScript<PlayerMute>()
+private val punishmentReport = contextScript<wayzer.user.PunishmentReport>()
 private val playerBuildBan = contextScript<PlayerBuildBan>()
 private val trustPoint = contextScript<wayzer.user.TrustPoint>()
 private val trustPromotion = contextScript<wayzer.user.TrustPromotion>()
@@ -584,6 +586,23 @@ private suspend fun banIpFlow(viewer: Player, targetName: String, ip: String, da
     viewer.sendMessage("[green]已封禁 [white]$targetName[green] 的IP：[white]$bannedIp [yellow]${minutes}分钟[green]。")
 }
 
+/**
+ * 目标玩家“被成功检举”状态（2026-10-18 检举系统改造，玩家信息面板显示用）。
+ *
+ * 返回两行：累计被成功检举次数 + 直接限制/发起限制类投票的封禁状态（正常 / 剩余时间 / 永久）。
+ * 走 punishmentReport.reportPermissionStatus -> playerMute 内存缓存：O(1)、无 DB/IO；
+ * 查询异常时降级为一行“查询失败”，不影响面板其它内容。
+ */
+private fun targetReportStatusText(target: Player): String = runCatching {
+    val status = with(punishmentReport) { reportPermissionStatus(target) }
+    val directText = if (status.canDirectRestrict) "[green]正常"
+    else "[red]被封禁（${status.directBanText}）"
+    val voteText = if (status.canStartRestrictVote) "[green]正常"
+    else "[red]被封禁（${status.voteStartBanText}）"
+    "[cyan]被成功检举：[yellow]${status.strikeCount}[white] 次\n" +
+            "[cyan]直接限制：[white]$directText [cyan]｜限制类投票：[white]$voteText"
+}.getOrElse { "[gray]检举状态查询失败" }
+
 private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     if (!allowOpenInfoPanel(viewer)) return
     val targetUid = playerUid(target)
@@ -623,8 +642,22 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
     val canBuildBanTarget = !isSelf && with(playerBuildBan) { canManageBuildBan(viewer, target) }
     val targetBuildBanned = canBuildBanTarget && with(playerBuildBan) { isBuildBanned(target) }
 
+    // ===== 检举封禁对“查看者”的限制（2026-10-18 检举系统改造）=====
+    // 规则真源在 wayzer/ext/playerMute.kts：被成功检举 → 1 天内禁止直接限制他人（禁言/强制观战/禁建）；
+    // 来自投票限制的检举成功还会额外禁止发起限制类投票（/vote ob、/vote mute）。
+    // 3++/4 为管理员层级，按实时等级豁免（与核心 preparePunishment 一致）；解救类操作（解除禁言/解禁/解除观战）不受限。
+    // 全部为内存查询（O(1)），状态未加载时核心按“未封禁”放行；不在菜单渲染路径做 DB/IO。
+    val viewerPunishExempt = viewerOrder >= order3PlusPlus
+    val viewerDirectRestrictBlockReason =
+        if (viewerPunishExempt) null else with(playerMute) { restrictionBlockReason(viewer) }
+    val viewerRestrictVoteBlockReason =
+        if (viewerPunishExempt) null else with(playerMute) { restrictVoteStartBlockReason(viewer) }
+    val viewerCanDirectRestrict = viewerDirectRestrictBlockReason == null
+    val viewerCanStartRestrictVote = viewerRestrictVoteBlockReason == null
+    val targetReportStatus = targetReportStatusText(target)
+
     MenuBuilder<Unit>("玩家信息") {
-        msg = profile?.let {
+        msg = (profile?.let {
             """
                 |[cyan]名字：[white]${it.name}
                 |[cyan]称号：[white]${it.title}
@@ -644,7 +677,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
         } ?: """
             |[cyan]名字：[white]$targetDisplayName
             |[gray]玩家资料统计显示已被管理员关闭；交互与管理按钮仍可正常使用。
-        """.trimMargin()
+        """.trimMargin()) + "\n" + targetReportStatus
 
         if (isSelf) {
             // 2026-09-19（最小口径）：跳转前记一下父页，目标菜单里各加一行"返回"就能回到本面板
@@ -678,9 +711,17 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                     val reason = askReason(viewer, "投票踢出理由", target) ?: return@option
                     with(voteKick) { startKickVote(viewer, target, reason) }
                 }
-                option("投票强制观战此玩家") {
-                    val reason = askReason(viewer, "投票强制观战理由", target) ?: return@option
-                    with(voteOb) { startObVote(viewer, target, reason) }
+                if (viewerCanStartRestrictVote) {
+                    option("投票强制观战此玩家") {
+                        val reason = askReason(viewer, "投票强制观战理由", target) ?: return@option
+                        with(voteOb) { startObVote(viewer, target, reason) }
+                    }
+                } else {
+                    // 查看者被检举封禁“发起限制类投票”：保留按钮位并标注不可用，点击给出剩余时间/永久原因。
+                    // 判断依据 = playerMute.canStartRestrictVote（voteOb.startObVote 内部同样拦截）；投票踢出（/vote kick）不属于限制类投票，不受影响。
+                    option("投票强制观战此玩家（已被检举封禁）") {
+                        viewer.sendMessage(viewerRestrictVoteBlockReason ?: "[red]你当前被禁止发起限制类投票。")
+                    }
                 }
             }
             if ((!targetForceOb && canDirectForceOb) || canReleaseForceOb) {
@@ -700,7 +741,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                         else
                             viewer.sendMessage("[yellow]目标当前不在你可解除的强制观战状态")
                     }
-                } else {
+                } else if (viewerCanDirectRestrict) {
                     option("强制观战此玩家") {
                         var currentViewerUid = playerUid(viewer)
                         var currentViewerOrder = with(trustLevel) { getTrustLevelOrder(currentViewerUid, viewer) }
@@ -748,6 +789,12 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                         with(voteOb) { forceObPlayer(target, reason, viewer, directOwnerUid) }
                         if (directOwnerUid != null) with(voteOb) { markDirectForceObCooldown(directOwnerUid) }
                     }
+                } else {
+                    // 查看者被检举封禁“直接限制”权限：保留按钮位并标注不可用，点击时给出剩余时间/永久原因。
+                    // 判断依据 = playerMute.canDirectRestrict（核心 forceObPlayer 应用前同样会拦截）。
+                    option("强制观战此玩家（已被检举封禁）") {
+                        viewer.sendMessage(viewerDirectRestrictBlockReason ?: "[red]你当前被禁止直接限制他人。")
+                    }
                 }
             }
             if (canDirectRestrictTarget) {
@@ -761,7 +808,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                         if (!with(playerMute) { unmutePlayer(target, viewer) })
                             viewer.sendMessage("[yellow]目标当前未被禁言")
                     }
-                } else {
+                } else if (viewerCanDirectRestrict) {
                     option("禁言此玩家") {
                         val duration = askModerationDuration(viewer, "禁言时长", target.plainName()) ?: return@option
                         val reason = askReason(viewer, "禁言理由", target) ?: return@option
@@ -771,6 +818,11 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                             with(playerMute) { mutePlayerTemporary(target, duration.minutes, reason, viewer) }
                         }
                         if (!success) viewer.sendMessage("[yellow]操作者权限或目标等级已变化，本次禁言已取消。")
+                    }
+                } else {
+                    // 查看者被检举封禁“直接限制”权限（禁言留空/带时间同样受限）；点击时给出剩余时间/永久原因。
+                    option("禁言此玩家（已被检举封禁）") {
+                        viewer.sendMessage(viewerDirectRestrictBlockReason ?: "[red]你当前被禁止直接限制他人。")
                     }
                 }
             }
@@ -785,7 +837,7 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                         if (!with(playerBuildBan) { enableBuild(target, viewer) })
                             viewer.sendMessage("[yellow]目标当前未被禁止建造/拆除")
                     }
-                } else {
+                } else if (viewerCanDirectRestrict) {
                     option("禁止ta建造") {
                         val duration = askModerationDuration(viewer, "禁止建造时长", target.plainName()) ?: return@option
                         val reason = askReason(viewer, "禁止建造理由", target) ?: return@option
@@ -795,6 +847,11 @@ private suspend fun showPlayerInfo(viewer: Player, target: Player) {
                             with(playerBuildBan) { disableBuildTemporary(target, duration.minutes, reason, viewer) }
                         }
                         if (!success) viewer.sendMessage("[yellow]操作者权限或目标等级已变化，本次禁建已取消。")
+                    }
+                } else {
+                    // 查看者被检举封禁“直接限制”权限（禁建留空/带时间同样受限）；点击时给出剩余时间/永久原因。
+                    option("禁止ta建造（已被检举封禁）") {
+                        viewer.sendMessage(viewerDirectRestrictBlockReason ?: "[red]你当前被禁止直接限制他人。")
                     }
                 }
             }
