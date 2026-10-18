@@ -43,6 +43,27 @@
 6. 客户端侧：生产若仍在 v159.7/B485，同步到 **v160.7/B509** 是**跨大版本跳跃**，玩家需要兼容的客户端（`allowCustomClients=true` 已开）；
    首次进服会重新协商资产（DP/CP 与音频会被重新下载）属正常现象；B509 的真实客户端观感/内容同步**尚未验证**（见 current-issues.md）。
 
+### 3.1 用自动更新器代替手工复制脚本（推荐）
+
+仓库里已带**独立更新器项目** `updater/`（插件仓库根目录同名目录，可整目录复制到生产任意位置）：
+
+| 脚本 | 作用 | 要点 |
+|---|---|---|
+| `update-plugins.bat` | 严格镜像 `scripts/**` → 生产 `config\scripts` | **必须先关闭服务器**；默认保护 `data\`、`external-cp\`、`cache\`；仓库已删除的脚本会同步删除；更新前自动备份，可 `-Rollback` |
+| `update-web.bat` | 严格镜像 `stats-web/**` → 生产 Web 目录 | 不用停游戏服；保护 `web-data\`、`web-config.json`、`web-config.ps1`；更新后**重启 Web 进程** |
+| `update-plugins-clear-cache.bat` | 先**显式清空**脚本编译缓存，再严格镜像 `scripts/**` | 同样必须停服；需要强制重编译时用 |
+
+- 部署：复制整个 `updater\` 到生产（如 `E:\mdt-updater\`），改 `config.json` 里的
+  `serverScriptsPath` / `statsWebPath` / `backupPath` 三个绝对路径即可；零 git、无需改服务器文件；
+- 推荐流程：`-DryRun` 预览变更清单 → 关闭服务器 → 正式更新 → 启动服务器检查脚本加载；
+- 支持 `-Proxy http://127.0.0.1:7897` / `-ProxyPort 7897`（也读环境变量 `HTTPS_PROXY`）；
+- Web 与插件用同一个仓库 zip，更新器只取 `scripts/` 与 `stats-web/`，忽略 `docs/` 等；
+  更新器自身也在插件仓库根 `updater/`，可整目录复制新版升级；
+- **生产可用 updater 代替本清单第 1 节「脚本代码」+ 第 3 节 robocopy 的手工复制流程**
+  （首次仍建议对照 `-DryRun` 输出核对删除清单；自定义脚本要加入 `protectedServerFiles`）。
+- 完整用法/参数/配置/FAQ 见 [`updater/README.md`](../updater/README.md)。
+
+---
 ## 4. 「例程集」与变更声明惯例（2026-09-13 与用户约定）
 
 **例程集**（日常同步只需这些，无需额外声明）：
