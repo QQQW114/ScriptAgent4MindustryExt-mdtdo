@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>Mindustry 颜色渲染自测 · MDT DO 门户</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234da3ff'/%3E%3Cstop offset='.55' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%23ff7bc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23141925'/%3E%3Cpath d='M8 23V10l8 8 8-8v13' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../css/portal.css?v=20261018b">
+<style>
+  body { padding: 24px 16px 60px; }
+  .test-wrap { max-width: 1080px; margin: 0 auto; }
+  .summary-bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 14px 0 20px; }
+  .big-num { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .pass { color: var(--green); }
+  .fail { color: var(--red); }
+  table.test { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.test th, table.test td { border-bottom: 1px solid var(--line-soft); padding: 8px 10px; vertical-align: top; text-align: left; }
+  table.test th { color: var(--muted); font-weight: 500; background: rgba(255,255,255,.025); position: sticky; top: 0; }
+  td.ok { color: var(--green); white-space: nowrap; }
+  td.bad { color: var(--red); white-space: nowrap; }
+  code.cell { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; color: #c9d3e6; }
+  .xss-box { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 10px; line-height: 2; font-size: 13.5px; }
+  .xss-box .tag { color: var(--dim); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="test-wrap">
+  <h1 style="font-size:24px;margin:0 0 6px">Mindustry 颜色标记渲染自测</h1>
+  <p class="muted small" style="margin:0 0 14px">
+    覆盖颜色解析（命名色 / 十六进制 / 出栈 / 转义 / 未知标记）与 XSS 防护（<b>先 HTML 转义，再包颜色 span</b>）。
+    本页为开发自测页，不参与正式页面导航。
+  </p>
+  <div class="summary-bar">
+    <span class="big-num" id="summaryNum">--</span>
+    <span class="muted" id="summaryText">正在运行…</span>
+    <span class="pill" id="domCheck">DOM 检查：--</span>
+    <a class="btn small ghost" href="../../index.html">← 返回门户首页</a>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="table-wrap" style="border:none">
+      <table class="test">
+        <thead><tr><th style="width:34px">#</th><th style="width:52px">结果</th><th style="width:190px">用例</th><th>输入</th><th>渲染输出（安全 HTML）</th></tr></thead>
+        <tbody id="testBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2 style="font-size:17px;margin:26px 0 8px">XSS 实弹渲染（应只看到文本，不应弹窗/加载图片）</h2>
+  <div class="xss-box" id="xssSandbox"></div>
+  <p class="dim small">如果上面没有出现图片或弹窗，且标签以文本形式显示，说明转义有效。</p>
+
+  <h2 style="font-size:17px;margin:26px 0 8px">颜色名速查</h2>
+  <div class="xss-box" id="colorPreview"></div>
+</div>
+
+<script src="../js/util.js?v=20261018b"></script>
+<script src="../js/markup.js?v=20261018b"></script>
+<script src="markup-selftest.js?v=20261018b"></script>
+</body>
+</html>

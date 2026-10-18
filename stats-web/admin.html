@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0c12">
+<meta name="description" content="MDT DO 服务器门户管理后台：审阅 DP / 地图投稿、管理现有列表。">
+<meta name="robots" content="noindex,nofollow">
+<title>管理后台 · MDT DO 服务器门户</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234da3ff'/%3E%3Cstop offset='.55' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%23ff7bc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23141925'/%3E%3Cpath d='M8 23V10l8 8 8-8v13' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/css/portal.css?v=20261018b">
+</head>
+<body data-page="admin">
+
+<div class="fx-aurora" aria-hidden="true"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
+<div class="fx-particles" id="particles" aria-hidden="true"></div>
+
+<header class="nav">
+  <a class="brand" href="index.html" aria-label="MDT DO 门户首页">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none"><defs><linearGradient id="bm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset=".55" stop-color="#8b7bff"/><stop offset="1" stop-color="#ff7bc8"/></linearGradient></defs><path d="M6 25V7l10 10L26 7v18" stroke="url(#bm)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="brand-text"><b>MDT DO</b><small>MINDUSTRY SERVER PORTAL</small></span>
+  </a>
+  <nav class="nav-links" aria-label="主导航">
+    <a href="index.html">首页</a>
+    <a href="upload.html">投稿 DP / 地图</a>
+    <a href="admin.html" class="active">管理后台</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <!-- ============================== 登录 ============================== -->
+  <section class="login-wrap" id="loginView">
+    <div class="card login-card rise">
+      <h1>管理员登录</h1>
+      <p class="login-sub">登录后可审阅 DP / 地图投稿、通过或拒绝、移除现有条目。<br>
+        token 保存在当前浏览器标签页的 sessionStorage 中，同一账号支持多 IP 同时登录。</p>
+      <div class="notice notice-error" id="loginError" hidden></div>
+      <form id="loginForm" novalidate>
+        <div class="form-field">
+          <label for="loginUser">管理员账号 <span class="req">*</span></label>
+          <input class="input" id="loginUser" name="username" autocomplete="username" placeholder="admin" required>
+        </div>
+        <div class="form-field">
+          <label for="loginPass">密码 <span class="req">*</span></label>
+          <input class="input" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+        </div>
+        <div class="form-error" id="loginFormError" style="margin-bottom:10px"></div>
+        <button type="submit" class="btn primary big" id="loginBtn" style="width:100%">登录</button>
+      </form>
+      <div class="login-hint">
+        管理员账号/密码在 <code>stats-web/web-config.json</code> 的 <code>admin</code> 节点配置（支持明文 password 或 passwordHash），修改后重启门户服务生效。
+        登录失败次数过多会触发临时限流。
+        <div id="mockLoginHint" hidden style="margin-top:8px;color:var(--yellow)">演示模式可用账号：<code>admin</code> / 密码 <code>demo123</code></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 后台 ============================== -->
+  <section id="dashboardView" hidden>
+    <div class="card rise" style="margin-bottom:18px">
+      <div class="admin-top">
+        <div class="who">
+          <span class="avatar" aria-hidden="true">👤</span>
+          <span>管理员 <b id="adminName">--</b></span>
+        </div>
+        <span class="pill on"><span class="pdot"></span>已登录</span>
+        <span class="pill" id="consolePill" title="游戏服控制台（socketInput）可达性：不可达时审核通过后的 DP 热重载 / 地图列表刷新会静默失败">控制台：--</span>
+        <span class="token-line" id="tokenLine">登录有效期：--</span>
+        <div class="right">
+          <button type="button" class="btn small ghost" id="mockConsoleToggle" hidden>模拟控制台不可达</button>
+          <button type="button" class="btn small" id="adminRefreshBtn">↻ 刷新数据</button>
+          <button type="button" class="btn small danger" id="logoutBtn">退出登录</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="notice notice-error" id="adminError" hidden></div>
+
+    <div class="grid-2">
+      <!-- 待审队列 -->
+      <div class="card rise" style="grid-column:1/-1">
+        <div class="card-head">
+          <h3><span class="dot yellow"></span>待审投稿</h3>
+          <span class="pill" id="reviewCountPill">--</span>
+          <div class="right">
+            <div class="seg" id="reviewKindSeg" role="group" aria-label="按类型筛选">
+              <button type="button" data-kind="" class="active">全部</button>
+              <button type="button" data-kind="dp">DP</button>
+              <button type="button" data-kind="map">地图</button>
+            </div>
+            <button type="button" class="btn small ghost" id="reviewRefreshBtn">↻</button>
+          </div>
+        </div>
+        <div class="notice notice-warn" id="consoleWarning" hidden style="margin-bottom:12px">
+          <div class="notice-title">⚠ 游戏控制台不可达</div>
+          <div class="notice-hint" id="consoleWarningText"></div>
+        </div>
+        <div class="queue-box" style="margin-bottom:14px">
+          <div class="queue-head" id="reviewQueueHead">正在读取队列…</div>
+          <div class="progress"><i id="reviewQueueBar" style="width:0%"></i></div>
+          <div class="queue-split" id="reviewQueueSplit"></div>
+        </div>
+        <div id="reviewList">
+          <div class="loading-block"><span class="spinner"></span>正在读取待审列表…</div>
+        </div>
+      </div>
+
+      <!-- 现有目录 -->
+      <div class="card rise" style="grid-column:1/-1">
+        <div class="card-head">
+          <h3><span class="dot"></span>现有条目</h3>
+          <div class="right">
+            <div class="seg" id="catalogSeg" role="tablist" aria-label="目录类型">
+              <button type="button" class="active" data-cat="dp" role="tab" aria-selected="true">现有 DP</button>
+              <button type="button" data-cat="maps" role="tab" aria-selected="false">现有地图</button>
+            </div>
+            <button type="button" class="btn small ghost" id="catalogRefreshBtn">↻</button>
+          </div>
+        </div>
+        <div id="catalogBody">
+          <div class="loading-block"><span class="spinner"></span>正在读取目录…</div>
+        </div>
+        <div class="form-hint" style="margin-top:10px">
+          移除操作不可撤销；勾选「同时尝试从游戏内卸载」会调用服务器控制台（后端配置 <code>reload.unloadOnRemove</code> 默认关闭）。
+        </div>
+      </div>
+
+      <!-- 服务器日志 -->
+      <div class="card rise" style="grid-column:1/-1">
+        <div class="card-head">
+          <h3><span class="dot cyan"></span>服务器日志</h3>
+          <span class="pill" id="logsPill">--</span>
+          <div class="right">
+            <span class="dim small" id="logsUpdatedAt"></span>
+            <button type="button" class="btn small ghost" id="logsRefreshBtn">↻ 刷新</button>
+          </div>
+        </div>
+        <div class="form-hint" style="margin-bottom:10px">
+          列表 / 尾部预览 / 下载默认需要管理员登录（<code>logs.requireLogin=true</code>）。
+          接口有限流：日志访问每 IP 5 次 / 5 分钟、同时下载上限 2 个（超出返回 <code>BUSY</code>）；
+          单文件上限 50MB。下载按钮直接请求下载接口（不把整个日志读进页面内存），预览只取尾部 200 行纯文本并已转义。
+        </div>
+        <div class="notice notice-warn" id="logsMockTools" hidden style="margin:0 0 10px">
+          <div class="notice-title">演示数据工具（mock）</div>
+          <div class="notice-hint">
+            模拟日志接口错误，验证前端人话提示：
+            <span class="mock-inline-actions">
+              <button type="button" class="btn small" id="mockLogsBusyBtn">模拟 BUSY（并发满）</button>
+              <button type="button" class="btn small" id="mockLogsRateBtn">模拟 RATE_LIMITED</button>
+            </span>
+          </div>
+        </div>
+        <div class="notice notice-error" id="logsError" hidden></div>
+        <div id="logsList"><div class="loading-block"><span class="spinner"></span>正在读取日志列表…</div></div>
+      </div>
+
+      <!-- 最近已处理 -->
+      <div class="card rise" style="grid-column:1/-1">
+        <div class="card-head">
+          <h3><span class="dot purple"></span>最近处理记录</h3>
+          <span class="right dim small" id="historyCount">--</span>
+        </div>
+        <div id="historyList"><div class="loading-block"><span class="spinner"></span>正在读取处理记录…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="dim">
+      管理操作会写入后端审计日志（<code>stats-web/web-data/audit.log</code>）；审核通过的文件会被移动到服务器对应目录，
+      通过 DP 时可选触发热重载（失败只记录日志，不影响审核状态）。<br>
+      安全提示：本页面为纯静态前端，真正的鉴权与文件校验全部在后端完成；请勿在公共电脑上保持登录。
+    </div>
+  </footer>
+</main>
+
+<div id="toastRoot" class="toast-root" aria-live="polite"></div>
+
+<script src="assets/js/util.js?v=20261018b"></script>
+<script src="assets/js/site-config.js?v=20261018b"></script>
+<script src="assets/js/markup.js?v=20261018b"></script>
+<script src="assets/js/api.js?v=20261018b"></script>
+<script src="assets/js/ui.js?v=20261018b"></script>
+<script src="assets/js/admin.js?v=20261018b"></script>
+</body>
+</html>

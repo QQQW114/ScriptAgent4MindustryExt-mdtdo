@@ -1,0 +1,105 @@
+﻿{
+  "_comment": "MDT DO 服务器门户 Web 配置。修改后重启 start-web.ps1 生效。相对路径以 stats-web 目录为基准；命令行参数 -Bind/-Port 可临时覆盖。详细说明见 docs/web-portal.md。",
+  "_securityWarning": "安全提醒：默认管理员账号/密码与 session.secret 仅供首次启动！对外提供服务前必须修改 admin.password（或改用 admin.passwordHash）与 session.secret。默认密码启动时会持续打印红色警告。",
+  "_docs": {
+    "生成密码哈希": "pwsh -File start-web.ps1 -GenPasswordHash \"你的新密码\"（Windows PowerShell 也可）",
+    "公网监听": "先以管理员执行 start-web.ps1 -InstallAcl，再设置 bind=0.0.0.0，最后放行防火墙端口",
+    "事件流": "eventsJsonl 由游戏侧 wayzer/ext/liveEventFeed.kts 写入；文件不存在时 /api/events 返回空列表；历史查询跨 live-events.N.jsonl 旋转文件",
+    "日志下载": "GET /api/logs、/api/logs/download?name=…（支持 ?token= 查询参数以便浏览器直接下载）、/api/logs/tail；日志含敏感信息，默认需管理员登录",
+    "上行带宽": "GET /api/status 的 data.net，单位 B/s（字节每秒），是宿主机网卡上行总量"
+  },
+
+  "bind": "127.0.0.1",
+  "port": 8090,
+
+  "statsJson": "../mdtserver/config/stats/server-status.json",
+  "eventsJsonl": "../mdtserver/config/stats/live-events.jsonl",
+  "dataDir": "web-data",
+
+  "admin": {
+    "username": "admin",
+    "password": "ChangeMe_123456",
+    "passwordHash": "",
+    "sessionHours": 12
+  },
+
+  "session": {
+    "secret": "CHANGE_ME_portal_session_secret_please_edit"
+  },
+
+  "upload": {
+    "maxFileBytes": 10485760,
+    "maxRequestBytes": 12582912,
+    "queueLimitPerKind": 10,
+    "historyLimit": 200,
+    "allowedDpExtensions": [".zip", ".json", ".hjson", ".json5"],
+    "allowedMapExtensions": [".msav"],
+    "titleMaxChars": 200,
+    "authorMaxChars": 100,
+    "descMaxChars": 4000,
+    "deleteRejectedPayloads": true
+  },
+
+  "rateLimit": {
+    "loginFailuresPerWindow": 5,
+    "loginWindowMinutes": 5,
+    "uploadsPerWindow": 5,
+    "uploadWindowMinutes": 10
+  },
+
+  "dirs": {
+    "dp": "../mdtserver/config/scripts/external-cp",
+    "maps": "../mdtserver/config/maps"
+  },
+
+  "logs": {
+    "_comment": "服务器日志列表/下载/尾部预览。日志含玩家 IP/聊天等敏感内容，requireLogin 默认 true（需管理员登录；改为 false 即公开，风险自负）。maxConcurrentDownloads=同时下载数上限（超出 429 BUSY）；rateLimitPerWindow/rateWindowMinutes=每 IP 限频（超出 429 RATE_LIMITED）；maxFileBytes=单文件下载上限（默认 50MB）；tailMaxLines/tailMaxBytes=尾部预览的行数/字节上限。支持 ?token= 查询参数（浏览器直接下载无法带 Authorization 头）。",
+    "enabled": true,
+    "requireLogin": true,
+    "dir": "../mdtserver/config/logs",
+    "maxConcurrentDownloads": 2,
+    "rateLimitPerWindow": 5,
+    "rateWindowMinutes": 5,
+    "maxFileBytes": 52428800,
+    "tailMaxLines": 2000,
+    "tailMaxBytes": 2097152
+  },
+
+  "bandwidth": {
+    "_comment": "上行带宽采样：Windows 网卡累计发送字节差分/时间，单位 B/s（字节每秒），只代表宿主机网卡上行总量（含游戏服/Web/系统流量），不是纯游戏流量；游戏服与 Web 不同机时无意义。interface=auto 时自动选默认路由网卡，也可填网卡名；失败自动降级 available:false，不影响其它接口。",
+    "enabled": true,
+    "interface": "auto",
+    "intervalSeconds": 10,
+    "windowMinutes": 5,
+    "seriesPoints": 30
+  },
+
+  "events": {
+    "_comment": "历史事件查询（第二期）：跨 live-events.jsonl + live-events.N.jsonl（旋转历史）倒序分页。historyMaxFiles=最多读取的文件数（建议 = liveEventFeed.keepRotatedFiles + 1，默认 13）；historyCacheMaxBytes=行文本缓存上限（文件变化失效）；historyRateLimitPerMinute=每 IP 每分钟查询上限；historyMaxKeywordChars=keyword 最大长度。",
+    "historyMaxFiles": 13,
+    "historyCacheMaxBytes": 8388608,
+    "historyRateLimitPerMinute": 60,
+    "historyMaxKeywordChars": 100
+  },
+
+  "console": {
+    "_comment": "游戏控制台桥是【可选增强】：server.properties 的 socketInput=true 时，审核通过后可热重载 DP / 刷新地图列表；连不上或 enabled=false 属正常情况（生产默认不开调试端口），审核依旧成功（文件已落盘），只是要游戏服重启或手动操作后生效——/api/health 的 console.optional=true 表示这一点。",
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 6859,
+    "waitSeconds": 30
+  },
+
+  "reload": {
+    "_comment": "dpOnApprove=审核通过 DP 后是否自动 externalcp load（默认关，热重载会重建内容并同步世界，建议低人数时手动/显式传 reload=true）；mapListOnApprove=审核通过地图后是否自动执行控制台 maps（触发 maps.reload()，默认开，安全）；mapListOnRemove=删除地图后自动刷新列表；unloadOnRemove=删除 DP 后是否尝试 externalcp unload",
+    "dpOnApprove": false,
+    "mapListOnApprove": true,
+    "mapListOnRemove": true,
+    "unloadOnRemove": false
+  },
+
+  "security": {
+    "trustProxyHeaders": false,
+    "maxPendingConsoleCommands": 8
+  }
+}

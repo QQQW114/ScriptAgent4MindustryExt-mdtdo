@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0c12">
+<meta name="description" content="MDT DO — Mindustry 开源游戏服务器门户：服务器状态、实时消息、DP 与地图投稿。">
+<title>MDT DO 服务器门户</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234da3ff'/%3E%3Cstop offset='.55' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%23ff7bc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23141925'/%3E%3Cpath d='M8 23V10l8 8 8-8v13' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/css/portal.css?v=20261018b">
+</head>
+<body data-page="home">
+
+<!-- 背景特效（纯 CSS，尊重 prefers-reduced-motion） -->
+<div class="fx-aurora" aria-hidden="true"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
+<div class="fx-particles" id="particles" aria-hidden="true"></div>
+
+<header class="nav">
+  <a class="brand" href="index.html" aria-label="MDT DO 门户首页">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none"><defs><linearGradient id="bm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset=".55" stop-color="#8b7bff"/><stop offset="1" stop-color="#ff7bc8"/></linearGradient></defs><path d="M6 25V7l10 10L26 7v18" stroke="url(#bm)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="brand-text"><b>MDT DO</b><small>MINDUSTRY SERVER PORTAL</small></span>
+  </a>
+  <nav class="nav-links" aria-label="主导航">
+    <a href="index.html" class="active">首页</a>
+    <a href="upload.html">投稿 DP / 地图</a>
+    <a href="admin.html">管理后台</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <!-- ============================= 欢迎区 ============================= -->
+  <section class="hero">
+    <div class="hero-copy rise">
+      <div class="hero-pills">
+        <span class="pill">MindustryX v160.7</span>
+      </div>
+      <h1 class="hero-title">MDT <span class="thin">DO</span></h1>
+      <div class="motd" id="motd">正在读取服务器介绍…</div>
+      <div class="daily-quote" id="dailyQuote" aria-live="polite">
+        <span class="dq-icon">“</span>
+        <span class="dq-text" id="dqText">正在加载每日一言…</span>
+        <span class="dq-meta"><span class="dq-from" id="dqFrom"></span><span class="dq-cat" id="dqCat"></span></span>
+      </div>
+      <div class="hero-actions">
+        <a class="btn big" href="upload.html">投稿 DP / 地图</a>
+      </div>
+    </div>
+
+    <aside class="hero-panel card rise rise-2" aria-label="服务器实时状态">
+      <div class="card-head">
+        <h3><span class="dot green" id="heroDot"></span>服务器状态</h3>
+        <span class="plan-state"><span id="serverStatePill" class="pill"><span class="pdot"></span>连接中…</span></span>
+      </div>
+      <div>
+        <div class="online-big">
+          <span class="num" id="onlineNum">--</span>
+          <span class="cap">/ <b id="maxOnline">16</b> 人在线<br><span class="dim small" id="onlineHint">正在读取服务器状态…</span></span>
+        </div>
+        <div class="hero-mini" style="margin-top:16px">
+          <div class="mini-stat"><div class="k">🗺️ 当前地图</div><div class="v" id="heroMap">--</div></div>
+          <div class="mini-stat"><div class="k">🌊 波次</div><div class="v" id="heroWave">--</div></div>
+          <div class="mini-stat"><div class="k">⚡ TPS</div><div class="v" id="heroTps">--</div></div>
+          <div class="mini-stat"><div class="k">⏱️ 运行时长</div><div class="v" id="heroUptime">--</div></div>
+        </div>
+      </div>
+      <div class="hero-updated">
+        <span id="heroUpdated">数据更新时间：--</span>
+        <span id="heroSource" class="pill small" hidden></span>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ============================= 状态卡 ============================= -->
+  <section class="section" id="statusSection">
+    <div class="section-head">
+      <h2>服务器状态</h2>
+      <span class="sub">每 30 秒自动刷新</span>
+      <div class="right">
+        <span id="statusUpdatedAt" class="dim small">--</span>
+        <button type="button" class="btn small ghost" id="refreshStatusBtn">↻ 刷新</button>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card rise">
+        <div class="k"><span class="emoji">🟢</span>在线玩家</div>
+        <div class="v green" id="statOnline">--</div>
+        <div class="s" id="statOnlineSub">上限 --</div>
+        <div class="bar"><i id="statOnlineBar" style="width:0%"></i></div>
+      </div>
+      <div class="stat-card rise rise-1">
+        <div class="k"><span class="emoji">🗺️</span>当前地图</div>
+        <div class="v small" id="statMap">--</div>
+        <div class="s" id="statMode">模式 --</div>
+      </div>
+      <div class="stat-card rise rise-1">
+        <div class="k"><span class="emoji">🌊</span>当前波次</div>
+        <div class="v yellow" id="statWave">--</div>
+        <div class="s">生存模式波次</div>
+      </div>
+      <div class="stat-card rise rise-2">
+        <div class="k"><span class="emoji">⚡</span>服务器 TPS</div>
+        <div class="v" id="statTps">--</div>
+        <div class="s" id="statTpsSub">目标 60</div>
+        <div class="bar"><i id="statTpsBar" style="width:0%"></i></div>
+      </div>
+      <div class="stat-card rise rise-2">
+        <div class="k"><span class="emoji">⏱️</span>运行时长</div>
+        <div class="v small blue" id="statUptime">--</div>
+        <div class="s" id="statUptimeSub">本次启动以来</div>
+      </div>
+      <div class="stat-card rise rise-2">
+        <div class="k"><span class="emoji">📶</span>上行带宽</div>
+        <div class="v small green" id="statNet">--</div>
+        <div class="s" id="statNetSub">宿主机网卡上行 · 窗口 -- 分钟</div>
+        <div class="net-spark" id="netSpark"></div>
+      </div>
+      <div class="stat-card rise rise-3">
+        <div class="k"><span class="emoji">📊</span>统计状态</div>
+        <div class="v small" id="statEnabled">--</div>
+        <div class="s" id="statEnabledSub">数据来源 --</div>
+      </div>
+    </div>
+    <div class="notice notice-error" id="statusError" hidden></div>
+  </section>
+
+  <!-- ============================= 趋势图 ============================= -->
+  <section class="section">
+    <div class="section-head">
+      <h2>数据趋势</h2>
+      <span class="sub">来自服务器统计脚本（每 60 秒写入，页面每 30 秒读取）</span>
+    </div>
+    <div class="grid-2">
+      <div class="card chart-card rise">
+        <div class="card-head">
+          <h3><span class="dot"></span>近 14 天玩家活跃</h3>
+          <span class="right muted small" id="dailyRange">--</span>
+        </div>
+        <div class="chart-legend">
+          <span><i style="background:#4da3ff"></i>每日游玩人数（去重）</span>
+          <span><i style="background:#3ddc84"></i>每日人流量</span>
+        </div>
+        <div class="chart-wrap" id="dailyChart"></div>
+      </div>
+      <div class="card chart-card rise rise-1">
+        <div class="card-head">
+          <h3><span class="dot yellow"></span>今日 24 小时在线趋势</h3>
+          <span class="right muted small" id="hourlyDate">--</span>
+        </div>
+        <div class="chart-legend">
+          <span><i style="background:#ffd257"></i>每小时人流量</span>
+          <span><i style="background:#ff7bc8"></i>每小时峰值在线</span>
+        </div>
+        <div class="chart-wrap" id="hourlyChart"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 实时消息流 ============================= -->
+  <section class="section" id="eventsSection">
+    <div class="card feed-card rise">
+      <div class="feed-head">
+        <h3><span class="dot live" id="feedDot"></span>服务器实时消息</h3>
+        <span class="pill" id="feedStatePill"><span class="pdot"></span>连接中…</span>
+        <div class="feed-tools">
+          <button type="button" class="btn small ghost" id="feedHistoryBtn" title="按时间/类型/关键词浏览历史消息">🕘 历史</button>
+          <button type="button" class="btn small" id="feedPauseBtn" aria-pressed="false">⏸ 暂停</button>
+          <button type="button" class="btn small ghost" id="feedJumpBtn">↓ 跳到最新</button>
+        </div>
+      </div>
+      <div class="feed-filters" id="feedFilters" role="group" aria-label="按消息类型过滤"></div>
+      <div id="feedNotice" class="notice" hidden style="margin:0 20px 10px"></div>
+      <div class="feed-body">
+        <div class="feed-list" id="feedList" tabindex="0" role="log" aria-live="polite" aria-label="服务器消息流">
+          <div class="loading-block"><span class="spinner"></span>正在连接服务器消息流…</div>
+        </div>
+        <button type="button" class="feed-jump" id="feedJumpFab" hidden>有新消息 ↓</button>
+      </div>
+      <div class="feed-foot">
+        <span id="feedCount">0 条消息</span>
+        <span class="dim" id="feedAvailableNote"></span>
+        <span class="right">
+          <span id="feedPollInfo">轮询间隔 4 秒</span>
+          <a href="#" id="feedRefreshLink">立即刷新</a>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 运营数据（原状态页） ============================= -->
+  <section class="section" id="dataSection">
+    <div class="section-head">
+      <h2>运营数据</h2>
+      <span class="sub">原状态页能力保留 · 统计口径见页脚</span>
+      <div class="right">
+        <div class="seg" id="viewSeg" role="tablist" aria-label="视图切换">
+          <button type="button" role="tab" data-view="resume" class="active" aria-selected="true">履历视图</button>
+          <button type="button" role="tab" data-view="ops" aria-selected="false">运维视图</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="resumeView" role="tabpanel">
+      <div class="grid-2">
+        <div class="card full" style="grid-column:1/-1">
+          <div class="card-head"><h3><span class="dot green"></span>运营总览</h3></div>
+          <div class="kpis" id="resumeKpis"></div>
+          <div class="form-hint" id="resumeKpiHint" style="margin-top:12px"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3><span class="dot pink"></span>近 14 天社区互动</h3></div>
+          <div class="kpis" id="communityKpis"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3><span class="dot purple"></span>玩家等级构成（累计）</h3></div>
+          <div class="bars" id="rankBarsResume"></div>
+        </div>
+        <div class="card" style="grid-column:1/-1">
+          <div class="card-head"><h3><span class="dot"></span>可直接引用的服务器数据</h3></div>
+          <div class="summary" id="summaryBox">--</div>
+          <div class="form-hint" style="margin-top:10px">统计信息不代表全部准确数据，受限于插件的更新，会出现数值少于实际总信息的情况。</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="opsView" role="tabpanel" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3><span class="dot"></span>服务器信息</h3></div>
+          <div class="info-rows">
+            <div class="row"><span class="k">当前地图</span><span class="v" id="sMap">--</span></div>
+            <div class="row"><span class="k">模式</span><span class="v" id="sMode">--</span></div>
+            <div class="row"><span class="k">波次</span><span class="v" id="sWave">--</span></div>
+            <div class="row"><span class="k">TPS</span><span class="v" id="sTps">--</span></div>
+            <div class="row"><span class="k">运行时间</span><span class="v" id="sUptime">--</span></div>
+            <div class="row"><span class="k">当前在线</span><span class="v" id="sOnline">--</span></div>
+            <div class="row"><span class="k">今日峰值在线</span><span class="v" id="sPeakToday">--</span></div>
+            <div class="row"><span class="k">历史峰值在线</span><span class="v" id="sPeakAll">--</span></div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="bar-row"><span class="label">在线等级分布</span><span class="track"><span class="fill" id="obFill" style="width:0%"></span></span><span class="num" id="obText">--</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3><span class="dot green"></span>今日数据 <span class="dim small" id="todayDate"></span></h3></div>
+          <div class="kpis">
+            <div class="kpi"><div class="v green" id="tPlayers">--</div><div class="l">今日游玩人数</div></div>
+            <div class="kpi"><div class="v yellow" id="tFlow">--</div><div class="l">今日人流量</div></div>
+            <div class="kpi"><div class="v" id="tChat">--</div><div class="l">今日聊天</div></div>
+            <div class="kpi"><div class="v purple small" id="tPlay">--</div><div class="l">今日游玩时长</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3><span class="dot yellow"></span>累计数据</h3></div>
+          <div class="kpis">
+            <div class="kpi"><div class="v green" id="aPlayers">--</div><div class="l">总游玩人数</div></div>
+            <div class="kpi"><div class="v yellow" id="aFlow">--</div><div class="l">总人流量</div></div>
+            <div class="kpi"><div class="v" id="aChat">--</div><div class="l">总聊天条数</div></div>
+            <div class="kpi"><div class="v purple small" id="aPlay">--</div><div class="l">累计游玩时长</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3><span class="dot pink"></span>社区累计</h3></div>
+          <div class="kpis">
+            <div class="kpi"><div class="v pink" id="aPosts">--</div><div class="l">帖子</div></div>
+            <div class="kpi"><div class="v pink" id="aComments">--</div><div class="l">评论</div></div>
+            <div class="kpi"><div class="v green" id="aLikes">--</div><div class="l">收到的赞</div></div>
+            <div class="kpi"><div class="v" id="aRecognitions">--</div><div class="l">玩家认可</div></div>
+          </div>
+          <div class="form-hint" id="communityHint"></div>
+        </div>
+        <div class="card" style="grid-column:1/-1">
+          <div class="card-head"><h3><span class="dot"></span>近 14 天每日明细</h3></div>
+          <div id="dailyTable"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 历史消息抽屉 ============================= -->
+  <div class="drawer-overlay" id="historyOverlay" hidden>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+      <div class="drawer-head">
+        <h3 id="historyTitle"><span class="dot purple"></span>历史消息</h3>
+        <span class="pill" id="historyPill">--</span>
+        <button type="button" class="btn small ghost drawer-close" id="historyCloseBtn" aria-label="关闭历史消息">✕</button>
+      </div>
+      <div class="drawer-filters">
+        <div class="seg" id="historyRangeSeg" role="group" aria-label="时间范围">
+          <button type="button" data-range="1h" class="active">最近 1 小时</button>
+          <button type="button" data-range="6h">6 小时</button>
+          <button type="button" data-range="today">今天</button>
+          <button type="button" data-range="all">全部</button>
+        </div>
+        <div class="history-filter-row">
+          <select class="input" id="historyTypeSelect" aria-label="消息类型">
+            <option value="">全部类型</option>
+          </select>
+          <input class="input" id="historyKeyword" maxlength="100" placeholder="关键词（玩家名 / 消息内容）" autocomplete="off">
+          <button type="button" class="btn primary" id="historySearchBtn">搜索</button>
+        </div>
+      </div>
+      <div class="notice" id="historyNotice" hidden style="margin:0 0 10px"></div>
+      <div class="drawer-body">
+        <div class="history-list" id="historyList">
+          <div class="loading-block"><span class="spinner"></span>正在读取历史消息…</div>
+        </div>
+        <div class="history-foot">
+          <span class="dim small" id="historyCount">--</span>
+          <button type="button" class="btn small ghost" id="historyMoreBtn" hidden>加载更多（每页 100 条）</button>
+        </div>
+      </div>
+      <div class="drawer-foot dim small">
+        按时间倒序 · 每页 100 条 · 关键词匹配玩家名与消息内容 · 只读历史，不影响实时消息流
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============================= 页脚 ============================= -->
+  <footer class="footer">
+    <div class="foot-grid">
+      <div>
+        <b>数据来源</b><br>
+        服务器统计脚本定时写入 <code>config/stats/server-status.json</code>；
+        实时消息来自 <code>config/stats/live-events.jsonl</code>（游戏内异步写入，不占用主线程）。<br>
+        <span class="warn">统计信息不代表全部准确数据，受限于插件的更新，会出现数值少于实际总信息的情况。</span>
+      </div>
+      <div>
+        <b>统计口径</b><br>
+        游玩人数 = 当日去重主体数（登录玩家按账号、游客按设备 UUID）；人流量 = 玩家进入次数；
+        聊天 = 服务端收到的玩家聊天条数；游玩时长 = 统计启用期间在线会话时长之和；
+        等级分布中 <b>3+</b> 桶包含 3+/3++/4 级（含管理员）。
+      </div>
+      <div>
+        <b>关于</b><br>
+        欢迎投稿 DP 与地图：管理员审核通过后自动进入服务器对应列表；单文件上限 10MB，待审队列每种类型上限 10 件。
+        <div class="links">
+          <a href="upload.html">投稿 DP / 地图</a>
+          <a href="admin.html">管理员后台</a>
+        </div>
+      </div>
+    </div>
+    <div class="dim" style="margin-top:14px">MDT DO Mindustry 服务器门户 · 前端纯静态、无外网依赖 · <span id="footYear"></span></div>
+  </footer>
+</main>
+
+<div id="toastRoot" class="toast-root" aria-live="polite"></div>
+
+<script src="assets/js/util.js?v=20261018b"></script>
+<script src="assets/js/site-config.js?v=20261018b"></script>
+<script src="assets/js/markup.js?v=20261018b"></script>
+<script src="assets/js/api.js?v=20261018b"></script>
+<script src="assets/js/ui.js?v=20261018b"></script>
+<script src="assets/js/chart.js?v=20261018b"></script>
+<script src="assets/js/home.js?v=20261018b"></script>
+<script src="assets/js/quote.js?v=20261018b"></script>
+</body>
+</html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0c12">
+<meta name="description" content="向 MDT DO 服务器投稿 DP 数据资产包或地图，管理员审核通过后进入服务器列表。">
+<title>投稿 DP / 地图 · MDT DO 服务器门户</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234da3ff'/%3E%3Cstop offset='.55' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%23ff7bc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23141925'/%3E%3Cpath d='M8 23V10l8 8 8-8v13' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/css/portal.css?v=20261018b">
+</head>
+<body data-page="upload">
+
+<div class="fx-aurora" aria-hidden="true"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
+<div class="fx-particles" id="particles" aria-hidden="true"></div>
+
+<header class="nav">
+  <a class="brand" href="index.html" aria-label="MDT DO 门户首页">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none"><defs><linearGradient id="bm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset=".55" stop-color="#8b7bff"/><stop offset="1" stop-color="#ff7bc8"/></linearGradient></defs><path d="M6 25V7l10 10L26 7v18" stroke="url(#bm)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="brand-text"><b>MDT DO</b><small>MINDUSTRY SERVER PORTAL</small></span>
+  </a>
+  <nav class="nav-links" aria-label="主导航">
+    <a href="index.html">首页</a>
+    <a href="upload.html" class="active">投稿 DP / 地图</a>
+    <a href="admin.html">管理后台</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <div class="section-head rise">
+    <h2 style="font-size:26px">投稿 DP / 地图</h2>
+    <span class="sub">提交后进入管理员审核队列，审核通过即进入服务器列表</span>
+    <div class="right"><a class="btn small ghost" href="index.html">← 返回首页</a></div>
+  </div>
+
+  <!-- 流程提示 -->
+  <div class="notice notice-info rise" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+    <span><b>投稿流程</b></span>
+    <span>① 填写信息并选择文件</span>
+    <span>→</span>
+    <span>② 提交进入待审队列（每种类型上限 10 件）</span>
+    <span>→</span>
+    <span>③ 管理员审核</span>
+    <span>→</span>
+    <span>④ 通过后进入服务器列表</span>
+    <span class="dim">（DP 由管理员决定是否热重载生效）</span>
+  </div>
+
+  <div class="admin-grid" style="margin-top:18px">
+    <!-- ============================ 投稿表单 ============================ -->
+    <section class="card rise" aria-label="投稿表单">
+      <div id="uploadError" class="notice notice-error" hidden></div>
+
+      <form id="uploadForm" novalidate>
+        <div class="form-grid">
+          <div class="form-field full">
+            <span class="form-label">投稿类型 <span class="req">*</span></span>
+            <div class="seg" id="kindSeg" role="group" aria-label="投稿类型">
+              <button type="button" data-kind="dp" class="active" aria-pressed="true">📦 DP 数据资产包</button>
+              <button type="button" data-kind="map" aria-pressed="false">🗺️ 服务器地图</button>
+            </div>
+            <div class="form-hint" id="kindHint">DP 会被放入服务器 <code>external-cp</code> 列表，支持 .zip / .json / .hjson / .json5</div>
+          </div>
+
+          <div class="form-field">
+            <label for="titleInput">标题 <span class="req">*</span></label>
+            <input class="input" id="titleInput" name="title" maxlength="200" placeholder="例如：更多弹药 v1.3" autocomplete="off">
+            <div class="counter"><span id="titleCount">0</span>/200</div>
+            <div class="form-error" id="titleError"></div>
+          </div>
+
+          <div class="form-field">
+            <label for="authorInput">作者 <span class="req">*</span></label>
+            <input class="input" id="authorInput" name="author" maxlength="100" placeholder="你的游戏 ID / 昵称" autocomplete="off">
+            <div class="counter"><span id="authorCount">0</span>/100</div>
+            <div class="form-error" id="authorError"></div>
+          </div>
+
+          <div class="form-field full">
+            <label for="descInput">介绍 <span class="opt">（建议填写，方便管理员审核）</span></label>
+            <textarea class="input" id="descInput" name="desc" rows="4" maxlength="4000" placeholder="这个 DP / 地图是什么、有什么特色、更新了哪些内容、需要注意什么…"></textarea>
+            <div class="counter"><span id="descCount">0</span>/4000</div>
+            <div class="form-error" id="descError"></div>
+          </div>
+
+          <div class="form-field full">
+            <label for="replaceSelect">替换现有条目 <span class="opt">（可选：对现有 DP / 地图的更新请选择）</span></label>
+            <select class="input" id="replaceSelect" name="replaceOf">
+              <option value="">— 不替换，作为新条目提交 —</option>
+            </select>
+            <div class="form-hint" id="replaceHint">审核通过时将用新文件替换所选条目（保持原文件在服务器上的名称）。</div>
+          </div>
+
+          <div class="form-field full">
+            <span class="form-label">文件 <span class="req">*</span></span>
+            <div class="dropzone" id="dropzone">
+              <input type="file" id="fileInput" aria-label="选择要上传的文件">
+              <span class="dz-icon" aria-hidden="true">📤</span>
+              <div class="dz-main">点击选择文件，或把文件拖到这里</div>
+              <div class="dz-sub" id="dropHint">支持 .zip / .json / .hjson / .json5，单文件不超过 10MB</div>
+            </div>
+            <div id="fileChipWrap"></div>
+            <div class="form-error" id="fileError"></div>
+          </div>
+        </div>
+
+        <div class="progress-row" id="uploadProgressRow" hidden style="margin-top:14px">
+          <div class="progress"><i id="uploadProgressBar" style="width:0%"></i></div>
+          <span id="uploadProgressText">准备上传…</span>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn primary big" id="submitBtn">提交投稿</button>
+          <button type="button" class="btn ghost" id="resetBtn">清空表单</button>
+          <span class="form-hint" style="margin-left:auto">提交后请等待管理员审核</span>
+        </div>
+      </form>
+
+      <!-- 提交成功 -->
+      <div class="success-panel" id="successPanel" hidden>
+        <div class="ok-icon" aria-hidden="true">🎉</div>
+        <h3>投稿已受理，等待管理员审核</h3>
+        <p class="muted">管理员会在后台看到你的投稿；审核通过后会自动进入服务器列表（DP 是否热重载由管理员决定）。</p>
+        <div class="ticket"><span class="ticket-label">受理号</span> <b id="successId">--</b> <span class="dim small" id="successQueueText"></span></div>
+        <p class="dim small" id="successTips">请保留受理号，便于向管理员查询进度。</p>
+        <div class="success-actions">
+          <button type="button" class="btn primary" id="againBtn">再投一件</button>
+          <button type="button" class="btn ghost" id="viewCatalogBtn">查看现有列表</button>
+          <a class="btn ghost" href="index.html">返回首页</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 侧栏信息 ============================ -->
+    <aside class="stack rise rise-1">
+      <div class="card">
+        <div class="card-head">
+          <h3><span class="dot yellow"></span>待审队列</h3>
+          <div class="right"><button type="button" class="btn small ghost" id="queueRefreshBtn">↻ 刷新</button></div>
+        </div>
+        <div class="queue-box" id="queueBox">
+          <div class="queue-head">正在读取队列信息… <span class="spinner"></span></div>
+          <div class="progress"><i id="queueBar" style="width:0%"></i></div>
+          <div class="queue-split" id="queueSplit"></div>
+        </div>
+        <div class="form-hint" style="margin-top:10px">每种类型的待审队列上限为 10 件，队列满时新投稿会被拒绝（错误码 QUEUE_FULL），请等待管理员处理。</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3><span class="dot"></span>投稿要求</h3></div>
+        <ul class="dim small" style="margin:0;padding-left:18px;line-height:2.05">
+          <li>单文件不超过 <b>10MB</b>，超出会被拒绝；</li>
+          <li>DP 支持 <code>.zip</code> / <code>.json</code> / <code>.hjson</code> / <code>.json5</code>；地图支持 <code>.msav</code>；</li>
+          <li>请填写真实作者与介绍，方便管理员判断；</li>
+          <li>若为现有条目的更新，请选择「替换现有条目」，避免出现重复；</li>
+          <li>后端还会校验文件头（ZIP 的 <code>PK</code>、JSON/HJSON 的对象起始、<code>.msav</code> 的压缩头），伪扩展名文件会被拒绝；</li>
+          <li>恶意或无法加载的文件会被拒绝（拒绝原因可在投稿时向管理员询问）。</li>
+        </ul>
+      </div>
+
+      <div class="card" id="mockTools" hidden>
+        <div class="card-head"><h3><span class="dot pink"></span>演示数据工具（mock）</h3></div>
+        <div class="form-hint" style="margin-bottom:10px">当前为演示模式，数据保存在本浏览器会话中，不会触碰真实服务器。</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn small" id="mockFillBtn">填满待审队列（演示）</button>
+          <button type="button" class="btn small ghost" id="mockResetBtn">重置演示数据</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============================ 现有列表 ============================ -->
+  <section class="section" id="catalogSection">
+    <div class="section-head">
+      <h2>现有列表</h2>
+      <span class="sub">已被管理员审核通过、当前在服务器上的条目</span>
+      <div class="right">
+        <div class="seg" id="catalogSeg" role="tablist" aria-label="目录类型">
+          <button type="button" class="active" data-cat="dp" role="tab" aria-selected="true">DP 列表</button>
+          <button type="button" data-cat="maps" role="tab" aria-selected="false">地图列表</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div id="catalogBody"><div class="loading-block"><span class="spinner"></span>正在读取列表…</div></div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="dim">
+      投稿由 <code>stats-web</code> 门户后端接收并写入待审队列；只有管理员审核通过的条目才会进入服务器
+      <code>external-cp</code>（DP）或 <code>config/maps</code>（地图）目录。<br>
+      前端会先校验文件大小与扩展名，最终以服务端校验为准。本页面为纯静态实现，无任何外部网络依赖。
+    </div>
+  </footer>
+</main>
+
+<div id="toastRoot" class="toast-root" aria-live="polite"></div>
+
+<script src="assets/js/util.js?v=20261018b"></script>
+<script src="assets/js/site-config.js?v=20261018b"></script>
+<script src="assets/js/markup.js?v=20261018b"></script>
+<script src="assets/js/api.js?v=20261018b"></script>
+<script src="assets/js/ui.js?v=20261018b"></script>
+<script src="assets/js/upload.js?v=20261018b"></script>
+</body>
+</html>

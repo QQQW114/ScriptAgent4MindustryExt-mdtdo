@@ -23,3 +23,10 @@ out/
 # Local external CP files; keep the directory placeholder only
 scripts/external-cp/*
 !scripts/external-cp/.gitkeep
+# Web portal runtime data (never commit)
+stats-web/web-data/
+
+# updater runtime data
+updater/backups/
+updater/logs/
+updater/.update-temp/
