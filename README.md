@@ -3,6 +3,10 @@
 本仓库是 **MDT DO Mindustry 专服**使用的服务端插件脚本集合，基于 [ScriptAgent4MindustryExt](https://github.com/way-zer/ScriptAgent4MindustryExt)（ScriptAgent 3.4.0）。
 只收录**脚本与维护文档**，不含任何运行数据（数据库、外部内容包、缓存、日志、密钥、服务器 JAR）。
 
+/*
+warning：AI生成（也包含当前的readme，维护文档并非人能看懂的，本项目能够稳定运行完全得益于sa的强大架构与harness赋予llm的测试能力，我并不了解它已经成为了什么（——黑盒编程），但如果这能帮到你（或帮到你的agent），我会感到非常荣幸
+*/
+
 ## 目录
 
 | 路径 | 内容 |
