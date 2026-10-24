@@ -230,6 +230,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("unbanip", "[red]解除IP封禁", "解除安全风控IP封禁"),
     HelpEntryDef("banips", "[cyan]IP封禁列表", "查看当前被封禁IP、UUID与玩家名"),
     HelpEntryDef("banlist", "[cyan]统一封禁管理", "分页查看玩家/账号与IP封禁、原因、剩余时长并快速解封"),
+    HelpEntryDef("doswhitelist", "[cyan]DOS白名单", "管理 DOS 反作弊误拉黑白名单：大NAT出口被内核标记为潜在DOS攻击时自动解除（支持单IP与/8-/32 CIDR）", "/doswhitelist"),
     HelpEntryDef("recentplayers", "[cyan]最近玩家", "查看最近80名玩家并打开离线管理面板"),
     HelpEntryDef("votestartban", "[red]禁止发起投票", "3++/4级：禁止指定玩家发起投票（玩家信息菜单也可快速操作）"),
     HelpEntryDef("voteunban", "[red]解除禁止投票", "解除指定玩家的禁止发起投票状态"),
