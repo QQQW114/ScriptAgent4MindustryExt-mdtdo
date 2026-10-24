@@ -22,6 +22,43 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-24（第二十八批）：DOS 黑名单受信任 IP 白名单（`/doswhitelist`，自动解黑防大NAT连坐）
+
+类型：功能新增（提交 `15017cc`；新增 `wayzer/security/dosWhitelist.kts` 626 行 + `coreMindustry/menu.kts` 帮助条目）。
+完整文档见 [`docs/dos-ip-whitelist.md`](dos-ip-whitelist.md)。
+
+### 1. 背景
+
+内核 `ArcNetProvider.java:130-131` 对「并发超过启动时缓存的 playerlimit」或「IP 命中 `netServer.admins.dosBlacklist`」的连接
+直接关闭并打印 `Closing connection <ip> - IP marked as a potential DOS attack.`；`dosBlacklist` 是**内存集合、无过期、不落盘、
+官方无清除指令**，由「3 秒内超过 `packetSpamLimit` 个包」（`Administration.java:549`，上游默认 300）触发。
+大NAT出口（CGNAT/校园网/网吧）下任一客户端触发反 DOS，**整个出口 IP 后的所有玩家都会被拒**，属典型的"一人触发、整段连坐"。
+
+### 2. 实现
+
+- 白名单（单 IPv4 / IPv4 CIDR `/8`~/32 / 单 IPv6 精确匹配）持久化 MdtSettings 键 `security.dosWhitelist.entries`
+  （按行 `ip或CIDR|备注`）；启用时 IO 异步加载、变更时 IO 串行异步落库，热路径无 DB/IO；DB 加载完成前白名单暂不生效、完成后补扫一次。
+- `Dispatchers.game` 轻量定时任务（默认 **3000ms**，钳制 1000~60000）扫描 `dosBlacklist` 快照，对命中白名单的 IP 调
+  `unBlacklistDos` 自动解除（先快照再删）；启用时立即扫一次、`onDisable` 取消、`enabled=false` 不动作；日志按 IP 限频
+  `logCooldownMillis`（默认 60s），`notifyRemovals` 私聊通知在线且有权限的管理。
+- **只解除 DOS 黑名单**：不解 ban/kick、不影响 `accountIpGuard`/`securityGuard` 等风控、不放宽人数上限。
+- **安全边界**：白名单 IP 会**绕过内核反 DOS 拉黑**，只应对可信大NAT/机房出口配置；CIDR 前缀拒绝 `/0`~/7（避免整体关闭反 DOS）。
+
+### 3. 命令 / 权限 / 配置
+
+- 命令：`/doswhitelist`（别名 `dos白名单`/`ip白名单`/`doswl`），子命令
+  `list`（默认）|`add <ip或CIDR> [备注]`|`remove <序号或ip>`|`clear confirm`|`status`|`check <ip>`；
+  权限 `wayzer.admin.dosWhitelist` 默认 `@admin`，控制台可用；帮助条目已加入 `menu.kts` 管理分类。
+- 配置：`wayzer.security.dosWhitelist.enabled=true`、`cleanupIntervalMillis=3000`、`notifyRemovals=true`、`logCooldownMillis=60000`。
+- 紧急清理（既有能力）：控制台 `dosBanClear` 清空整个 DOS 黑名单，或 `js Vars.netServer.admins.unBlacklistDos("ip")` 单 IP 解除。
+
+### 4. 验证与未验证
+
+- **两次冷启动均通过**（开发服）：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag count` 失败 0；
+  `sa listFailed` 空；`dosWhitelist` 与 `menu` 均 `Enabled`；`scriptdiag commands doswhitelist` 命中；KDoc **211 文件**干净。
+- **功能未实测（用户要求跳过）**：`add`→自动解黑→重连、`list/remove/clear/check`、持久化回读均**未做运行时验证**，
+  需在首次生产使用时按 `docs/dos-ip-whitelist.md` §6/§10 验证；详见该文档。
+
 ## 2026-10-18（第二十七批）：检举系统第二阶段——投票限制可检举(理由菜单) + 3次/6次永久封禁 + 面板/帮助/教程
 
 类型：功能新增 + 规则调整（核心提交 `62283bf`、玩家可见部分 `764b3e6`）。设计文档已追加

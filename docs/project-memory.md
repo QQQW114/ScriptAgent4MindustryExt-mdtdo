@@ -173,7 +173,7 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 | 音乐与音效 | 依赖 v159 资产/完整重同步链路，已做队列和风险收敛；**2026-10-17 审计：小音效不能走 Sound 通道**（声音 id 按 short 传输，自定义 id 100001 客户端读回截断为 -31071 → `Sounds.none`），**music 通道也不能重叠**（客户端 `SoundControl` 单 `current` 槽）；现状 `Call.playMusic(String)` 是协议内唯一可行方案 | 运行中新增资产可能重置玩家状态，属于实验/受限能力；**"小音效可重叠"已决策不做**（用户 2026-10-17 拍板：方案 A 维持现状、不做客户端/上游扩展 C）；B510+ 升级需按审计 §8 复跑；生产行为需谨慎验证 | [兼容层](official-v159-compat.md)、[网络同步](v159-network-sync.md)、[小音效通道审计](sound-effect-channel-audit.md) |
 | 地图与杂交玩法 | 159/B477 后主动收缩到重点地图/标签和已维护玩法，旧地图不因历史存在就自动恢复 | 重点玩法的真实客户端、卸载、换图和长时压力回归仍按需进行 | [地图清单](map-scripts.md)、[杂交设计](hybrid-system-design.md) |
 | 账号、数据库、社区与经济 | 旧服务器测试模式已废弃；五项通用服务器设置之外，数据库业务又拆为总开关与九个独立开关；已绑定默认等级同时约束信任与资历，H2磁盘预热可运行中管理 | 总开关不物理断库且不影响账号/权限/封禁/风控；多人真实负载、慢 IO、生产大库和游戏内菜单交互仍需受控验证 | [账号](account-system.md)、[数据库](database-system.md)、[信任系统](trust-system.md)、[技能系统](skill-system.md) |
-| 权限、安全与管理 | 风控、封禁、最小权限协管和目标边界已收口；**2026-10-17 完成账号/IP 防熊审计**（`ip-risk-control-report.md`），用户决策方案 C：只留报告、不改代码，并否决风控行为规则 | 报告已记录缺陷（风险期可续期、2次/24h 阈值被旁路、`/login` 封禁校验缺失等）**用户接受现状暂不修**；生产权限与敏感操作需用户确认 | [安全风控](security-guard.md)、[IP 风控审计](ip-risk-control-report.md)、[帮助菜单](help-menu.md) |
+| 权限、安全与管理 | 风控、封禁、最小权限协管和目标边界已收口；**2026-10-17 完成账号/IP 防熊审计**（`ip-risk-control-report.md`），用户决策方案 C：只留报告、不改代码，并否决风控行为规则；**2026-10-24 新增 DOS 黑名单受信任 IP 白名单**（`/doswhitelist`，`15017cc`，防大NAT出口连坐） | 报告已记录缺陷（风险期可续期、2次/24h 阈值被旁路、`/login` 封禁校验缺失等）**用户接受现状暂不修**；生产权限与敏感操作需用户确认；**DOS 白名单功能未实测，首次生产使用需按 `dos-ip-whitelist.md` §6/§10 验证（白名单会绕过内核反 DOS，只加可信出口）** | [安全风控](security-guard.md)、[IP 风控审计](ip-risk-control-report.md)、[DOS 白名单](dos-ip-whitelist.md)、[帮助菜单](help-menu.md) |
 | 惩罚与检举体系 | **两阶段均已落地**：第一阶段（2026-10-17，`f845d19`）检举系统 + 非管理员 24h 钳制/冷却 + 永久封禁范围 + 禁言豁免自救（N4/D5）；**第二阶段（2026-10-18，核心 `62283bf`、UI `764b3e6`）**：投票限制可检举（两段式理由菜单）、每次检举成功禁直接限制 1 天 + 投票来源额外禁发起限制类投票 1 天、累计 ≥3 次永久禁直接限制、≥6 次永久禁限制类投票、面板隐藏限制按钮/显示被检举次数、教程 8 页 | 真实玩家完整链路未在线验证（两段式弹窗/面板封禁态按钮/真实投票限制端到端/旧 4 字段历史数据）；**维护注意：面板依赖 punishmentReport，单独重载惩罚脚本后需再重载面板**；口径以 `punishment-system-design.md` §3/§7 + 2026-10-18 节为准 | [惩罚体系设计](punishment-system-design.md) |
 | 服务器门户 Web（stats-web） | **三页门户 + 独立后端 API**（首页/投稿/管理员后台、DP/地图审核、控制台桥、旧配置自动迁移；`64b194f`/`8e1dc99`/`a5b7f06`）。**第二期（2026-10-18，`1831084`）**：服务器日志面板（列表/尾部预览/直链下载，默认需登录、50MB/并发2/每IP 5次·5分钟限流）、消息流历史抽屉（跨当前+12 份旋转历史分页）、首页上行带宽卡（宿主机网卡 B/s）、控制台状态可选中性、玩家名上限放宽、生产日志噪声修复 | 真实多 IP 登录、DP 热重载端到端、地图审核后客户端换图、真实玩家事件未验证；第二期另需：带宽压流量对照、真实大文件 413/BUSY、真机移动端；生产升级不要整目录覆盖默认 `web-config.json`，日志下载需登录且含敏感信息（详见 web-portal §3.4/§11） | [门户 Web](web-portal.md)、[统计与 Web](server-status-stats.md)、[事件流](live-events-feed.md) |
 | 运维与自动恢复 | 进程异常退出自动重启和退避已实现；H2磁盘预热默认开启并可用 `/diskwarmup` 管理；文档/日志/监控持续维护 | 磁盘预热只能缓解休眠后的首次数据库IO，不是TPS优化器；监督器不能替代活进程卡死监控；真实生产启停和回滚由用户/运维执行 | [脚本维护总览](scripts-maintenance.md)、[数据库说明](database-system.md) |
@@ -263,6 +263,11 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   配置 4 项、持久化格式扩展（`voteStartUntilMillis`，旧 4 字段兼容）；面板隐藏/替换限制按钮 + 显示被成功检举次数与双封禁状态；
   `/punishreport` 帮助与教程（7→8 页，新增检举页）更新。提交核心 `62283bf`、玩家可见 `764b3e6`；fake player 验证 1/2/3/6 次
   规则、拦截、事件 fromVote、持久化回读通过。维护注意：面板依赖 punishmentReport，单独重载惩罚脚本需再重载面板。
+- **2026-10-24（DOS 黑名单受信任 IP 白名单）**：内核 `dosBlacklist`（内存、无过期、无清除指令，packet spam 3 秒 >300 包触发）在
+  大NAT出口下会连坐整段 IP；新增 `wayzer/security/dosWhitelist.kts` + `/doswhitelist`（别名 dos白名单/ip白名单/doswl；@admin），
+  白名单（单 IPv4 / `/8`~/32 CIDR / IPv6 精确）持久化 `security.dosWhitelist.entries`，定时任务（默认 3s）对命中 IP 自动
+  `unBlacklistDos`；只解 DOS 黑名单、不解 ban/不影响其它风控；帮助菜单加条目。提交 `15017cc`。冷启动两次通过
+  （164/160/155/出错0、失败0、listFailed 空、dosWhitelist/menu Enabled、KDoc 211）；**功能未实测（用户要求跳过）**。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -331,6 +336,10 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 17. **检举第二阶段未验证项**：真实两段式弹窗渲染/点击（理由菜单/自定义输入）、真实投票限制端到端、真实封禁态面板按钮
     渲染/点击、真实客户端 8 页教程渲染、旧 4 字段格式历史数据实例（仅代码兼容分支）；**维护注意：`playerInfoTripleTap`
     依赖 `punishmentReport`，单独重载惩罚脚本后需再重载面板脚本**（`sa load wayzer/ext/playerInfoTripleTap`）。
+18. **DOS 黑名单白名单功能未实测**（`15017cc`，用户要求跳过运行时验证）：`add`→自动解黑→重连、`list/remove/clear/check`、
+    重启持久化回读、多管理员通知、大NAT真实连坐恢复均未验证；首次生产使用按 [DOS 白名单](dos-ip-whitelist.md) §6/§10 验证。
+    **白名单 IP 会绕过内核反 DOS，只对可信大NAT/机房出口配置**；紧急清理用控制台 `dosBanClear` 或
+    `js Vars.netServer.admins.unBlacklistDos("ip")`。
 
 ## 9. 给新会话 Agent 的柔性接手提示
 
@@ -384,6 +393,10 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-10-24（DOS 黑名单受信任 IP 白名单）**：新增 `wayzer/security/dosWhitelist.kts` + `/doswhitelist`（支持单 IPv4 与
+  `/8`~/32 CIDR，持久化 `security.dosWhitelist.entries`，定时自动 `unBlacklistDos` 防大NAT连坐）；只解 DOS 黑名单、不解 ban/
+  不影响其它风控；冷启动两次通过、**功能未实测**。提交 `15017cc`；新增 `docs/dos-ip-whitelist.md`，同步 `help-menu.md`、
+  `current-issues.md` 与 `scripts-maintenance.md` 第二十八批。
 - **2026-10-18（检举系统第二阶段）**：投票限制可检举（两段式理由菜单）、每次检举成功禁直接限制 1 天 + 投票来源额外禁发起
   限制类投票 1 天、累计 ≥3 次永久禁直接限制、≥6 次永久禁限制类投票；持久化格式扩展（旧 4 字段兼容）；面板隐藏限制按钮/
   显示被检举次数与双封禁状态；`/punishreport` 帮助与 8 页教程更新。提交核心 `62283bf`、玩家可见 `764b3e6`；同步

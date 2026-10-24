@@ -99,6 +99,9 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/traffic`、`/pressure`、`/tickwatchdog`、`/gamepause`：查看上行/压力、主线程卡顿诊断、设置 TPS 压力阈值与管理暂停状态。
 - `/ipguard`、`/ipregion`：IP防熊管理与玩家地区查询。
 - `/security`：安全风控管理，查看/设置风控模式、IP封禁、聊天/菜单/连接限速状态；3++协管与4级/admin完全相同（完全开放：普通/增强风控、重置、手动封禁/解封IP、今日游客观战开关等全部可用）。
+- `/doswhitelist`（别名 `dos白名单`/`ip白名单`/`doswl`）：**4级/admin**维护「DOS 反DOS误拉黑」受信任 IP 白名单——大NAT出口被内核标记为潜在DOS攻击时自动解除；
+  子命令 `list`｜`add <ip或CIDR> [备注]`｜`remove <序号或ip>`｜`clear confirm`｜`status`｜`check <ip>`；支持单 IPv4 与 `/8`~/32 CIDR（IPv6 精确匹配）；
+  **只解除 DOS 黑名单**，不解 ban/不影响其它风控；白名单 IP 会绕过内核反 DOS，请只对可信大NAT/机房出口配置（详见 `dos-ip-whitelist.md`）。
 - `/serverfeatures`、`/features`、`/serverconfig`：仅4级/admin或控制台可查看服务器功能总览/打开菜单；菜单内已加入数据库业务功能子菜单，旧子指令仍兼容。
 - `/mdcmultiplier`、`/forumtoggle`、`/registerrequirement`、`/socialactions`、`/defaultboundlevel`：拆分后的五个服务器功能管理根指令；分别管理结算MDC倍率、帖子、注册一小时要求、赞踩认可和已绑定玩家默认信任/资历下限。它们会自动被“搜索指令”索引。
 - `/databasefeatures`：查看、打开菜单或统一暂停数据库业务功能；只覆盖可选玩家业务，不关闭数据库连接，也不影响账号、权限、封禁、禁言、IP风控与性能保护。
