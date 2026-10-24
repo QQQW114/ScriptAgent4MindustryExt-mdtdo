@@ -268,6 +268,11 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   白名单（单 IPv4 / `/8`~/32 CIDR / IPv6 精确）持久化 `security.dosWhitelist.entries`，定时任务（默认 3s）对命中 IP 自动
   `unBlacklistDos`；只解 DOS 黑名单、不解 ban/不影响其它风控；帮助菜单加条目。提交 `15017cc`。冷启动两次通过
   （164/160/155/出错0、失败0、listFailed 空、dosWhitelist/menu Enabled、KDoc 211）；**功能未实测（用户要求跳过）**。
+- **2026-10-24（投票观战取消 24h 钳制）**：用户口径「投票应该有完整的权限，不是和直接观战一样最多观战一天」——
+  `voteOb.kts` 的 `startObVote` 成功路径改为 `untilMillis = null`（不写 `forceObExpireAt`）、移除自动解除广播、
+  事件 `durationMinutes = null`；不申请 `/vote quitOb` 则观战一直保留（quitOb/管理员解除/检举通过等解除）。
+  **非管理员直接观战仍保留 24h 到期自动解除**（Q3 不变），其它规则不变。提交 `b22b334`；冷启动通过
+  （164/160/155、失败0、voteOb Enabled、KDoc 211）；**功能未实测**。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -340,6 +345,8 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
     重启持久化回读、多管理员通知、大NAT真实连坐恢复均未验证；首次生产使用按 [DOS 白名单](dos-ip-whitelist.md) §6/§10 验证。
     **白名单 IP 会绕过内核反 DOS，只对可信大NAT/机房出口配置**；紧急清理用控制台 `dosBanClear` 或
     `js Vars.netServer.admins.unBlacklistDos("ip")`。
+19. **投票观战取消 24h 钳制未实测**（`b22b334`）：投票通过→强制观战→`/vote quitOb` 解除链路、观战状态不随 24h 自动解除、
+    非管理员直接观战仍 24h 到期的对照均未验证；口径见 `punishment-system-design.md`「2026-10-24 口径调整」节。
 
 ## 9. 给新会话 Agent 的柔性接手提示
 
@@ -393,6 +400,11 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-10-24（投票观战取消 24h 钳制）**：用户口径「投票应该有完整的权限，不是和直接观战一样最多观战一天」——
+  `voteOb.kts` 的 `startObVote` 成功路径改为 `untilMillis = null`（不写 `forceObExpireAt`）、移除自动解除广播、
+  事件 `durationMinutes = null`；不申请 `/vote quitOb` 则观战一直保留；**非管理员直接观战仍保留 24h 到期**（Q3 不变）。
+  提交 `b22b334`；冷启动通过、**功能未实测**；同步 `punishment-system-design.md`「2026-10-24 口径调整」节、
+  `current-issues.md`（§A 状态 + 待办 11）与 `scripts-maintenance.md` 第二十九批。
 - **2026-10-24（DOS 黑名单受信任 IP 白名单）**：新增 `wayzer/security/dosWhitelist.kts` + `/doswhitelist`（支持单 IPv4 与
   `/8`~/32 CIDR，持久化 `security.dosWhitelist.entries`，定时自动 `unBlacklistDos` 防大NAT连坐）；只解 DOS 黑名单、不解 ban/
   不影响其它风控；冷启动两次通过、**功能未实测**。提交 `15017cc`；新增 `docs/dos-ip-whitelist.md`，同步 `help-menu.md`、

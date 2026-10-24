@@ -698,3 +698,20 @@ punishmentReport.kts ───────────────────�
   旧 4 字段格式的真实历史数据实例（仅代码兼容分支）。
 - **维护注意**：`playerInfoTripleTap` 现依赖 `punishmentReport`；**单独重载惩罚脚本后需再重载面板脚本**
   （`sa load wayzer/ext/playerInfoTripleTap`）。
+
+## 2026-10-24 口径调整：投票观战取消 24h 时限（社区决议完整生效）
+
+> 用户 2026-10-24 口径：「把投票观战的限制改回，投票应该有完整的权限，不是和直接观战一样最多观战一天，
+> 只要不申请退出则采用原本的逻辑保存观战状态。」已实现（提交 `b22b334`，`voteOb.kts` +8/−15）。
+> 本节为**追加记录、不改上文历史口径**：§2.3 Q3/Q4 的 24h 钳制仍适用于其它惩罚，本节只说明 **voteOb 的例外**。
+
+- **投票通过产生的强制观战 = 社区共同决议，拥有完整效果**：`startObVote` 成功路径改为
+  `applyForceObRecord(target, reason, "vote", starterUid, untilMillis = null)`——不写入 `forceObExpireAt`（无期限），
+  并移除原「将在 N 分钟后自动解除（非管理员层级最长 1 天）」广播；`emitPunishmentApplied(kind = "ob", durationMinutes = null)`。
+- **保留原逻辑**：不申请 `/vote quitOb` 则观战状态一直保留，直到被解除（quitOb / 管理员解除 / 检举通过 / 其它解罚路径）。
+- **口径边界**：非管理员**直接**观战（面板/命令）**仍保留 24h 到期自动解除**（Q3 原口径不变：`forceObExpireAt` + 30s 清扫 +
+  到期提示）；投票发起前的检举封禁/24h 冷却检查（Q2/Q5）、`voteMute` 的钳制（Q4）、检举二次确认弹窗等其它规则**均不变**。
+- **代码位置**：`wayzer/cmds/voteOb.kts` 顶部 `forceObExpireAt` 注释（约 L39-42）、`startObVote` 成功路径（约 L274-295）、
+  到期清扫注释（约 L341）。
+- **验证与未验证**：冷启动验证通过（banner 164 脚本/160 加载/155 启用/出错0；`scriptdiag` 164/160/156 失败0；
+  `sa listFailed` 空；`voteOb` Enabled；KDoc 211 文件干净）。**未做运行时功能实测**（投票通过→观战→quitOb 链路未跑）。

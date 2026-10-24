@@ -22,6 +22,34 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-24（第二十九批）：投票观战取消 24h 钳制（社区决议完整生效）
+
+类型：口径调整（提交 `b22b334`；`wayzer/cmds/voteOb.kts` +8/−15）。**未改其它脚本**；设计文档已追加「2026-10-24 口径调整」节。
+
+### 1. 需求
+
+用户 2026-10-24：「把投票观战的限制改回，投票应该有完整的权限，不是和直接观战一样最多观战一天，
+只要不申请退出则采用原本的逻辑保存观战状态。」
+
+### 2. 改动
+
+- `startObVote` 成功路径：`applyForceObRecord(target, reason, "vote", starterUid, untilMillis = null)`（不再写
+  `forceObExpireAt`）、移除「将在 N 分钟后自动解除（非管理员层级最长 1 天）」广播、
+  `emitPunishmentApplied(kind = "ob", durationMinutes = null)`；
+- 保持原逻辑：不申请 `/vote quitOb` 则观战状态**一直保留**，直到被解除（quitOb / 管理员解除 / 检举通过 / 其它解罚路径）。
+
+### 3. 保留项（口径边界）
+
+- **非管理员直接观战**（面板/命令）**仍保留 24h 到期自动解除**（Q3 原口径不变：`forceObExpireAt` + 30s 清扫 + 到期提示）；
+- 投票发起前的检举封禁/24h 冷却检查（Q2/Q5）、`voteMute` 的钳制（Q4）、检举二次确认等其它规则**不变**；
+- 管理员层级与系统施加的观战本就无期限，不受影响。
+
+### 4. 验证与未验证
+
+- 冷启动验证通过（开发服）：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag` **164/160/156 失败0**；
+  `sa listFailed` 空；`scriptdiag state wayzer/cmds/voteOb` = `Enabled`；KDoc **211 文件**干净。
+- **未做运行时功能实测**：投票通过→强制观战→`/vote quitOb` 解除链路未跑；`forceObExpireAt` 不再记录投票观战需首次真实投票验证。
+
 ## 2026-10-24（第二十八批）：DOS 黑名单受信任 IP 白名单（`/doswhitelist`，自动解黑防大NAT连坐）
 
 类型：功能新增（提交 `15017cc`；新增 `wayzer/security/dosWhitelist.kts` 626 行 + `coreMindustry/menu.kts` 帮助条目）。

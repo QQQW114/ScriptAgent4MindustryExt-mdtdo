@@ -170,6 +170,11 @@
   连坐时，白名单命中 IP 会被定时任务（默认 3s）自动 `unBlacklistDos`；支持单 IPv4 与 `/8`~/32 CIDR，持久化
   `security.dosWhitelist.entries`；只解 DOS 黑名单、不解 ban/不影响其它风控；帮助菜单已加条目。**冷启动两次通过**
   （banner 164/160/155/出错0、失败0、listFailed 空、dosWhitelist 与 menu Enabled、KDoc 211）；**功能未实测**（用户要求跳过）。
+- **投票观战取消 24h 钳制（2026-10-24，提交 `b22b334`）**：用户口径「投票应该有完整的权限，不是和直接观战一样最多观战一天」——
+  `voteOb.kts` 的 `startObVote` 成功路径改为 `untilMillis = null`（不写 `forceObExpireAt`）、移除自动解除广播、
+  事件 `durationMinutes = null`；不申请 `/vote quitOb` 则观战一直保留（quitOb/管理员解除/检举通过等解除）。
+  **非管理员直接观战仍保留 24h 到期自动解除**（Q3 不变），其它规则不变。冷启动通过（164/160/155、失败0、voteOb Enabled、
+  KDoc 211）；**功能未实测**（投票通过→观战→quitOb 链路未跑）。
 
 ### B. 新增待办（在办 / 等外部条件）
 
@@ -206,6 +211,9 @@
 10. **DOS 黑名单白名单：功能未实测、生产待验证**（`15017cc`）。未验证：`add`→IP 进入 `dosBlacklist`→自动解黑→玩家重连成功、
     `list/remove/clear/check` 各子命令、重启后持久化回读、多管理员通知、大NAT真实连坐恢复效果。首次生产使用按
     `docs/dos-ip-whitelist.md` §6/§10 验证；只对可信大NAT/机房出口配置（白名单会绕过内核反 DOS）。
+11. **投票观战取消 24h 钳制：功能未实测**（`b22b334`）。未验证：投票通过→强制观战→`/vote quitOb` 解除链路、
+    观战状态不随 24h 自动解除（`forceObExpireAt` 不再记录投票观战）、非管理员直接观战仍 24h 到期的对照；
+    需在首次真实投票场景验证（冷启动已通过）。
 
 ### C. 已完成 / 已决策（记录以免重复提议）
 
