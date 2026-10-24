@@ -36,8 +36,9 @@ private val directForceObCooldownMillis by config.key(120_000L, "非管理员面
 val directForceObCooldownUntil = mutableMapOf<String, Long>()//operator uid -> until millis
 customLoad(::directForceObCooldownUntil) { directForceObCooldownUntil.putAll(it) }
 
-// 非管理员层级施加的强制观战没有“时长”参数，按用户口径 Q3/R8 统一补 24h 到期自动解除；
+// 非管理员层级**直接**施加的强制观战没有“时长”参数，按用户口径 Q3/R8 统一补 24h 到期自动解除；
 // 管理员层级（3++/4）与系统施加保持无期限。会话态即可（强制观战记录本身也不跨重启）。
+// 注意：投票通过产生的强制观战属于社区共同决议，2026-10-24 起**不受**该 24h 钳制（通过后无期限，直到申请退出/被解除）。
 @Savable(false)
 val forceObExpireAt = mutableMapOf<String, Long>()//profile -> expire millis
 customLoad(::forceObExpireAt) { forceObExpireAt.putAll(it) }
@@ -273,30 +274,22 @@ suspend fun startObVote(starter: Player, target: Player, reason: String): Boolea
         broadcast("[red]错误：[white]${target.name}[red]为管理员，如有问题请与服主联系".with())
         return false
     }
-    // 非管理员层级发起的投票观战同样补 24h 到期（Q4）。
-    val cappedMinutes = with(playerMute) { nonAdminMaxPunishMinutesValue() }
-    val nonAdminApplied = !with(playerMute) { isAdminTierLevel(starterLevel) }
-    val untilMillis = if (nonAdminApplied) System.currentTimeMillis() + cappedMinutes * 60_000L else null
-    applyForceObRecord(target, reason, "vote", starterUid, untilMillis)
+    // 投票观战是社区共同决议，拥有完整效果（用户 2026-10-24 口径）：
+    // 不再套用“非管理员最多 1 天”的时限钳制，保持原本逻辑——不申请 /vote quitOb 则观战状态一直保留，
+    // 直到被解除（quitOb / 管理员解除 / 检举通过 / 其它解罚路径）。
+    applyForceObRecord(target, reason, "vote", starterUid, untilMillis = null)
     teams.changeTeam(target, teams.spectateTeam)
     broadcast(
         "[yellow][提示][green]如目标用户继续捣乱，可以使用[gold]/vote kick {player.shortID}[]投票踢出".with(
             "player" to target
         )
     )
-    if (nonAdminApplied) {
-        broadcast(
-            "[yellow][提示] [white]{target.name}[yellow] 的强制观战将在 {minutes} 分钟后自动解除（非管理员层级最长 1 天）。".with(
-                "target" to target, "minutes" to cappedMinutes
-            )
-        )
-    }
     with(playerMute) { markPunishmentAppliedIfNeeded(starterUids, starterLevel, targetUids) }
     with(playerMute) {
         emitPunishmentApplied(
             kind = "ob",
             target = target,
-            durationMinutes = if (nonAdminApplied) cappedMinutes else null,
+            durationMinutes = null,
             operatorUid = starterUid,
             operatorName = starterName,
             operatorLevelOrder = starterLevel,
@@ -348,7 +341,7 @@ onEnable {
             }
         }
     }
-    // 非管理员层级的强制观战到期自动解除（每 30 秒扫一次；管理员层级不受影响）。
+    // 非管理员层级**直接**施加的强制观战到期自动解除（每 30 秒扫一次；管理员层级与投票观战不受影响）。
     launch(Dispatchers.game) {
         while (true) {
             delay(30_000L)
