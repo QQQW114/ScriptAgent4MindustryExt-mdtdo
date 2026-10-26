@@ -397,19 +397,28 @@ open class MenuV3(
         // 长期运行（每次开菜单都新建实例）会无界增长。而 `MenuBuilder` 的字段注释明确写着
         // "id 可以复用，只要按钮结果键唯一"，并且 `token` 就是给回调识别会话用的，
         // 因此这里改为**全局只注册一次** + 每会话唯一 token 路由。
-        sessionToken = nextSessionToken()
-        activeSessions[sessionToken] = this
-        // 同一玩家的旧会话会被新菜单顶掉（hideExisting 默认 true）：回收路由表项，并**唤醒旧会话的 await**，
-        // 否则每次翻页/跳转都会留下一个等到超时才结束的协程。
-        // 注意：这里不能调用旧会话的 close()——所有会话共用同一个 menuId，close() 会把玩家当前的菜单一起关掉。
-        activeSessions.entries.removeAll { entry ->
-            val old = entry.value
-            if (old !== this && old.player === player) {
+        //
+        // 2026-10-24 修复「翻页/刷新后菜单自动退出」：
+        // 重发（refresh/send）时会先回收本实例上一轮的 token，再注册新 token。
+        // 原因：客户端 Menus.menuBuilder 在 hideExisting=true（默认）替换同 id 对话框时，会
+        // `oldDialog.hide(null)`，而旧对话框的 hidden 监听会用**旧 token** 回传一个
+        // "取消"事件（MenuResult.result=null）。如果旧 token 还留在路由表里，这个取消事件会被
+        // 当成玩家点了"返回"→ onCancel + 唤醒 awaitWithTimeout → finally 里 close() 把刚刷新的
+        // 新对话框关掉（表现为 Wiki/帖子/成就等页面一翻页就退出）。
+        // 回收后旧 token 不再命中 activeSessions，该替换事件被忽略；真实点击/返回始终带新 token。
+        val staleTokens = mutableListOf<Long>()
+        activeSessions.forEach { (token, old) ->
+            if (old === this || old.player === player) staleTokens += token
+        }
+        staleTokens.forEach { token ->
+            val old = activeSessions.remove(token) ?: return@forEach
+            if (old !== this) {
                 old.closed = true
                 old.closedSignal?.complete(Unit)
-                true
-            } else false
+            }
         }
+        sessionToken = nextSessionToken()
+        activeSessions[sessionToken] = this
 
         MTMenuBuilder.of(buildRoot())
             .id(sharedMenuId)
