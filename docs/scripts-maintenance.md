@@ -22,6 +22,38 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-26（第三十批）：MenuV3 翻页自动退出修复（旧 token 误路由）
+
+类型：Bug 修复（提交 `1faa83e`；`coreMindustry/lib/menuV3.kt` +19/−10）。详细技术说明见
+[`docs/custom-menu.md`](custom-menu.md)「2026-10-26」节；**未改其它脚本**。
+
+### 1. 现象
+
+Wiki 列表/正文、帖子列表/正文/评论、成就等 MenuV3 页面**翻页/刷新（`refresh()`/`send()` 重发）后菜单直接关闭**
+（玩家反馈"翻了就自动退出"）。
+
+### 2. 根因（v160 客户端替换对话框 + 服务端 token 路由）
+
+1. 客户端 `Menus.menuBuilder`（`参考项目/MindustryX-main/work/core/src/mindustry/ui/Menus.java`）在 `hidePrevious=true`
+   （默认）替换同 id 对话框时执行 `dialog.show(...); oldDialog.hide(null);`；旧对话框的 `hidden` 监听发现不是玩家关闭
+   （`wasHidden=false`）时，会以**旧 token** 回传一个取消事件（`MenuResult.result=null`，约 L66-74/L90-98）；
+2. `MenuV3.send()` 重发时生成新 token 但**保留同实例旧 token 路由条目**；旧 token 仍能路由 → `dispatch` 找不到回调 →
+   视为"玩家返回"（`onCancel()` + `closedSignal.complete`）；
+3. `awaitWithTimeout` 被唤醒后 `finally` 里 `close()` 把**刚下发的新对话框**关掉 → 翻页即退出。
+
+### 3. 修复
+
+`send()` 重发前先回收本实例上一轮 token（以及同一玩家旧实例会话：置 `closed=true` + 唤醒 await），再注册新 token；
+旧 token 不再命中路由表，替换对话框产生的取消事件被忽略；真实点击/"返回"始终带新 token，行为不变。
+附带收益：不再累积 stale token 路由表项。**页面作者无需改动**（用 `refresh()`/`send()` 即可），但不要自行固定 token。
+
+### 4. 验证与未验证
+
+- 冷启动验证通过（开发服）：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag` 失败 0；`sa listFailed` 空；
+  `wiki`/`forumPosts`/`achievement` 均 `Enabled`；KDoc **211 文件**干净。
+- **运行时翻页未实测**（需真实客户端点击，开发机无真人）：按 `current-issues.md` 新增待办逐页验证
+  （wiki 列表→第 2 页、帖子列表/正文/评论翻页、成就翻页且不退出；对照"返回"仍能正常关闭）。
+
 ## 2026-10-24（第二十九批）：投票观战取消 24h 钳制（社区决议完整生效）
 
 类型：口径调整（提交 `b22b334`；`wayzer/cmds/voteOb.kts` +8/−15）。**未改其它脚本**；设计文档已追加「2026-10-24 口径调整」节。

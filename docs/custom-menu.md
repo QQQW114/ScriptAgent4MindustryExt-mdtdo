@@ -262,3 +262,41 @@
    业务脚本要能在渲染失败/无响应时退回原聊天菜单；
 4. **不要重写布局代码**：直接用 `MenuV3` 的 `column/group/pane/space`，不要自己算宽度——
    本次失败正是手写布局导致的。
+
+## 2026-10-26：v160 替换对话框会回传取消事件——MenuV3 必须回收旧 token（翻页自动退出修复）
+
+> 现象：Wiki 列表/正文、帖子列表/正文/评论、成就等 MenuV3 页面**翻页（`refresh()`/`send()` 重发）后菜单直接关闭**
+> （玩家反馈"翻了就自动退出"）。修复提交 `1faa83e`（`coreMindustry/lib/menuV3.kt` `send()`，+19/−10）；冷启动验证通过、
+> **运行时未实测**。本节供后续维护与自定义页面作者参考。
+
+### 根因（客户端替换对话框 + 服务端 token 路由）
+
+1. **客户端**：`参考项目/MindustryX-main/work/core/src/mindustry/ui/Menus.java` 的 `menuBuilder` 在 `hidePrevious=true`
+   （默认）替换同 id 对话框时执行 `dialog.show(Core.scene, null); oldDialog.hide(null);`；旧对话框的 `hidden` 监听
+   （约 L66-74）发现 `dialog.wasHidden == false`（不是玩家点关闭）时，会以**旧 token** 回传一个"取消"事件
+   （`MenuResult.result = null`，约 L90-98）。
+2. **服务端**：`MenuV3.send()` 每次重发生成新 token 并登记 `activeSessions[token] = this`，但**同一实例上一轮的旧 token
+   条目没被清理**；旧 token 仍能路由进 `dispatch`，而此时 callbacks 已按新一页重建、找不到匹配回调 → 被当成"玩家返回"：
+   `onCancel()` + `closedSignal.complete(Unit)`。
+3. **结果**：`awaitWithTimeout` 被唤醒后 `finally { if(!closed) { onCancel(); close() } }` 把**刚下发的新对话框**关掉——
+   表现为"翻一页就退出"。
+
+### 修复方式
+
+`send()` 重发前先**回收旧 token**：收集 `activeSessions` 中「本实例」与「同一玩家旧实例」的条目并移除
+（旧实例置 `closed=true` 并唤醒其 await），再注册新 token 下发。旧 token 不再命中路由表 → 替换对话框产生的取消事件被忽略；
+真实点击/"返回"始终携带新 token，行为不变。附带收益：不再累积同实例 stale token 路由表项。
+
+### 对页面作者的含义
+
+- **自定义 MenuV3 页面无需改动**：只要用 `refresh()`/`send()` 重发（含 `renderPaged` 分页），库已自动处理。
+- **不要自行固定/复用 token**：token 由 `send()` 生成并回收；手动固定 token 会重新引入误路由。
+- 若另有"自己实现对话框替换 + 自定义回调路由"的代码，替换前也要注销旧 token/回调，否则会遇到同类"取消事件误路由"；
+- 分页仍保留"返回"按钮等入口：真实返回携带新 token，不受本次修复影响。
+
+### 验证与未验证
+
+- 冷启动验证（开发服）：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag` 失败 0；`sa listFailed` 空；
+  `wiki`/`forumPosts`/`achievement` 均 `Enabled`；KDoc **211 文件**干净。
+- **运行时翻页未实测**（需真实客户端点击，开发机无真人）：验证清单见 `current-issues.md` 新增待办。
+- 代码位置：`mdtserver/config/scripts/coreMindustry/lib/menuV3.kt` 的 `send()`（约 L394-424，含 2026-10-24 修复注释）。
