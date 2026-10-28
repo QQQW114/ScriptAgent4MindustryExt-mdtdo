@@ -43,7 +43,7 @@ private val textInput by lazy { contextScript<coreMindustry.UtilTextInput>() }
 // ---------- 配置 ----------
 
 private val enabled by config.key(true, "是否启用惩罚检举系统（弹窗/检举投票/检举封禁）")
-private val passRatePercent by config.key(70, "检举投票通过所需赞成率(%)")
+private val passRatePercent by config.key(75, "检举投票通过所需赞成率(%)（2026-10-26 起默认 75%；仅已绑定玩家可发起/投票）")
 private val popupDelayMillis by config.key(3000L, "惩罚生效后延迟多久弹出检举提示(ms)，避免与惩罚提示同帧刷屏")
 private val popupMinIntervalMillis by config.key(60_000L, "同一玩家两次检举弹窗的最小间隔(ms)")
 private val minOnlinePlayers by config.key(3, "在线人数低于该值时跳过检举弹窗/投票（人数不足无法形成有效投票）")
@@ -173,16 +173,16 @@ private suspend fun showReportPrompt(reporter: Player, ev: PunishmentAppliedEven
         appendLine("[yellow]惩罚原因：[white]${ev.reason}")
         if (ev.fromVote) appendLine("[yellow]施加方式：[white]由玩家投票通过（发起者：${ev.operatorName ?: "未知玩家"}）")
         appendLine()
-        appendLine("[gray]如果你认为该惩罚不合理，可以发起检举投票（需要全服 $passRate% 赞成）。")
+        appendLine("[gray]如果你认为该惩罚不合理，可以发起检举投票（需要已绑定玩家中 $passRate% 赞成）。")
         appendLine("[yellow]检举说明：[white]本检举投票的发起者认为对方滥用权力，如果检举成功会禁止其一天使用权力。")
         appendLine("[yellow]此人已被成功检举了 [white]${strikes}[yellow] 次。")
         appendLine("[gray]${ruleSummaryText()}")
-        append("[gray]被检举者本人不能参与投票；关闭后可用 [gold]/punishreport[] 重新打开本提示。")
+        append("[gray]仅已绑定玩家可发起/参与投票，被检举者本人不能参与；关闭后可用 [gold]/punishreport[] 重新打开本提示。")
     }
     var start = false
     MenuBuilder<Unit>("[gold]惩罚检举") {
         msg = msgText
-        option("[green]发起检举投票\n[gray]需要全服 $passRate% 同意") { start = true }
+        option("[green]发起检举投票\n[gray]仅已绑定玩家；需 $passRate% 同意") { start = true }
         option("[gray]暂不检举") {}
     }.sendTo(reporter, 90_000)
     if (!start) return
@@ -235,6 +235,11 @@ private suspend fun startReportVote(reporter: Player, ev: PunishmentAppliedEvent
         reporter.sendMessage("[yellow]只有被惩罚的玩家本人可以发起检举。")
         return false
     }
+    // 用户口径（2026-10-26）检举收拢：只有已绑定（已登录账号）的玩家可以发起检举投票。
+    if (!PlayerData[reporter].authed) {
+        reporter.sendMessage("[yellow]只有已绑定/已登录账号的玩家可以发起检举投票。")
+        return false
+    }
     val operatorUid = ev.operatorUid ?: return false
     pruneHandledRecords()
     if (handledRecords.containsKey(ev.recordId)) {
@@ -261,6 +266,7 @@ private suspend fun startReportVote(reporter: Player, ev: PunishmentAppliedEvent
             append("[yellow]检举说明: [white]本检举投票的发起者认为对方滥用权力，如果检举成功会禁止其一天使用权力。\n")
             append("[yellow]此人已被成功检举了 [white]${strikes}[yellow] 次。\n")
             append("[gray]${ruleSummaryText()}\n")
+            append("[gray]仅已绑定玩家可参与投票；被检举者本人不能投票。\n")
             append("[gray]通过后：解除该惩罚，并按规则封禁被检举者的相应权限。")
         }
         val event = VoteEvent(
@@ -269,8 +275,8 @@ private suspend fun startReportVote(reporter: Player, ev: PunishmentAppliedEvent
                 "operator" to (ev.operatorName ?: "未知玩家")
             ),
             extDesc = extDesc,
-            // 被检举者若在线不得参与投票；其余在线玩家可投（同 IP 只计一票由投票框架保证）。
-            canVote = { p -> !isSameAccount(p, operatorUid) },
+            // 用户口径（2026-10-26）：只有已绑定玩家可以投票；被检举者若在线不得参与投票。
+            canVote = { p -> PlayerData[p].authed && !isSameAccount(p, operatorUid) },
             requireNum = { all -> kotlin.math.ceil(all * rate / 100.0).toInt().coerceAtLeast(1) },
             guestForbidden = true,
             // 被罚者可能正被强制观战（voteOb 注册了 denyVotePredicate），本人必须能投/能发起。

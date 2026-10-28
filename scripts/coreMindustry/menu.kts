@@ -147,7 +147,7 @@ private val playerHelpEntries = listOf(
     HelpEntryDef("pressure", "[green]服务器压力", "查看TPS/上行压力"),
     HelpEntryDef("team", "[yellow]队伍管理(3++)", "3++级/4级可调整自己的队伍；3+级可用 /pvpteam 在PVP图切换自己；指定他人需管理员权限", "/team"),
     HelpEntryDef("pvpteam", "[yellow]PVP换队(3+)", "3+级/4级仅PVP模式切换自己队伍（活跃且有核心、未被@banTeam禁用）", "/pvpteam"),
-    HelpEntryDef("punishreport", "[red]检举惩罚", "被禁言/强制观战/禁建，或被投票限制成功后可发起检举投票自救（投票限制类需先选理由；弹窗关闭后可用本命令重开）。被成功检举≥3次永久禁直接限制、≥6次永久禁发起限制类投票", "/punishreport"),
+    HelpEntryDef("punishreport", "[red]检举惩罚", "被禁言/强制观战/禁建，或被投票限制成功后可发起检举投票自救（投票限制类需先选理由；弹窗关闭后可用本命令重开）。仅已绑定玩家可发起/参与投票、需 75% 赞成；被成功检举≥3次永久禁直接限制、≥6次永久禁发起限制类投票", "/punishreport"),
 )
 
 private val voteHelpEntries = listOf(
