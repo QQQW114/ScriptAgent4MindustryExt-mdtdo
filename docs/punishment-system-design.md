@@ -715,3 +715,25 @@ punishmentReport.kts ───────────────────�
   到期清扫注释（约 L341）。
 - **验证与未验证**：冷启动验证通过（banner 164 脚本/160 加载/155 启用/出错0；`scriptdiag` 164/160/156 失败0；
   `sa listFailed` 空；`voteOb` Enabled；KDoc 211 文件干净）。**未做运行时功能实测**（投票通过→观战→quitOb 链路未跑）。
+
+## 2026-10-26 口径：检举收拢（75% 赞成率 + 仅已绑定玩家发起/投票）
+
+> 用户 2026-10-26 口径：「检举收拢一下：75%同意概率+需求已绑定玩家发起+已绑定玩家投票」。已实现（提交 `67b977e`，
+> `wayzer/user/punishmentReport.kts` 为主，`menu.kts`/`voteTutorial.kts` 文案同步）。本节为**追加记录、不改上文历史口径**。
+
+- **通过率 70% → 75%**：`wayzer.user.punishmentReport.passRatePercent` 默认 **75**；
+  `requireNum = ceil(可投人数 × rate/100)`（至少 1 票），快速通过与超时判定使用同一阈值。
+- **仅已绑定玩家可发起**：`startReportVote` 增加守卫 `PlayerData[reporter].authed`（authed = `id != uuid`，即已登录/绑定账号，
+  定义在 `wayzer/lib/PlayerData.kt:14`）；未绑定直接提示「只有已绑定/已登录账号的玩家可以发起检举投票」并拒绝。
+  弹窗本身仍只出现在「被惩罚且已绑定」的玩家（原有 `targetAuthed` 前置检查）。
+- **仅已绑定玩家可投票**：`VoteEvent.canVote = { p -> PlayerData[p].authed && !isSameAccount(p, 被检举者) }`——
+  游客不再收到投票弹窗、参与人数与通过阈值（`allCanVote` / `allCanVoteIpCount`）**只统计已绑定玩家**；
+  被检举者本人（同账号）仍不能投。
+- **文案同步**：弹窗正文/「发起检举投票」按钮/检举票 extDesc/投票教程检举页（`voteTutorial.kts`）/帮助菜单
+  `punishreport` 条目（`menu.kts`）均写明「仅已绑定玩家可发起/参与，需 75% 赞成」。
+- **其它规则不变**：≥3 次永久禁直接限制、≥6 次永久禁发起限制类投票、Q2/Q5 检举封禁与 24h 冷却、检举二次确认选项、
+  投票教程游客限制等均保持。
+- **生产注意**：若生产曾手动改过 `passRatePercent` 配置（配置文件里已有值），需手动改为 **75**；未改过则默认即 75。
+- **验证与未验证**：冷启动验证通过（banner 164 脚本/160 加载/155 启用/出错0；`scriptdiag` 164/160/155 失败0；
+  `sa listFailed` 空；`punishmentReport`/`voteTutorial`/`menu` 均 Enabled；KDoc 211 文件干净）。
+  **运行时投票链路未实测**（未绑定发起/收弹窗、75% 阈值、被检举者不能投、参与人数只算已绑定待真实玩家验证）。
