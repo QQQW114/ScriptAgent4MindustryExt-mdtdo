@@ -22,6 +22,46 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-10-31（第三十二批）：新玩家批量框选拆除监控（idleBreakGuard）
+
+类型：新增脚本（`scripts/wayzer/ext/idleBreakGuard.kts`，PR #1）。
+
+### 1. 需求
+
+用户 2026-10-31：对新玩家进服后的批量框选拆除做监控；游客 / 1 级 / 2 级分别设置不同的监控时间与批量阈值，超限强制观战。
+
+### 2. 改动
+
+- 新增 `idleBreakGuard.kts`：监听 `ClientSnapshotCallPacket.plans` 的 `breaking` 批次，按玩家统计选中的真实建筑物。
+- 监控窗口：游客 120 秒、1 级 60 秒、2 级 60 秒；3 级及以上不监控。
+- 批量阈值：游客 50、1 级 100、2 级 150，超过后调用 `voteOb.forceObPlayer` 强制观战 600 秒。
+- 过滤：derelict 地图原有物、boulder、配置内传送带白名单、建造中的 `ConstructBuild`。
+- 拆除态 `ConstructBuild` 用 `previous` 还原并计入；修复“框选后必须等真正拆够才触发”的问题。
+- 移除无法归因操作者的 `TileChangeEvent`；`BlockBuildBeginEvent` 仅对选中 tile 生效，避免误判。
+- 配置键：`wayzer.ext.idleBreakGuard.*`（窗口、阈值、观战时长、白名单、`debugLog`）。
+
+### 3. 验证
+
+开发服（B509 / SA 3.4.0 / 完整脚本树）冷启动：
+
+```text
+共找到165脚本,加载成功161,启用成功156,出错0
+wayzer/ext/idleBreakGuard  Enabled failReason=无
+```
+
+假玩家测试：
+
+- 游客 50 不触发 / 51 触发；1 级 100 / 101；2 级 150 / 151；
+- 窗口 120 / 60 / 60 秒内触发，过期后不触发；
+- 建造中的 60 个 `ConstructBuild` 不计入；60 个传送带豁免；
+- A 选中 60 个、B 去拆其中一个，A 不被误判。
+
+### 4. 未验证
+
+- 真实客户端框选时序、包拆分、聊天/观战观感；
+- 上线后的实际误判率与阈值调整；
+- 取消框选后 `selected` 不回退的边界（当前保留到窗口结束）。
+
 ## 2026-10-28（第三十一批）：检举收拢——75% 赞成率 + 仅已绑定玩家发起/投票
 
 类型：口径调整（提交 `67b977e`；`punishmentReport.kts` 为主，`menu.kts`/`voteTutorial.kts` 文案同步）。
