@@ -283,6 +283,13 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   best-effort、`hotReloadAnnounce=false` 可关）；生产**已开 socketInput** 时首次部署无需重启（复制 updater→`-DryRun`→直接更新），
   未开端口才需改 `server.properties` 重启一次（或 `-NoHotReload` 停服更新）。真实游戏内可见性/失败文案待 e2e；
   文档见 `deploy-sync-checklist.md` §3.2 与 `scripts-maintenance.md` 第三十四批 §5。
+- **2026-11-01（邮箱验证码服务 email-service）**：新增独立本地发信服务 `mdtdo/email-service/`（PowerShell HttpListener，
+  `127.0.0.1:40150`）：绑定插件 POST `/send`（email+code），服务通过阿里云 DirectMail 发送 QQ 邮箱验证码；
+  **只发信**（不生成/不校验验证码），只允许 `qq.com`/`foxmail.com`，限流（同邮箱 60s / 5 次每日 / 全局 150 每日），
+  日志邮箱打码，`config.json`（含 AccessKey）被 .gitignore 排除。阿里云侧已配好：DirectMail 开通、
+  发信域名 `dm.mdtdomindustry.cn`（SPF/DKIM/DMARC/MX 验证通过；根域保留原阿里企业邮箱不动）、
+  发信地址 `noreply@dm.mdtdomindustry.cn`、RAM 用户 `mdt-email-api`；实测发往 QQ 邮箱成功（HTTP 200 + EnvId）。
+  游戏内绑定功能由协作者插件实现，本服务只提供发信能力；文档 `docs/email-service.md`。
 
 ## 7. 已替代或明确不应恢复的方向
 

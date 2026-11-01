@@ -1,0 +1,23 @@
+{
+  "_comment": "复制为 config.json 后填写；config.json 已被 .gitignore 排除，不要提交真实密钥",
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 40150
+  },
+  "internalToken": "请改成一段随机长字符串（调用方需带 X-Internal-Token 请求头）",
+  "aliyun": {
+    "endpoint": "https://dm.aliyuncs.com/",
+    "accessKeyId": "请填写 RAM 子账号 AccessKeyId",
+    "accessKeySecret": "请填写 RAM 子账号 AccessKeySecret",
+    "senderAddress": "noreply@dm.mdtdomindustry.cn",
+    "fromAlias": "MDT 服务器"
+  },
+  "allowDomains": ["qq.com", "foxmail.com"],
+  "limits": {
+    "perEmailCooldownSeconds": 60,
+    "perEmailDailyLimit": 5,
+    "globalDailyLimit": 150
+  },
+  "mockSend": false,
+  "logDir": "logs"
+}

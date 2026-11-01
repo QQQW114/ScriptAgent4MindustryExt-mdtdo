@@ -13,6 +13,7 @@ warning：AI生成（也包含当前的readme，维护文档并非人能看懂�
 | --- | --- |
 | `scripts/` | 插件脚本树，部署到服务端 `config/scripts/` |
 | `docs/` | 维护总览、领域设计文档与排查经验 |
+| `email-service/` | 邮箱验证码发信服务（本地 HTTP API，供绑定插件调用；不含密钥/日志） |
 
 `scripts/` 主要分区：`coreMindustry/`（菜单、积分板与基础框架）、`coreLibrary/`（命令、数据库等公共库）、
 `wayzer/`（账号、权限、商店、社区、Wiki/帖子、地图与保护逻辑）、`mapScript/`（地图玩法）。
@@ -37,6 +38,7 @@ warning：AI生成（也包含当前的readme，维护文档并非人能看懂�
 - [Agent 调试经验与常见坑](docs/agent-debug-experience.md) — 启动器、编码、脚本编译、数据库与推送陷阱
 - [生产同步清单](docs/deploy-sync-checklist.md) — 同步范围、绝不能覆盖的运行数据、声明惯例
 - [自定义菜单（160 服务端下发菜单）](docs/custom-menu.md) — 菜单版式与跨菜单导航口径
+- [邮箱验证码服务](docs/email-service.md) — 给绑定插件用的本地发信 API（只允许 QQ 邮箱）与部署说明
 - 其他专项：[兼容层](docs/official-v159-compat.md)、[网络同步](docs/v159-network-sync.md)、
   [性能保护](docs/performance-guard.md)、[Data Assets / 外部 CP](docs/v159-data-assets-hot-reload.md)、
   [服务器状态统计](docs/server-status-stats.md)
