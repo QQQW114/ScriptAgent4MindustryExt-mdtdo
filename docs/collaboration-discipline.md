@@ -38,10 +38,20 @@ docs/**        权威文档（行为变更必须同步）
 
 ## 2. 绝对红线（违反会直接搞坏服务器/历史）
 
-1. **不要修改 `scripts/wayzer/vote.lib.kt` 与 `scripts/wayzer/lib/*.kt`**：
-   模块重编译会造成静态单例重复，服务器无法干净重启。需要扩展投票/通用库行为时，
-   在 `scripts/wayzer/cmds/*`、`scripts/wayzer/ext/*`、`scripts/wayzer/user/*` 新建脚本，
-   通过公开 API/事件扩展。
+1. **默认不要修改 `scripts/wayzer/vote.lib.kt` 与 `scripts/wayzer/lib/*.kt`**：
+   这些是 SA **模块库**（`object` 单例/全局注册表/持久化层），热重载会导致同名类重复定义、静态单例双份，
+   服务器无法通过普通重启恢复。需要扩展投票/通用库行为时，在 `scripts/wayzer/cmds/*`、`scripts/wayzer/ext/*`、
+   `scripts/wayzer/user/*` 新建脚本，通过公开 API/事件扩展。
+
+   **例外（库变更流程，仅在确有必要时）**：必须依次满足
+   a) 维护者明确批准并记录原因（核心 bug/上游修复）；
+   b) **禁止热重载**：改完先清空脚本编译缓存（停服后 `updater/update-plugins-clear-cache.bat`，
+      或手动删 `mdtserver/config/scripts/cache` 内容），再**冷启动**；
+   c) 全量验证：banner `出错0`、`scriptdiag count` 失败 0、`sa listFailed` 空、160+ 脚本全部 `Enabled`，
+      并对受影响的投票/DB/账号等核心链路做回归（至少手动触发一次相关指令）；
+   d) 文档记录（`scripts-maintenance.md` 批次 + 对应设计文档 + 回滚方式）；
+   e) 优先向上游 `way-zer/ScriptAgent4MindustryExt` 提交同款修复，减少 fork 分叉。
+   无状态库（例如 `coreMindustry/lib/menuV3.kt` 这类纯 UI/工具类）风险相对低，但仍须走 b/c/d。
 2. **任何块注释内不得出现字面量 `/**`**：SA 编译器已知 bug 会静默截断编译产物（`.ktc`），
    脚本仍显示 `[Enabled]` 但指令/逻辑丢失。改完必须跑：
    `pwsh -NoProfile -File "mdtdo\tools\scan-nested-block-comment.ps1"` → 0 命中。
