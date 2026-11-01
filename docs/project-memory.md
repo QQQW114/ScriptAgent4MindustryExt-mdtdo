@@ -273,6 +273,12 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   事件 `durationMinutes = null`；不申请 `/vote quitOb` 则观战一直保留（quitOb/管理员解除/检举通过等解除）。
   **非管理员直接观战仍保留 24h 到期自动解除**（Q3 不变），其它规则不变。提交 `b22b334`；冷启动通过
   （164/160/155、失败0、voteOb Enabled、KDoc 211）；**功能未实测**。
+- **2026-11-01（更新器运行中热更新）**：`mdtdo/updater/` 新增 console socket + 脚本加载日志的运行中热重载——两阶段
+  （镜像前逐个 `sa unload` 将删除脚本 → 备份/严格镜像 → `sa scan` → 镜像后逐个 `sa load` → `sa listFailed`），
+  每步等 `logs/script-load/current.log` 的 `[ScriptAgent]` 完成标记 + `reloadSettleMillis` 静默，逐个串行防级联踩踏；
+  exit 2=镜像前失败零改动、exit 3=文件已更新但热重载失败（建议重启）；`.kt` 库改动必须停服、unload 必须先于删文件。
+  真实 e2e（开发服 B509）两场景均 exit 0（改2+增1：6.1/6.6/3.6s；删1+还原2：unload 3.2s、load 6.2/5.8s、listFailed 空、未重启）；
+  mock 125 项断言通过。用户已批准生产开启调试端口（只绑 localhost）；**生产首次启用待验证**。
 
 ## 7. 已替代或明确不应恢复的方向
 
@@ -347,6 +353,9 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
     `js Vars.netServer.admins.unBlacklistDos("ip")`。
 19. **投票观战取消 24h 钳制未实测**（`b22b334`）：投票通过→强制观战→`/vote quitOb` 解除链路、观战状态不随 24h 自动解除、
     非管理员直接观战仍 24h 到期的对照均未验证；口径见 `punishment-system-design.md`「2026-10-24 口径调整」节。
+20. **更新器运行中热更新：生产首次启用待验证**（开发服真实 e2e 已过、mock 125 项断言通过）：生产 6859 可用性/防火墙、
+    首次停服部署与 `script-load/current.log` 写入、运行中真实更新 exit 0、exit 2/3 失败回退、`.kt` 库改动拒绝；
+    另 console socket 等价服务器控制台，**只绑 localhost**。步骤见 `deploy-sync-checklist.md` §3.2。
 
 ## 9. 给新会话 Agent 的柔性接手提示
 
@@ -400,6 +409,10 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
 
 ## 12. 本文档更新记录
 
+- **2026-11-01（更新器运行中热更新）**：`updater/` 新增 console socket + 脚本加载日志的运行中热重载（两阶段顺序、
+  逐个等待完成标记 + 静默、exit 2/3 语义、`.kt` 停服红线）；开发服真实 e2e 两场景 exit 0（未重启）、mock 125 项断言通过；
+  用户批准生产开启调试端口（只绑 localhost）、**生产首次启用待验证**。同步 `scripts-maintenance.md` 第三十四批、
+  `deploy-sync-checklist.md` §3.1/§3.2（含更新器命令行的旧"必须先停服"描述修正）与 `current-issues.md` §A/待办 14。
 - **2026-10-24（投票观战取消 24h 钳制）**：用户口径「投票应该有完整的权限，不是和直接观战一样最多观战一天」——
   `voteOb.kts` 的 `startObVote` 成功路径改为 `untilMillis = null`（不写 `forceObExpireAt`）、移除自动解除广播、
   事件 `durationMinutes = null`；不申请 `/vote quitOb` 则观战一直保留；**非管理员直接观战仍保留 24h 到期**（Q3 不变）。

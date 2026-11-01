@@ -5,10 +5,16 @@
 # 入口脚本（update-plugins.ps1 / update-web.ps1 /
 # update-plugins-clear-cache.ps1）只负责解析参数，然后调用：
 #   Invoke-MdtUpdater -Kind <plugins|web|plugins-clear-cache> -UpdaterDir <本目录> -Cli <参数表>
-# 返回值即进程退出码（0 成功 / 1 失败 / 2 拒绝执行）。
+# 返回值即进程退出码（0 成功 / 1 失败 / 2 拒绝执行 / 3 文件已更新但运行中热重载失败或超时）。
+#
+# 运行中热更新：update-plugins 在服务器运行中且 console socket（server.properties 的
+# socketInput 配置）可用时：镜像前先逐个 sa unload 将被删除的脚本（文件还在时），
+# 再严格镜像，镜像后先 sa scan 再逐个 sa load changed/added，并尾随
+# <serverScriptsPath>\..\logs\script-load\current.log 确认每个脚本（含级联依赖）完成；
+# 失败/超时返回退出码 3；镜像前 unload 失败返回退出码 2（目标零改动）。
 # ============================================================================
 
-$script:UpdaterVersion = '1.0.0'
+$script:UpdaterVersion = '1.1.0'
 $script:LogWriter = $null
 $script:LogPath = ''
 $script:TempDir = ''
@@ -224,7 +230,7 @@ function Get-RelativeFiles {
 function Get-FileHashMap {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
-        [Parameter(Mandatory = $true)][string[]]$RelPaths
+        [AllowEmptyCollection()][string[]]$RelPaths = @()
     )
     $map = New-Object -TypeName 'System.Collections.Hashtable' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($rel in $RelPaths) {
@@ -258,6 +264,14 @@ function Get-DefaultConfig {
         ProtectedWebDirs     = @('web-data')
         ProtectedWebFiles    = @('web-config.json', 'web-config.ps1')
         CachePath            = ''
+        # 运行中热更新（console socket + 脚本加载日志）；缺字段时使用这些内置默认值，老配置无需修改
+        HotReloadMode               = 'socket'
+        ConsoleSocketHost           = '127.0.0.1'
+        ConsoleSocketPort           = 6859
+        ReloadLogPath               = ''
+        PerScriptTimeoutSeconds     = 120
+        ReloadSettleMillis          = 3000
+        SocketConnectTimeoutSeconds = 5
         RequireServerStopped = $true
         GamePort             = 6567
         WebPort              = 0
@@ -316,6 +330,13 @@ function Get-EffectiveConfig {
         @{ Json = 'protectedWebDirs'; Key = 'ProtectedWebDirs'; Kind = 'stringArray' },
         @{ Json = 'protectedWebFiles'; Key = 'ProtectedWebFiles'; Kind = 'stringArray' },
         @{ Json = 'cachePath'; Key = 'CachePath'; Kind = 'string' },
+        @{ Json = 'hotReloadMode'; Key = 'HotReloadMode'; Kind = 'string' },
+        @{ Json = 'consoleSocketHost'; Key = 'ConsoleSocketHost'; Kind = 'string' },
+        @{ Json = 'consoleSocketPort'; Key = 'ConsoleSocketPort'; Kind = 'int' },
+        @{ Json = 'reloadLogPath'; Key = 'ReloadLogPath'; Kind = 'string' },
+        @{ Json = 'perScriptTimeoutSeconds'; Key = 'PerScriptTimeoutSeconds'; Kind = 'int' },
+        @{ Json = 'reloadSettleMillis'; Key = 'ReloadSettleMillis'; Kind = 'int' },
+        @{ Json = 'socketConnectTimeoutSeconds'; Key = 'SocketConnectTimeoutSeconds'; Kind = 'int' },
         @{ Json = 'requireServerStopped'; Key = 'RequireServerStopped'; Kind = 'bool' },
         @{ Json = 'gamePort'; Key = 'GamePort'; Kind = 'int' },
         @{ Json = 'webPort'; Key = 'WebPort'; Kind = 'int' },
@@ -340,6 +361,49 @@ function Get-EffectiveConfig {
     if ($Cli.ContainsKey('Proxy') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.Proxy)) { $config.Proxy = [string]$Cli.Proxy }
     if ($Cli.ContainsKey('ProxyPort') -and [int]$Cli.ProxyPort -gt 0) { $config.ProxyPort = [int]$Cli.ProxyPort }
     if ($Cli.ContainsKey('KeepBackups') -and [int]$Cli.KeepBackups -gt 0) { $config.KeepBackups = [int]$Cli.KeepBackups }
+
+    # 运行中热更新：模式与参数（缺字段用默认值；异常值回退/钳制并提示，老配置无需修改）
+    $hotReloadMode = ([string]$config.HotReloadMode).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($hotReloadMode)) { $hotReloadMode = 'socket' }
+    if (@('socket', 'auto', 'off') -notcontains $hotReloadMode) {
+        Write-Host ('提示：config.json 的 hotReloadMode 值无效（{0}），已回退为 socket（可选 socket|auto|off）。' -f $config.HotReloadMode) -ForegroundColor Yellow
+        $hotReloadMode = 'socket'
+    }
+    if ($Cli.ContainsKey('HotReload')) {
+        $cliHotReload = ([string]$Cli.HotReload).Trim().ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($cliHotReload)) {
+            if (@('socket', 'auto', 'off') -notcontains $cliHotReload) {
+                throw ('REFUSED: -HotReload 参数无效：{0}（可选 socket|auto|off）' -f $Cli.HotReload)
+            }
+            $hotReloadMode = $cliHotReload
+        }
+    }
+    if ($Cli.ContainsKey('NoHotReload') -and [bool]$Cli.NoHotReload) {
+        if ($hotReloadMode -ne 'off') { Write-Host '提示：-NoHotReload 已生效（等同 -HotReload off）。' -ForegroundColor Yellow }
+        $hotReloadMode = 'off'
+    }
+    $config.HotReloadMode = $hotReloadMode
+    $perScriptTimeout = [int]$config.PerScriptTimeoutSeconds
+    if ($perScriptTimeout -lt 10) {
+        Write-Host ('提示：perScriptTimeoutSeconds={0} 过小，已钳制为最小值 10 秒（允许 10-600）。' -f $perScriptTimeout) -ForegroundColor Yellow
+        $perScriptTimeout = 10
+    } elseif ($perScriptTimeout -gt 600) {
+        Write-Host ('提示：perScriptTimeoutSeconds={0} 过大，已钳制为最大值 600 秒（允许 10-600）。' -f $perScriptTimeout) -ForegroundColor Yellow
+        $perScriptTimeout = 600
+    }
+    $config.PerScriptTimeoutSeconds = $perScriptTimeout
+    $reloadSettleMillis = [int]$config.ReloadSettleMillis
+    if ($reloadSettleMillis -lt 500) {
+        Write-Host ('提示：reloadSettleMillis={0} 过小，已钳制为最小值 500 毫秒（允许 500-15000）。' -f $reloadSettleMillis) -ForegroundColor Yellow
+        $reloadSettleMillis = 500
+    } elseif ($reloadSettleMillis -gt 15000) {
+        Write-Host ('提示：reloadSettleMillis={0} 过大，已钳制为最大值 15000 毫秒（允许 500-15000）。' -f $reloadSettleMillis) -ForegroundColor Yellow
+        $reloadSettleMillis = 15000
+    }
+    $config.ReloadSettleMillis = $reloadSettleMillis
+    $connectTimeout = [int]$config.SocketConnectTimeoutSeconds
+    if ($connectTimeout -lt 2) { $connectTimeout = 2 } elseif ($connectTimeout -gt 60) { $connectTimeout = 60 }
+    $config.SocketConnectTimeoutSeconds = $connectTimeout
 
     # 代理解析
     if (-not [string]::IsNullOrWhiteSpace([string]$config.Proxy) -and [int]$config.ProxyPort -gt 0) {
@@ -368,6 +432,18 @@ function Get-EffectiveConfig {
     $config.StatsWebPath = Resolve-UserPath -Path ([string]$config.StatsWebPath) -BaseDir $UpdaterDir
     $config.BackupPath = Resolve-UserPath -Path ([string]$config.BackupPath) -BaseDir $UpdaterDir
     $config.CachePath = Resolve-UserPath -Path ([string]$config.CachePath) -BaseDir $UpdaterDir
+    # 脚本加载日志（完成判定依据）：留空 = <serverScriptsPath>\..\logs\script-load\current.log
+    # 即 mdtserver\logs\script-load\current.log，由 SA 在每次编译/加载脚本时追加写入。
+    if ([string]::IsNullOrWhiteSpace([string]$config.ReloadLogPath)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$config.ServerScriptsPath)) {
+            $serverRoot = Split-Path -Parent ([string]$config.ServerScriptsPath).TrimEnd('\')
+            if (-not [string]::IsNullOrWhiteSpace($serverRoot)) {
+                $config.ReloadLogPath = Join-Path $serverRoot 'logs\script-load\current.log'
+            }
+        }
+    } else {
+        $config.ReloadLogPath = Resolve-UserPath -Path ([string]$config.ReloadLogPath) -BaseDir $UpdaterDir
+    }
     if (-not [string]::IsNullOrWhiteSpace([string]$config.LogDir)) {
         $config.LogDir = Resolve-UserPath -Path ([string]$config.LogDir) -BaseDir $UpdaterDir
     }
@@ -419,6 +495,8 @@ function Get-KindSettings {
             BackupRoot       = $backupRoot
             MarkerPath       = (Join-Path $backupRoot '.last-version')
             NeedsServerStopped = $false
+            RequireServerStopped = $false
+            SupportsHotReload = $false
             ClearCache       = $false
         }
     }
@@ -435,6 +513,9 @@ function Get-KindSettings {
         BackupRoot       = $backupRoot
         MarkerPath       = (Join-Path $backupRoot '.last-version')
         NeedsServerStopped = [bool]$Config.RequireServerStopped
+        RequireServerStopped = [bool]$Config.RequireServerStopped
+        # 运行中热更新只对普通 update-plugins 开放；清缓存版要求停服强制重编译
+        SupportsHotReload = ($Kind -eq 'plugins')
         ClearCache       = ($Kind -eq 'plugins-clear-cache')
     }
 }
@@ -846,20 +927,14 @@ function Get-GameJavaProcesses {
     return $result.ToArray()
 }
 
-function Assert-ServerStopped {
+# 检测服务器是否在运行（gamePort 监听 + 游戏 java 进程），并收集证据用于日志/提示。
+function Get-ServerRunState {
     param([Parameter(Mandatory = $true)]$Config)
     $gamePort = [int]$Config.GamePort
     Write-Log ('检查服务器是否已关闭（端口 {0} / 游戏 java 进程）...' -f $gamePort)
     $listeningPids = @(Get-ListeningOwnerPids -Port $gamePort)
     $gameJavas = @(Get-GameJavaProcesses -Config $Config)
-
-    if ($listeningPids.Count -eq 0 -and $gameJavas.Count -eq 0) {
-        Write-Log '未检测到运行中的服务器，可以安全更新。' 'OK'
-        return
-    }
-
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add(('检测到服务器仍在运行，已中止更新（更新器要求先关闭服务器）。')) | Out-Null
+    $evidence = New-Object System.Collections.Generic.List[string]
     foreach ($ownerPid in $listeningPids) {
         $detail = ''
         try {
@@ -868,14 +943,910 @@ function Assert-ServerStopped {
                 $detail = '{0}，命令行：{1}' -f ([string]$proc.Name), (Format-CommandLineForLog -CommandLine ([string]$proc.CommandLine))
             }
         } catch { }
-        $lines.Add(('  端口 {0} 正在监听：PID={1}（{2}）' -f $gamePort, $ownerPid, $detail)) | Out-Null
+        $evidence.Add(('  端口 {0} 正在监听：PID={1}（{2}）' -f $gamePort, $ownerPid, $detail)) | Out-Null
     }
     foreach ($process in $gameJavas) {
-        $lines.Add(('  疑似游戏服 java 进程：PID={0}，命令行：{1}' -f $process.ProcessId, (Format-CommandLineForLog -CommandLine $process.CommandLine))) | Out-Null
+        $evidence.Add(('  疑似游戏服 java 进程：PID={0}，命令行：{1}' -f $process.ProcessId, (Format-CommandLineForLog -CommandLine $process.CommandLine))) | Out-Null
     }
-    $lines.Add('请先关闭服务器（关掉「启动服务器.bat」窗口，或结束对应 java 进程）后重新运行本脚本。') | Out-Null
-    $lines.Add('如果确认服务器已关闭但仍有误报：检查 config.json 的 gamePort 是否与 server.properties 的 port 一致。') | Out-Null
-    throw ('REFUSED: ' + ($lines -join [Environment]::NewLine))
+    return [pscustomobject]@{
+        Running       = (($listeningPids.Count -gt 0) -or ($gameJavas.Count -gt 0))
+        GamePort      = $gamePort
+        ListeningPids = @($listeningPids)
+        GameJavas     = @($gameJavas)
+        Evidence      = @($evidence)
+    }
+}
+
+function Get-ServerRunningMessage {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [AllowEmptyCollection()][string[]]$Hints = @()
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('检测到服务器仍在运行。') | Out-Null
+    foreach ($line in @($State.Evidence)) {
+        if ($null -eq $line) { continue }
+        $lines.Add([string]$line) | Out-Null
+    }
+    foreach ($hint in @($Hints)) {
+        if ([string]::IsNullOrWhiteSpace([string]$hint)) { continue }
+        $lines.Add([string]$hint) | Out-Null
+    }
+    return $lines.ToArray()
+}
+
+function Assert-ServerStopped {
+    param([Parameter(Mandatory = $true)]$Config)
+    $state = Get-ServerRunState -Config $Config
+    if (-not $state.Running) {
+        Write-Log '未检测到运行中的服务器，可以安全更新。' 'OK'
+        return
+    }
+    $hints = @(
+        '请先关闭服务器（关掉「启动服务器.bat」窗口，或结束对应 java 进程）后重新运行本脚本。',
+        '如果确认服务器已关闭但仍有误报：检查 config.json 的 gamePort 是否与 server.properties 的 port 一致。'
+    )
+    throw ('REFUSED: ' + ((Get-ServerRunningMessage -State $state -Hints $hints) -join [Environment]::NewLine))
+}
+
+# ----------------------------------------------------------------------------
+# 运行中热重载（console socket + 脚本加载日志）
+#
+# 原理：
+#   服务器运行中不能覆盖脚本文件，但可以打开 Mindustry/SA 的 console socket
+#   （server.properties: socketInput=true / socketInputPort=6859 / socketInputAddress=localhost），
+#   更新器在严格镜像完成后通过 socket 依次发送 sa 命令，让运行中的服务器自己重载脚本。
+#   sa 命令在 socket 上通常没有回显，因此完成判定改为尾随 SA 的脚本加载日志：
+#     <serverScriptsPath>\..\logs\script-load\current.log
+#   日志每步写一行（[ScriptAgent] 编译脚本 <id> / 编译脚本完成 <id> / 停止脚本 <id> /
+#   卸载脚本 <id> / 加载脚本 <id> / 启用脚本 <id>），级联重启的依赖方也会继续写。
+#   逐个脚本的节奏：发命令 → 等日志出现该脚本的「启用脚本」（load）或「卸载脚本」（unload）
+#   → 再等 reloadSettleMillis 内没有新的 [ScriptAgent] 行 → 才发下一个命令（防止一口气发
+#   多条命令导致级联重启互相踩踏）。
+#
+# 命令顺序（added 非空时先发 sa scan，然后逐个执行）：
+#   removed: sa unload <id> → changed: sa load <id> → added: sa load <id>
+#   id = scripts\ 下相对路径去掉 .kts、用 / 分隔（例如 wayzer/ext/idleBreakGuard）
+#   全部完成后发 sa listFailed 读取 2~3 秒回显，若有脚本失败行则汇总为失败（退出码 3）。
+#
+# 安全：socket 只应绑定 localhost（不要暴露公网）；只发 sa load/unload/scan/listFailed
+#       这几类命令；socket/日志探测失败时在改动文件前中止；热重载失败/超时时文件已更新，
+#       返回退出码 3 并提示 sa load 或重启服务器。
+# ----------------------------------------------------------------------------
+
+# 命令发出后完全没有 [ScriptAgent] 日志行时的兜底等待（秒）：超过后按 no-op 完成处理。
+$script:NoOpGraceSeconds = 8
+
+function Get-ReloadLogLength {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return [long]-1 }
+        return [long](Get-Item -LiteralPath $Path -Force).Length
+    } catch {
+        return [long]-1
+    }
+}
+
+# 从指定偏移读取脚本加载日志的新增内容；文件被轮转/截断时从头读并标记 Truncated。
+function Read-ReloadLogNewText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][long]$Offset
+    )
+    $result = [pscustomobject]@{
+        Lines      = @()
+        NewOffset  = $Offset
+        Truncated  = $false
+        Error      = ''
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $result.Error = '日志文件不存在'
+        return $result
+    }
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        if ($Offset -lt 0 -or $Offset -gt $stream.Length) {
+            $Offset = [long]0
+            $result.Truncated = $true
+        }
+        [void]$stream.Seek($Offset, [System.IO.SeekOrigin]::Begin)
+        $reader = New-Object System.IO.StreamReader($stream, (New-Object System.Text.UTF8Encoding($false)), $true)
+        $text = $reader.ReadToEnd()
+        $result.NewOffset = [long]$stream.Position
+        if (-not [string]::IsNullOrEmpty($text)) {
+            $result.Lines = @($text -split "`r?`n" | Where-Object { -not [string]::IsNullOrEmpty($_) })
+        }
+        return $result
+    } catch {
+        $result.Error = $_.Exception.Message
+        return $result
+    } finally {
+        if ($null -ne $reader) {
+            try { $reader.Dispose() } catch { }
+        } elseif ($null -ne $stream) {
+            try { $stream.Dispose() } catch { }
+        }
+    }
+}
+
+# 把 scripts\ 下的相对路径（如 wayzer\ext\x.kts）转成 sa 脚本 id（wayzer/ext/x）：
+# 只要 .kts；保留顺序、去掉 `.kts` 后缀、反斜杠转 /、去重。
+function Get-HotReloadScriptIds {
+    param([AllowEmptyCollection()][string[]]$RelPaths = @())
+    $ids = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($rel in @($RelPaths)) {
+        $text = [string]$rel
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $text = $text.Trim().TrimStart('\').Replace('/', '\')
+        if ([System.IO.Path]::GetExtension($text) -ine '.kts') { continue }
+        $id = $text.Substring(0, $text.Length - 4).Replace('\', '/')
+        if ($seen.ContainsKey($id)) { continue }
+        $seen[$id] = $true
+        $ids.Add($id) | Out-Null
+    }
+    return $ids.ToArray()
+}
+
+# 找出变更中的非 .kts 文件（.kt 库 / 模块等）——运行中无法热重载，需停服或重启。
+function Get-NonScriptRelPaths {
+    param([AllowEmptyCollection()][string[]]$RelPaths = @())
+    $result = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($rel in @($RelPaths)) {
+        $text = [string]$rel
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $text = $text.Trim().TrimStart('\').Replace('/', '\')
+        if ([System.IO.Path]::GetExtension($text) -ieq '.kts') { continue }
+        if ($seen.ContainsKey($text)) { continue }
+        $seen[$text] = $true
+        $result.Add($text) | Out-Null
+    }
+    return $result.ToArray()
+}
+
+# SA 脚本加载日志的完成标记：
+#   load   → 启用脚本 <id>（在「加载脚本 <id>」之后）
+#   unload → 卸载脚本 <id>
+# 注意：真实日志里 unload 行形如「... [ScriptAgent] 卸载脚本 wayzer/ext/e2eProbe: 」（id 后面是
+# ASCII 冒号），load 行「... [ScriptAgent] 启用脚本 wayzer/ext/x」行尾无冒号，所以尾随字符类
+# 必须同时接受空白/行尾/中英文标点（含 : 与 ：），否则 unload 永远等不到完成标记而超时。
+function Test-ReloadCompletionLine {
+    param([string]$Line, [string]$Id, [string]$ActionKind)
+    if ([string]::IsNullOrEmpty($Line) -or [string]::IsNullOrEmpty($Id)) { return $false }
+    if ($Line -notmatch '\[ScriptAgent\]') { return $false }
+    $escaped = [regex]::Escape($Id)
+    $trailing = '(\s|$|,|:|;|，|；|：|（|\(|)'
+    if ($ActionKind -eq 'unload') {
+        return ($Line -match ('卸载脚本\s+' + $escaped + $trailing))
+    }
+    return ($Line -match ('启用脚本\s+' + $escaped + $trailing))
+}
+
+# 失败标记：日志里出现当前脚本 id 的失败行（编译脚本失败 / 出错 / 异常 / Exception 等）。
+function Test-ReloadFailureLine {
+    param([string]$Line, [string]$Id)
+    if ([string]::IsNullOrEmpty($Line)) { return $false }
+    if ($Line -notmatch '\[ScriptAgent\]') { return $false }
+    if ($Line -notmatch '(?i)(失败|出错|异常|错误|ERROR|Exception|failReason)') { return $false }
+    if ([string]::IsNullOrWhiteSpace($Id)) { return $true }
+    return ($Line -match [regex]::Escape($Id))
+}
+
+# 打开 console socket 会话（等价于 telnet 127.0.0.1 6859 后逐行输入 sa 命令）。
+function Open-ConsoleSocketSession {
+    param([Parameter(Mandatory = $true)]$Config)
+    $hostName = [string]$Config.ConsoleSocketHost
+    $port = [int]$Config.ConsoleSocketPort
+    $timeoutMs = [Math]::Max(1000, [int]$Config.SocketConnectTimeoutSeconds * 1000)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try { $client.NoDelay = $true } catch { }
+    $iar = $client.BeginConnect($hostName, $port, $null, $null)
+    if (-not $iar.AsyncWaitHandle.WaitOne($timeoutMs, $false)) {
+        try { $client.Close() } catch { }
+        throw ('连接 console socket 超时（{0}:{1}，{2} 毫秒）：请确认 server.properties 的 socketInput/socketInputPort/socketInputAddress 配置与服务器状态。' -f $hostName, $port, $timeoutMs)
+    }
+    try {
+        $client.EndConnect($iar)
+    } catch {
+        try { $client.Close() } catch { }
+        throw ('连接 console socket 失败（{0}:{1}）：{2}' -f $hostName, $port, $_.Exception.Message)
+    }
+    $stream = $client.GetStream()
+    try { $stream.ReadTimeout = 1000 } catch { }
+    try { $stream.WriteTimeout = 5000 } catch { }
+    $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)))
+    $writer.AutoFlush = $true
+    return [pscustomobject]@{
+        Client       = $client
+        Stream       = $stream
+        Writer       = $writer
+        Host         = $hostName
+        Port         = $port
+        SentCommands = New-Object System.Collections.Generic.List[string]
+    }
+}
+
+function Send-ConsoleCommand {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][string]$Command
+    )
+    try {
+        $Session.Writer.WriteLine($Command)
+        $Session.Writer.Flush()
+    } catch {
+        throw ('发送 sa 命令失败：{0}（{1}）' -f $Command, $_.Exception.Message)
+    }
+    $Session.SentCommands.Add([string]$Command) | Out-Null
+    Write-Log ('  → 发送控制台命令：{0}' -f $Command)
+}
+
+function Read-ConsoleEcho {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [int]$Milliseconds = 2500
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $deadline = (Get-Date).AddMilliseconds($Milliseconds)
+    $buffer = New-Object byte[] 4096
+    while ((Get-Date) -lt $deadline) {
+        try {
+            if ($Session.Client.Available -gt 0) {
+                $read = $Session.Stream.Read($buffer, 0, $buffer.Length)
+                if ($read -gt 0) {
+                    $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+                    foreach ($line in ($text -split "`r?`n")) {
+                        if (-not [string]::IsNullOrWhiteSpace($line)) { $lines.Add($line) | Out-Null }
+                    }
+                } else {
+                    Start-Sleep -Milliseconds 100
+                }
+            } else {
+                Start-Sleep -Milliseconds 100
+            }
+        } catch {
+            break
+        }
+    }
+    return $lines.ToArray()
+}
+
+function Close-ConsoleSocketSession {
+    param([AllowNull()]$Session)
+    if ($null -eq $Session) { return }
+    try { $Session.Writer.Dispose() } catch { }
+    try { $Session.Stream.Dispose() } catch { }
+    try { $Session.Client.Close() } catch { }
+}
+
+# 只读探测 console socket 能否连接（连接后立刻关闭，不发任何命令）。DryRun 也用这个。
+function Test-ConsoleSocketAvailable {
+    param([Parameter(Mandatory = $true)]$Config)
+    $info = [pscustomobject]@{
+        Available = $false
+        Host      = [string]$Config.ConsoleSocketHost
+        Port      = [int]$Config.ConsoleSocketPort
+        Reason    = ''
+    }
+    $session = $null
+    try {
+        $session = Open-ConsoleSocketSession -Config $Config
+        $info.Available = $true
+    } catch {
+        $info.Reason = $_.Exception.Message
+    } finally {
+        if ($null -ne $session) { Close-ConsoleSocketSession -Session $session }
+    }
+    return $info
+}
+
+# 把 planned 变更转换成「逐个执行」的命令列表：
+#   先 removed 的 sa unload，再 changed 的 sa load，最后 added 的 sa load（各自保持顺序、去重）。
+function Get-HotReloadActionPlan {
+    param(
+        [AllowEmptyCollection()][string[]]$AddedPaths = @(),
+        [AllowEmptyCollection()][string[]]$ChangedPaths = @(),
+        [AllowEmptyCollection()][string[]]$RemovedPaths = @()
+    )
+    $actions = New-Object System.Collections.Generic.List[object]
+    foreach ($id in @(Get-HotReloadScriptIds -RelPaths $RemovedPaths)) {
+        $actions.Add([pscustomobject]@{ Id = [string]$id; Kind = 'removed'; ActionKind = 'unload'; Command = ('sa unload ' + $id) }) | Out-Null
+    }
+    foreach ($id in @(Get-HotReloadScriptIds -RelPaths $ChangedPaths)) {
+        $actions.Add([pscustomobject]@{ Id = [string]$id; Kind = 'changed'; ActionKind = 'load'; Command = ('sa load ' + $id) }) | Out-Null
+    }
+    foreach ($id in @(Get-HotReloadScriptIds -RelPaths $AddedPaths)) {
+        $actions.Add([pscustomobject]@{ Id = [string]$id; Kind = 'added'; ActionKind = 'load'; Command = ('sa load ' + $id) }) | Out-Null
+    }
+    return $actions.ToArray()
+}
+
+# 等待单个脚本的重载完成：
+#   - 日志出现该 id 的完成标记（load → 启用脚本；unload → 卸载脚本）；
+#   - 之后连续 reloadSettleMillis 内没有新的 [ScriptAgent] 行（等依赖方级联重启写完）；
+#   - 超时 perScriptTimeoutSeconds → 失败（TimedOut）；
+#   - 命令发出后 noOpGraceSeconds 内完全没有 [ScriptAgent] 行 → 按 no-op 完成处理（NoOp）。
+function Wait-ScriptReloadComplete {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][long]$Offset,
+        [Parameter(Mandatory = $true)][string]$ScriptId,
+        [Parameter(Mandatory = $true)][ValidateSet('load', 'unload')][string]$ActionKind,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][int]$SettleMillis,
+        [int]$NoOpGraceSeconds = $script:NoOpGraceSeconds
+    )
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $noOpDeadline = (Get-Date).AddSeconds($NoOpGraceSeconds)
+    $completionSeen = $false
+    $completionAt = $null
+    $lastAgentAt = $null
+    $sawAgentLine = $false
+    $failureLine = ''
+    $agentLines = New-Object System.Collections.Generic.List[string]
+
+    while ((Get-Date) -lt $deadline) {
+        $chunk = Read-ReloadLogNewText -Path $LogPath -Offset $Offset
+        $Offset = [long]$chunk.NewOffset
+        if ([bool]$chunk.Truncated) {
+            Write-Log ('脚本加载日志被截断/轮转（{0}），已从文件头重新读取。' -f $LogPath) 'WARN'
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$chunk.Error)) {
+            Write-Detail ('读取脚本加载日志失败（继续重试）：{0}' -f $chunk.Error)
+        }
+        foreach ($line in @($chunk.Lines)) {
+            if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+            if ($line -notmatch '\[ScriptAgent\]') { continue }
+            $sawAgentLine = $true
+            $lastAgentAt = Get-Date
+            $agentLines.Add([string]$line) | Out-Null
+            Write-Detail ('  [脚本日志] ' + $line)
+            if (Test-ReloadFailureLine -Line $line -Id $ScriptId) {
+                $failureLine = [string]$line
+                break
+            }
+            if (-not $completionSeen -and (Test-ReloadCompletionLine -Line $line -Id $ScriptId -ActionKind $ActionKind)) {
+                $completionSeen = $true
+                $completionAt = Get-Date
+            }
+        }
+        if (-not [string]::IsNullOrEmpty($failureLine)) { break }
+
+        $now = Get-Date
+        if ($completionSeen) {
+            $lastActivity = $completionAt
+            if ($null -ne $lastAgentAt -and $lastAgentAt -gt $lastActivity) { $lastActivity = $lastAgentAt }
+            if (($now - $lastActivity).TotalMilliseconds -ge $SettleMillis) {
+                $watch.Stop()
+                return [pscustomobject]@{
+                    Ok = $true; NoOp = $false; TimedOut = $false; FailureLine = ''
+                    ElapsedMs = [long]$watch.Elapsed.TotalMilliseconds
+                    AgentLines = @($agentLines.ToArray()); Offset = [long]$Offset
+                }
+            }
+        } elseif (-not $sawAgentLine -and $now -gt $noOpDeadline) {
+            $watch.Stop()
+            return [pscustomobject]@{
+                Ok = $true; NoOp = $true; TimedOut = $false; FailureLine = ''
+                ElapsedMs = [long]$watch.Elapsed.TotalMilliseconds
+                AgentLines = @(); Offset = [long]$Offset
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    $watch.Stop()
+    if (-not [string]::IsNullOrEmpty($failureLine)) {
+        return [pscustomobject]@{
+            Ok = $false; NoOp = $false; TimedOut = $false; FailureLine = [string]$failureLine
+            ElapsedMs = [long]$watch.Elapsed.TotalMilliseconds
+            AgentLines = @($agentLines.ToArray()); Offset = [long]$Offset
+        }
+    }
+    return [pscustomobject]@{
+        Ok = $false; NoOp = $false; TimedOut = $true; FailureLine = ''
+        ElapsedMs = [long]$watch.Elapsed.TotalMilliseconds
+        AgentLines = @($agentLines.ToArray()); Offset = [long]$Offset
+    }
+}
+
+# 收尾：发 sa listFailed 并读取 2~3 秒回显，解析脚本失败行（形如 `[Failed] wayzer/ext/x`）。
+function Invoke-HotReloadListFailedProbe {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [int]$ReadMilliseconds = 2500,
+        [AllowEmptyCollection()][string[]]$KnownIds = @()
+    )
+    Send-ConsoleCommand -Session $Session -Command 'sa listFailed'
+    Write-Log ('已发送 sa listFailed，读取回显（最多 {0} 毫秒；无失败时通常只有 autosave 等无关行）...' -f $ReadMilliseconds)
+    $echo = @(Read-ConsoleEcho -Session $Session -Milliseconds $ReadMilliseconds)
+    $failedIds = New-Object System.Collections.Generic.List[string]
+    $failureLines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $echo) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        Write-Detail ('  [listFailed 回显] ' + $line)
+        $state = ''
+        $scriptId = ''
+        if ($line -match '^\s*\[([^\]]+)\]\s+(.+?)\s*$') {
+            $state = [string]$Matches[1]
+            $scriptId = ([string]$Matches[2]).Split(' ')[0]
+        } else {
+            continue
+        }
+        $isFailureState = ($state -match '(?i)(fail|error|失败|异常|错误)')
+        $isKnownId = (@($KnownIds) -contains $scriptId)
+        $isOkState = ($state -match '(?i)(enabled|ok|success|成功)')
+        if ($isFailureState -or ($isKnownId -and -not $isOkState)) {
+            if (-not $failedIds.Contains($scriptId)) { $failedIds.Add($scriptId) | Out-Null }
+            $failureLines.Add([string]$line) | Out-Null
+        }
+    }
+    return [pscustomobject]@{
+        Echo         = @($echo)
+        FailedIds    = @($failedIds.ToArray())
+        FailureLines = @($failureLines.ToArray())
+    }
+}
+
+# ----------------------------------------------------------------------------
+# 热重载执行（内部辅助 + 两阶段）
+#
+# 重要顺序（实测教训）：
+#   运行中删除脚本必须「先 sa unload（此时源文件还在）→ 再严格镜像删文件」。
+#   如果先镜像删了 .kts 文件再 sa unload，SA 事务会卡住 console socket（日志写了停止/卸载，
+#   但 console 线程不再处理后续命令，游戏线程仍活着）。所以拆成两阶段：
+#     阶段一（镜像前）：removed → 逐个 sa unload；
+#     阶段二（镜像后）：added 先 sa scan，再 changed → added 逐个 sa load，最后 sa listFailed。
+#   两阶段都逐脚本等待脚本加载日志确认完成（含级联依赖重启静默）。
+# ----------------------------------------------------------------------------
+
+# 在已打开的 socket 会话里按顺序逐个执行 actions（不包含 sa scan / sa listFailed）。
+# 每发一条：记录日志 offset → 发送命令 → 等待完成标记 + 静默；失败/超时立即停止后续。
+# 返回 { Completed, FailedAction, FailedReason, FailedTimedOut, Commands, ElapsedMs }
+function Invoke-ReloadActionsInSession {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)]$Session,
+        [AllowEmptyCollection()][object[]]$Actions = @(),
+        [Parameter(Mandatory = $true)][int]$PerScriptTimeoutSeconds,
+        [Parameter(Mandatory = $true)][int]$SettleMillis
+    )
+    $completed = New-Object System.Collections.Generic.List[object]
+    $sentCommands = New-Object System.Collections.Generic.List[string]
+    $failedAction = $null
+    $failedReason = ''
+    $failedTimedOut = $false
+    $overall = [System.Diagnostics.Stopwatch]::StartNew()
+    foreach ($action in @($Actions)) {
+        $offset = Get-ReloadLogLength -Path $LogPath
+        if ($offset -lt 0) {
+            Write-Log ('脚本加载日志不存在或不可读：{0}，将从头开始读取。' -f $LogPath) 'WARN'
+            $offset = [long]0
+        }
+        $scriptWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            Send-ConsoleCommand -Session $Session -Command $action.Command
+        } catch {
+            $failedAction = $action
+            $failedReason = $_.Exception.Message
+            $failedTimedOut = $false
+            break
+        }
+        $sentCommands.Add([string]$action.Command) | Out-Null
+        $wait = Wait-ScriptReloadComplete -LogPath $LogPath -Offset $offset -ScriptId $action.Id -ActionKind $action.ActionKind `
+            -TimeoutSeconds $PerScriptTimeoutSeconds -SettleMillis $SettleMillis
+        $scriptWatch.Stop()
+        $elapsedSeconds = [math]::Round($scriptWatch.Elapsed.TotalSeconds, 1)
+        if ([bool]$wait.NoOp) {
+            Write-Log ('  [NO-OP] {0}：命令发出后 {1} 秒内没有新的 [ScriptAgent] 日志行，按已完成处理（可能是内容未变，无需重载）。' -f $action.Command, $script:NoOpGraceSeconds) 'WARN'
+            $completed.Add([pscustomobject]@{ Id = $action.Id; Kind = $action.Kind; Command = $action.Command; Seconds = $elapsedSeconds; Result = 'no-op' }) | Out-Null
+            continue
+        }
+        if (-not [bool]$wait.Ok) {
+            $failedAction = $action
+            $failedTimedOut = [bool]$wait.TimedOut
+            $failedReason = [string]$wait.FailureLine
+            if ($failedTimedOut) {
+                Write-Log ('  [TIMEOUT] {0}：等待 {1} 秒仍未出现完成标记（已读取 {2} 行脚本日志）。' -f $action.Command, $PerScriptTimeoutSeconds, @($wait.AgentLines).Count) 'ERROR'
+            } else {
+                Write-Log ('  [FAIL] {0}：{1}' -f $action.Command, $failedReason) 'ERROR'
+            }
+            break
+        }
+        Write-Log ('  [OK] {0}：完成（{1:N1} 秒，读取 {2} 行脚本日志）' -f $action.Command, $elapsedSeconds, @($wait.AgentLines).Count) 'OK'
+        $completed.Add([pscustomobject]@{ Id = $action.Id; Kind = $action.Kind; Command = $action.Command; Seconds = $elapsedSeconds; Result = 'ok' }) | Out-Null
+    }
+    $overall.Stop()
+    return [pscustomobject]@{
+        Completed      = @($completed.ToArray())
+        FailedAction   = $failedAction
+        FailedReason   = [string]$failedReason
+        FailedTimedOut = [bool]$failedTimedOut
+        Commands       = @($sentCommands.ToArray())
+        ElapsedMs      = [long]$overall.Elapsed.TotalMilliseconds
+    }
+}
+
+# 阶段一（严格镜像之前）：对「将被严格镜像删除」的 removed 脚本先逐个 sa unload。
+# 必须在文件还存在时 unload：实测对已删除源文件的脚本 unload 会让 SA 事务卡住 console socket。
+# 失败/超时 → 中止更新，退出码 2；此时还没开始镜像，目标目录零改动。
+# 返回 { Done, Attempted, ExitCode, Summary, Stage, Actions, Completed, FailedAction, Commands, ElapsedSeconds }
+function Invoke-HotReloadPreUnload {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$Context,
+        [AllowEmptyCollection()][string[]]$RemovedPaths = @(),
+        [string]$Stage = '更新'
+    )
+    $actions = @(Get-HotReloadActionPlan -AddedPaths @() -ChangedPaths @() -RemovedPaths $RemovedPaths)
+    $info = [pscustomobject]@{
+        Done = $false; Attempted = $false; ExitCode = 0; Summary = ''; Stage = $Stage
+        Actions = $actions; Completed = @(); FailedAction = $null; Commands = @(); ElapsedSeconds = 0.0
+    }
+    if ($actions.Count -eq 0) {
+        Write-Log '没有需要先卸载的脚本（本次没有删除 .kts 脚本），跳过镜像前卸载阶段。'
+        return $info
+    }
+    $perScriptTimeout = [int]$Config.PerScriptTimeoutSeconds
+    $settleMillis = [int]$Config.ReloadSettleMillis
+    $logPath = [string]$Config.ReloadLogPath
+    Write-Step ('运行中热重载 · 阶段一：镜像前卸载将删除的脚本（{0}）' -f $Stage)
+    Write-Log ('console socket：{0}:{1}；脚本加载日志：{2}' -f $Config.ConsoleSocketHost, $Config.ConsoleSocketPort, $logPath)
+    Write-Log ('先逐个 sa unload（此时文件还存在）：{0}' -f (($actions | ForEach-Object { $_.Command }) -join ' → '))
+    Write-Log ('节奏：每个脚本等日志出现完成标记后，再等 {0} 毫秒静默（等依赖级联重启写完）才发下一条；单脚本超时 {1} 秒。' -f $settleMillis, $perScriptTimeout)
+    $session = $null
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        try {
+            $session = Open-ConsoleSocketSession -Config $Config
+        } catch {
+            $message = $_.Exception.Message
+            Write-Log ('打开 console socket 会话失败：{0}' -f $message) 'ERROR'
+            Write-Log '已在改动任何文件之前中止（目标目录零改动）。' 'WARN'
+            Write-Log '处理建议：检查 server.properties 的 socketInput/socketInputPort/socketInputAddress；或先停服更新。' 'WARN'
+            $info.Done = $true
+            $info.ExitCode = 2
+            $info.Summary = ('镜像前卸载阶段无法连接 console socket：{0}；已中止，目标目录零改动。' -f $message)
+            return $info
+        }
+        $info.Attempted = $true
+        $result = Invoke-ReloadActionsInSession -Config $Config -LogPath $logPath -Session $session -Actions $actions `
+            -PerScriptTimeoutSeconds $perScriptTimeout -SettleMillis $settleMillis
+        $info.Commands = @($result.Commands)
+        $info.Completed = @($result.Completed)
+        $info.FailedAction = $result.FailedAction
+        if ($null -ne $result.FailedAction) {
+            Write-Log ''
+            if (@($result.Completed).Count -gt 0) {
+                Write-Log ('已成功卸载（{0} 个）：{1}' -f @($result.Completed).Count, ((@($result.Completed) | ForEach-Object { $_.Id }) -join ', '))
+            }
+            $why = $(if ([bool]$result.FailedTimedOut) { '等待完成标记超时' } else { $result.FailedReason })
+            Write-Log ('卸载失败/未完成（1 个）：{0}（{1}）' -f $result.FailedAction.Command, $why) 'ERROR'
+            Write-Log '已停止后续操作，且目标目录零改动（还没开始严格镜像）。' 'WARN'
+            Write-Log '处理建议：已执行的 unload 可能已生效；请重跑本更新器（会重新比对），或重启服务器后再更新。' 'WARN'
+            $info.Done = $true
+            $info.ExitCode = 2
+            $info.Summary = ('镜像前卸载失败：{0}（{1}）；已中止，目标目录零改动；请重跑或重启服务器。' -f $result.FailedAction.Id, $why)
+            return $info
+        }
+        $watch.Stop()
+        $info.ElapsedSeconds = [math]::Round($watch.Elapsed.TotalSeconds, 1)
+        Write-Log ('镜像前卸载完成：{0} 个将删除的脚本已 unload（{1:N1} 秒），接下来执行严格镜像。' -f $actions.Count, $info.ElapsedSeconds) 'OK'
+        $info.Done = $true
+        $info.ExitCode = 0
+        $info.Summary = ('镜像前卸载完成（{0} 个脚本）' -f $actions.Count)
+        return $info
+    } finally {
+        $watch.Stop()
+        if ($null -ne $session) { Close-ConsoleSocketSession -Session $session }
+    }
+}
+
+# 阶段二（严格镜像之后）：若本次有 added 或 removed，先发一次 sa scan（发现新脚本 + 清理已删除
+# 脚本的注册表；added 与 removed 同时存在也只发一次，等 1.5 秒）；再逐个 sa load（changed → added），
+# 最后 sa listFailed 读取 2~3 秒回显。失败/超时/listFailed 非空 → 退出码 3（文件已更新）。
+# CheckListFailed：即使本次没有新增/修改脚本（例如只删除了脚本），也执行 sa listFailed 收尾检查。
+# 返回 { Done, Attempted, ExitCode, Summary, Stage, Actions, Completed, FailedAction, FailedIds, Echo, Commands, ElapsedSeconds }
+function Invoke-HotReloadPostLoad {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$Context,
+        [AllowEmptyCollection()][string[]]$AddedPaths = @(),
+        [AllowEmptyCollection()][string[]]$ChangedPaths = @(),
+        [int]$RemovedScriptCount = 0,
+        [bool]$CheckListFailed = $false,
+        [string]$Stage = '更新'
+    )
+    $actions = @(Get-HotReloadActionPlan -AddedPaths $AddedPaths -ChangedPaths $ChangedPaths -RemovedPaths @())
+    $addedIds = @(Get-HotReloadScriptIds -RelPaths $AddedPaths)
+    $scanNeeded = ($addedIds.Count -gt 0 -or $RemovedScriptCount -gt 0)
+    $info = [pscustomobject]@{
+        Done = $false; Attempted = $false; ExitCode = 0; Summary = ''; Stage = $Stage
+        Actions = $actions; Completed = @(); FailedAction = $null; FailedIds = @(); Echo = @()
+        Commands = @(); ElapsedSeconds = 0.0
+    }
+    if ($actions.Count -eq 0 -and -not $CheckListFailed) {
+        Write-Log '没有需要热加载的 .kts 脚本（本次没有新增/修改脚本），跳过镜像后加载阶段。' 'OK'
+        return $info
+    }
+    $perScriptTimeout = [int]$Config.PerScriptTimeoutSeconds
+    $settleMillis = [int]$Config.ReloadSettleMillis
+    $logPath = [string]$Config.ReloadLogPath
+    Write-Step ('运行中热重载 · 阶段二：镜像后加载变更脚本（{0}）' -f $Stage)
+    Write-Log ('console socket：{0}:{1}；脚本加载日志：{2}' -f $Config.ConsoleSocketHost, $Config.ConsoleSocketPort, $logPath)
+    if ($actions.Count -gt 0) {
+        Write-Log ('镜像已完成，接下来逐个 sa load（changed → added）：{0}' -f (($actions | ForEach-Object { $_.Command }) -join ' → '))
+        Write-Log ('节奏：每个脚本等日志出现完成标记后，再等 {0} 毫秒静默（等依赖级联重启写完）才发下一条；单脚本超时 {1} 秒。' -f $settleMillis, $perScriptTimeout)
+    }
+    $session = $null
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        try {
+            $session = Open-ConsoleSocketSession -Config $Config
+        } catch {
+            $message = $_.Exception.Message
+            Write-Log ('打开 console socket 会话失败：{0}' -f $message) 'ERROR'
+            Write-Log '脚本文件已更新，但运行中的服务器没有收到热加载命令。' 'ERROR'
+            Write-Log '处理建议：检查 socket 配置；或在服务器控制台执行 sa load，或重启服务器。' 'WARN'
+            $info.Done = $true
+            $info.ExitCode = 3
+            $info.Summary = ('连接 console socket 失败：{0}；文件已更新，请 sa load 或重启服务器。' -f $message)
+            return $info
+        }
+        $info.Attempted = $true
+        $sentCommands = New-Object System.Collections.Generic.List[string]
+        if ($scanNeeded) {
+            Send-ConsoleCommand -Session $session -Command 'sa scan'
+            $sentCommands.Add('sa scan') | Out-Null
+            Write-Log '  存在新增/删除脚本：已发 sa scan（发现新脚本 + 清理已删除脚本的注册表），等待 1.5 秒。'
+            Start-Sleep -Milliseconds 1500
+        }
+        $result = Invoke-ReloadActionsInSession -Config $Config -LogPath $logPath -Session $session -Actions $actions `
+            -PerScriptTimeoutSeconds $perScriptTimeout -SettleMillis $settleMillis
+        foreach ($command in @($result.Commands)) { $sentCommands.Add([string]$command) | Out-Null }
+        $info.Commands = @($sentCommands.ToArray())
+        $info.Completed = @($result.Completed)
+        $info.FailedAction = $result.FailedAction
+        if ($null -ne $result.FailedAction) {
+            Write-Log ''
+            if (@($result.Completed).Count -gt 0) {
+                Write-Log ('已完成（{0} 个）：{1}' -f @($result.Completed).Count, ((@($result.Completed) | ForEach-Object { $_.Id }) -join ', '))
+            }
+            $why = $(if ([bool]$result.FailedTimedOut) { '等待完成标记超时' } else { $result.FailedReason })
+            Write-Log ('失败/未完成（1 个）：{0}（{1}）' -f $result.FailedAction.Command, $why) 'ERROR'
+            Write-Log '已停止后续脚本命令（避免级联重启互相踩踏）；脚本文件已更新。' 'WARN'
+            Write-Log '处理建议：1) 查看 script-load\current.log 的失败原因；2) 服务器控制台执行 sa listFailed / sa load；3) 修复后仍不行就重启服务器。' 'WARN'
+            $info.Done = $true
+            $info.ExitCode = 3
+            $info.FailedIds = @($result.FailedAction.Id)
+            if ([bool]$result.FailedTimedOut) {
+                $info.Summary = ('运行中热重载超时：{0} 在 {1} 秒内未完成；已完成 {2} 个；文件已更新，请 sa load 或重启服务器。' -f $result.FailedAction.Id, $perScriptTimeout, @($result.Completed).Count)
+            } else {
+                $info.Summary = ('运行中热重载失败：{0}（{1}）；已完成 {2} 个；文件已更新，请 sa load 或重启服务器。' -f $result.FailedAction.Id, $why, @($result.Completed).Count)
+            }
+            return $info
+        }
+        $knownIds = @($actions | ForEach-Object { $_.Id })
+        $probe = Invoke-HotReloadListFailedProbe -Session $session -KnownIds $knownIds
+        $info.Echo = @($probe.Echo)
+        if (@($probe.FailedIds).Count -gt 0) {
+            Write-Log ('sa listFailed 显示仍有失败脚本（{0} 个）：{1}' -f @($probe.FailedIds).Count, (@($probe.FailedIds) -join ', ')) 'ERROR'
+            Write-Log '脚本文件已更新，但运行中的服务器仍有脚本加载失败。' 'ERROR'
+            Write-Log '处理建议：查看 script-load\current.log 与上面的回显；修复后在服务器控制台执行 sa load，或重启服务器。' 'WARN'
+            $info.Done = $true
+            $info.ExitCode = 3
+            $info.FailedIds = @($probe.FailedIds)
+            $info.Summary = ('运行中热重载后 sa listFailed 仍有失败脚本：{0}；文件已更新，请修复后 sa load 或重启服务器。' -f (@($probe.FailedIds) -join ', '))
+            return $info
+        }
+        $watch.Stop()
+        $info.ElapsedSeconds = [math]::Round($watch.Elapsed.TotalSeconds, 1)
+        Write-Log ('镜像后加载完成：changed {0} / added {1}，用时 {2:N1} 秒；sa listFailed 未发现失败脚本。' -f `
+            (@(Get-HotReloadScriptIds -RelPaths $ChangedPaths)).Count, $addedIds.Count, $info.ElapsedSeconds) 'OK'
+        $info.Done = $true
+        $info.ExitCode = 0
+        $info.Summary = ('运行中热加载完成（changed {0} / added {1}，用时 {2:N1} 秒）' -f (@(Get-HotReloadScriptIds -RelPaths $ChangedPaths)).Count, $addedIds.Count, $info.ElapsedSeconds)
+        return $info
+    } finally {
+        $watch.Stop()
+        if ($null -ne $session) { Close-ConsoleSocketSession -Session $session }
+    }
+}
+
+# 服务器运行中 / 热重载可用性预检。
+# 语义（优先级从高到低）：
+#   1) 服务器未运行 → 普通停服流程（退出码 0），不连 socket、不做热重载检查；
+#   2) 服务器运行中 + 操作支持热重载 + hotReloadMode=socket/auto
+#      + console socket 可连接 + reloadLogPath 存在 → 镜像后走 socket 逐个热重载（0 或 3）；
+#   3) 不可用/关闭 → 回退 requireServerStopped：true=拒绝（退出码 2），
+#      false=按旧行为在线更新（不推荐，需重启生效）；
+#   4) hotReloadMode=socket 是强制模式：socket/日志不可用时一律拒绝，即使 requireServerStopped=false。
+function Initialize-HotReloadContext {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][hashtable]$Cli,
+        [bool]$IsRollback = $false
+    )
+    $context = [pscustomobject]@{
+        Applicable             = (-not $Settings.IsWeb)
+        Supported              = [bool]$Settings.SupportsHotReload
+        Mode                   = [string]$Config.HotReloadMode
+        ServerRunning          = $false
+        ServerState            = $null
+        Socket                 = $null
+        SocketAvailable        = $false
+        LogPath                = [string]$Config.ReloadLogPath
+        LogAvailable           = $false
+        UseHotReload           = $false
+        DryRun                 = [bool]$Cli.DryRun
+        IsRollback             = $IsRollback
+        ForcedWhileRunning     = $false
+        RefusalReason          = ''
+        PerScriptTimeoutSeconds = [int]$Config.PerScriptTimeoutSeconds
+        ReloadSettleMillis     = [int]$Config.ReloadSettleMillis
+        NoOpGraceSeconds       = $script:NoOpGraceSeconds
+    }
+    if ($Settings.IsWeb) { return $context }
+    $state = Get-ServerRunState -Config $Config
+    $context.ServerState = $state
+    $context.ServerRunning = [bool]$state.Running
+    if (-not $state.Running) {
+        Write-Log '服务器未运行：按停服更新流程执行，脚本在下次启动服务器时加载（不需要热重载）。' 'OK'
+        return $context
+    }
+    Write-Log '服务器正在运行：检查运行中热重载（console socket + 脚本加载日志）可用性。'
+    foreach ($line in @($state.Evidence)) {
+        if ($null -eq $line) { continue }
+        Write-Log ([string]$line) 'WARN'
+    }
+    $dryRunNote = ''
+    if ($context.DryRun) { $dryRunNote = '（-DryRun 只预览，正式执行时才会真正处理）' }
+
+    if (-not $context.Supported) {
+        $reason = '当前操作不支持运行中热重载（清缓存版会清空编译缓存，必须停服强制重新编译）'
+        Write-Log ('{0}。{1}' -f $reason, $dryRunNote) 'WARN'
+        if (-not [bool]$Settings.RequireServerStopped) {
+            Write-Log '配置 requireServerStopped=false：继续执行（不推荐在服务器运行中更新文件！）' 'WARN'
+            $context.ForcedWhileRunning = $true
+            return $context
+        }
+        if ($context.DryRun) {
+            $context.RefusalReason = $reason
+            Write-Log 'DryRun：正式执行将拒绝执行（退出码 2）。' 'WARN'
+            return $context
+        }
+        $hints = @(
+            ('{0}，且 config.json 的 requireServerStopped=true。' -f $reason),
+            '请先关闭服务器后重试；如果确实需要在运行中更新（不推荐），可临时设置 requireServerStopped=false。'
+        )
+        throw ('REFUSED: ' + ((Get-ServerRunningMessage -State $state -Hints $hints) -join [Environment]::NewLine))
+    }
+
+    if ($context.Mode -eq 'off') {
+        $reason = '运行中热重载已关闭（hotReloadMode=off / -NoHotReload）'
+        Write-Log ('{0}。{1}' -f $reason, $dryRunNote) 'WARN'
+        if (-not [bool]$Settings.RequireServerStopped) {
+            Write-Log '配置 requireServerStopped=false：继续执行（不推荐在服务器运行中更新文件；更新后需重启服务器生效）。' 'WARN'
+            $context.ForcedWhileRunning = $true
+            return $context
+        }
+        if ($context.DryRun) {
+            $context.RefusalReason = $reason
+            Write-Log 'DryRun：正式执行将拒绝执行（退出码 2）。' 'WARN'
+            return $context
+        }
+        $hints = @(
+            ('{0}，且 config.json 的 requireServerStopped=true。' -f $reason),
+            '请先关闭服务器后重试；或删除 -NoHotReload 使用默认的 socket 热重载。'
+        )
+        throw ('REFUSED: ' + ((Get-ServerRunningMessage -State $state -Hints $hints) -join [Environment]::NewLine))
+    }
+
+    # socket / auto：只读探测 console socket + 检查脚本加载日志是否存在
+    $socketInfo = Test-ConsoleSocketAvailable -Config $Config
+    $context.Socket = $socketInfo
+    $context.SocketAvailable = [bool]$socketInfo.Available
+    $context.LogAvailable = Test-Path -LiteralPath ([string]$Config.ReloadLogPath) -PathType Leaf
+    $problems = New-Object System.Collections.Generic.List[string]
+    if (-not $context.SocketAvailable) {
+        $problems.Add(('console socket 不可达（{0}）' -f $socketInfo.Reason)) | Out-Null
+    }
+    if (-not $context.LogAvailable) {
+        $problems.Add(('脚本加载日志不存在（{0}）' -f [string]$Config.ReloadLogPath)) | Out-Null
+    }
+    if ($problems.Count -eq 0) {
+        $context.UseHotReload = $true
+        Write-Log ('console socket 可连接：{0}:{1}' -f $socketInfo.Host, $socketInfo.Port) 'OK'
+        $logLength = Get-ReloadLogLength -Path ([string]$Config.ReloadLogPath)
+        Write-Log ('脚本加载日志可用：{0}（当前 {1} 字节）' -f [string]$Config.ReloadLogPath, $logLength) 'OK'
+        if ($context.DryRun) { Write-Log 'DryRun：正式执行时会在严格镜像后逐个发送 sa 命令，并尾随脚本加载日志确认完成（本次不发命令、不改文件）。' }
+        return $context
+    }
+
+    $reason = ($problems -join '；')
+    Write-Log ('运行中热重载不可用：{0}。{1}' -f $reason, $dryRunNote) 'WARN'
+    if ($context.DryRun) {
+        $context.RefusalReason = $reason
+        Write-Log 'DryRun：正式执行将拒绝执行（退出码 2）。' 'WARN'
+        return $context
+    }
+    $refuseWhileRunning = ($context.Mode -eq 'socket' -or [bool]$Settings.RequireServerStopped)
+    if (-not $refuseWhileRunning) {
+        Write-Log '运行中热重载不可用，但 config.json 的 requireServerStopped=false：将按旧行为在线更新文件（不推荐；更新后需重启服务器才会生效）。' 'WARN'
+        $context.ForcedWhileRunning = $true
+        return $context
+    }
+    $hints = @(
+        ('console socket：{0}:{1}；脚本加载日志：{2}' -f [string]$Config.ConsoleSocketHost, [int]$Config.ConsoleSocketPort, [string]$Config.ReloadLogPath),
+        '请确认 server.properties 已配置：socketInput=true、socketInputPort=<端口>、socketInputAddress=localhost，并重启服务器使配置生效。',
+        '首次使用需先停服更新一次（把 updater 换新、确认脚本加载日志路径），之后即可运行中更新；或加 -NoHotReload 关闭热重载、停服更新。'
+    )
+    if ($context.Mode -eq 'socket') {
+        $hints += '当前 hotReloadMode=socket（强制 socket 模式）：socket/日志不可用时一律拒绝运行中更新。'
+    }
+    throw ('REFUSED: ' + ((Get-ServerRunningMessage -State $state -Hints $hints) -join [Environment]::NewLine))
+}
+
+# -DryRun 预览：说明正式执行时会「逐个发送哪些 sa 命令」还是「拒绝执行」。
+function Show-HotReloadPreview {
+    param(
+        [Parameter(Mandatory = $true)]$Analysis,
+        [AllowNull()]$Context
+    )
+    Write-Step '运行中热重载评估（-DryRun 预览：不发 sa 命令、不改文件）'
+    if ($null -eq $Context -or -not [bool]$Context.Applicable) {
+        Write-Log '当前操作不涉及运行中热重载。'
+        return
+    }
+    if (-not [bool]$Context.ServerRunning) {
+        Write-Log '服务器未运行：正式执行将按停服流程备份并严格镜像（退出码 0），脚本在下次启动服务器时加载。'
+        return
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Context.RefusalReason)) {
+        Write-Log ('服务器运行中且当前配置将拒绝执行（正式执行退出码 2）：{0}' -f $Context.RefusalReason) 'WARN'
+        Write-Log '如需运行中更新：按 README 配置 server.properties 的 socketInput/socketInputPort/socketInputAddress；否则请先关闭服务器，或用 -NoHotReload。' 'WARN'
+        return
+    }
+    if ([bool]$Context.ForcedWhileRunning) {
+        Write-Log '服务器运行中、热重载不可用/关闭，但 config.json 的 requireServerStopped=false：正式执行将按旧行为在线更新文件（不推荐；更新后需重启服务器才会生效）。' 'WARN'
+        return
+    }
+    if (-not [bool]$Context.UseHotReload) {
+        Write-Log '未启用运行中热重载，正式执行按停服流程处理。'
+        return
+    }
+    $allChanges = @()
+    $allChanges += @($Analysis.Added)
+    $allChanges += @($Analysis.Modified)
+    $allChanges += @($Analysis.Deleted)
+    $nonScript = @(Get-NonScriptRelPaths -RelPaths $allChanges)
+    if ($nonScript.Count -gt 0) {
+        Write-Log ('正式执行将拒绝（退出码 2）：本次变更包含 {0} 个非 .kts 文件（.kt 模块库等），运行中无法热重载，必须停服更新（会在改动文件前中止）。' -f $nonScript.Count) 'WARN'
+        Write-FileList -Title '非 .kts 变更（需要停服）' -Files $nonScript
+        return
+    }
+    $removedIds = @(Get-HotReloadScriptIds -RelPaths @($Analysis.Deleted))
+    $changedIds = @(Get-HotReloadScriptIds -RelPaths @($Analysis.Modified))
+    $addedIds = @(Get-HotReloadScriptIds -RelPaths @($Analysis.Added))
+    $scanNeeded = ($removedIds.Count -gt 0 -or $addedIds.Count -gt 0)
+    $unloadCommands = @($removedIds | ForEach-Object { 'sa unload ' + $_ })
+    $loadCommands = @()
+    $loadCommands += @($changedIds | ForEach-Object { 'sa load ' + $_ })
+    $loadCommands += @($addedIds | ForEach-Object { 'sa load ' + $_ })
+    Write-Log '正式执行将按以下顺序（DryRun 不发任何 sa 命令、不改文件）：'
+    Write-Log ('  ① 镜像前：先逐个 sa unload 将被删除的脚本（removed {0} 个，此时文件还在）：{1}' -f $removedIds.Count, $(if ($unloadCommands.Count -gt 0) { $unloadCommands -join ' → ' } else { '（无）' }))
+    Write-Log '  ② 严格镜像（备份 → 写入/覆盖 → 删除仓库中已不存在的文件）'
+    Write-Log ('  ③ 镜像后：{0}逐个 sa load（changed {1} 个 → added {2} 个）：{3}' -f $(if ($scanNeeded) { '先 sa scan（等 1.5 秒，清理已删脚本注册表/发现新脚本），然后' } else { '' }), $changedIds.Count, $addedIds.Count, $(if ($loadCommands.Count -gt 0) { $loadCommands -join ' → ' } else { '（无）' }))
+    Write-Log '  ④ sa listFailed 收尾（阶段二失败/超时退出码 3；阶段一 unload 失败退出码 2 且目标零改动）'
+    Write-Log ('  每个脚本：等日志出现完成标记后，再等 {0} 毫秒静默才发下一条；单脚本超时 {1} 秒；完全没有日志行时 {2} 秒后按 no-op 继续。' -f $Context.ReloadSettleMillis, $Context.PerScriptTimeoutSeconds, $Context.NoOpGraceSeconds)
+    Write-Log ('  console socket：{0}:{1}；脚本加载日志：{2}' -f [string]$Context.Socket.Host, [int]$Context.Socket.Port, [string]$Context.LogPath)
+    Write-Log '  DryRun 只做只读探测：不发任何 sa 命令、不改目标文件。'
 }
 
 function Get-WebRunningHint {
@@ -1234,8 +2205,13 @@ function Show-Preview {
     }
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line }
+    } elseif ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.UseHotReload) {
+        Write-Log '正式执行时不会重启服务器：脚本会在严格镜像后通过 console socket 逐个热重载（详见下方评估）。'
     } else {
         Write-Log '正式执行时不会自动启动/重启服务器；更新完成后请自行启动服务器验证。'
+    }
+    if (-not $Settings.IsWeb) {
+        Show-HotReloadPreview -Analysis $Analysis -Context $script:HotReloadContext
     }
     $shaText = '（未知）'
     if ($null -ne $Remote) { $shaText = $Remote.Sha }
@@ -1328,75 +2304,128 @@ function Invoke-UpdateFlow {
         return New-UpdateResult -ExitCode 0 -Summary ('DryRun 预览完成：新增 {0} / 修改 {1} / 删除 {2} / 未变 {3}，未做任何修改。' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $analysis.UnchangedCount)
     }
 
-    # ---------- 5. 备份（+ 可选清缓存） ----------
-    Write-Step '5/6 备份目标目录'
-    $backup = $null
-    if ($Cli.NoBackup) {
-        Write-Log '按要求跳过备份（-NoBackup，不建议）：如果更新失败将无法自动恢复。' 'WARN'
-    } else {
-        $backup = New-TargetBackup -Config $Config -Settings $Settings -PreviousMarker $localMarker
-        $meta = $backup.Meta
-        $meta.plannedAdded = @($analysis.Added)
-        $meta.plannedModified = @($analysis.Modified)
-        $meta.plannedDeleted = @($analysis.Deleted)
-        $meta.plannedUnchanged = $analysis.UnchangedCount
-        $meta.deployedCommitSha = $(if ($null -ne $remote) { [string]$remote.Sha } else { '' })
-        $meta.commitDate = $(if ($null -ne $remote) { [string]$remote.Date } else { '' })
-        $meta.status = 'applying'
-        Save-JsonFile -Path $backup.MetaPath -Data $meta
-    }
-
-    $cacheStats = $null
-    if ($Settings.ClearCache) {
-        Write-Step '5.1/6 清空脚本编译缓存'
-        $cachePath = Resolve-CachePath -Config $Config -Settings $Settings
-        Assert-CachePathSafe -CachePath $cachePath -TargetPath $Settings.TargetPath -BackupPath ([string]$Config.BackupPath)
-        Write-Log ('缓存目录：{0}' -f $cachePath)
-        $cacheStats = Clear-PathContents -Path $cachePath
-        if (-not $cacheStats.Exists) {
-            Write-Log '缓存目录不存在（无需清理）。' 'OK'
-        } else {
-            Write-Log ('缓存已清空：删除 {0} 个文件（{1}）。' -f $cacheStats.Files, (Format-Bytes -Bytes $cacheStats.Bytes)) 'OK'
+    # ---------- 4.1 运行中热重载：变更类型预检（必须在改动任何文件之前） ----------
+    $hotReload = $script:HotReloadContext
+    $hotReloadActive = ($null -ne $hotReload -and [bool]$hotReload.UseHotReload -and -not $Settings.IsWeb)
+    if ($hotReloadActive) {
+        $allChanges = @()
+        $allChanges += @($analysis.Added)
+        $allChanges += @($analysis.Modified)
+        $allChanges += @($analysis.Deleted)
+        $nonScriptChanges = @(Get-NonScriptRelPaths -RelPaths $allChanges)
+        if ($nonScriptChanges.Count -gt 0) {
+            $detailLines = New-Object System.Collections.Generic.List[string]
+            foreach ($rel in $nonScriptChanges) { $detailLines.Add('  - ' + [string]$rel) | Out-Null }
+            $message = @(
+                ('REFUSED: 本次更新包含 {0} 个非 .kts 文件（.kt 模块库/依赖等）变更，运行中热重载无法安全处理，已在改动文件前中止。' -f $nonScriptChanges.Count),
+                ($detailLines -join [Environment]::NewLine),
+                '请关闭服务器后重新运行本脚本（可加 -DryRun 先预览）。',
+                '热重载只适合纯 .kts 脚本变更；.kt 库/依赖改动必须停服更新并重启服务器。'
+            ) -join [Environment]::NewLine
+            throw $message
         }
+        Write-Log ('运行中热更新预检通过：本次变更全部为 .kts 脚本（{0} 个）；将先逐个 sa unload 将被删除的脚本（文件还在时）→ 严格镜像 → 再逐个 sa load 变更/新增脚本。' -f (@(Get-HotReloadScriptIds -RelPaths $allChanges)).Count) 'OK'
     }
 
-    # ---------- 6. 应用严格镜像 ----------
-    Write-Step '6/6 应用严格镜像（新增/覆盖 + 删除仓库中不存在的文件）'
-    $apply = $null
-    try {
-        $apply = Apply-Mirror -Analysis $analysis -Settings $Settings
-    } catch {
-        $applyError = $_.Exception.Message
-        Write-Log ('应用更新失败：{0}' -f $applyError) 'ERROR'
-        if ($null -ne $backup) {
-            Write-Log '正在用刚创建的备份自动恢复被改动/删除的文件...' 'WARN'
-            try {
-                $restore = Restore-BackupFiles -BackupDir $backup.Dir -TargetRoot $Settings.TargetPath -AddedRelPaths @($analysis.Added)
-                Write-Log ('已自动恢复：恢复 {0} 个文件，删除新增文件 {1} 个。' -f $restore.Restored, $restore.Deleted) 'OK'
-                $meta.status = 'apply-failed-restored'
-                Save-JsonFile -Path $backup.MetaPath -Data $meta
-            } catch {
-                Write-Log ('自动恢复失败：{0}' -f $_.Exception.Message) 'ERROR'
-                Write-Log ('请手动用该备份恢复：{0}' -f $backup.Dir) 'ERROR'
-                $meta.status = 'apply-failed'
-                try { Save-JsonFile -Path $backup.MetaPath -Data $meta } catch { }
+    # ---------- 4.2 运行中热重载 · 阶段一：镜像前卸载将被删除的脚本 ----------
+    # 实测：必须先 unload（文件还在）再严格镜像删文件；先删文件再 unload 会让 SA 事务卡住 console socket。
+    $preUnloadInfo = $null
+    if ($hotReloadActive) {
+        $removedScriptIds = @(Get-HotReloadScriptIds -RelPaths @($analysis.Deleted))
+        if ($removedScriptIds.Count -gt 0) {
+            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReload -RemovedPaths @($analysis.Deleted) -Stage '更新'
+            if ([int]$preUnloadInfo.ExitCode -ne 0) {
+                Write-Log ''
+                Write-Log ('运行中热重载 · 阶段一失败：{0}' -f $preUnloadInfo.Summary) 'ERROR'
+                return New-UpdateResult -ExitCode 2 -Summary $preUnloadInfo.Summary
             }
-        } else {
-            Write-Log '本次没有备份（-NoBackup），无法自动恢复，请人工检查目标目录。' 'ERROR'
         }
-        throw ('更新失败，已中止：{0}' -f $applyError)
     }
 
-    if ($null -ne $backup) {
-        $meta.status = 'success'
-        $meta.appliedCopied = $apply.Copied
-        $meta.appliedDeleted = $apply.Deleted
-        $meta.appliedRemovedEmptyDirs = $apply.RemovedEmptyDirs
-        if ($null -ne $cacheStats) { $meta.cacheClearedFiles = $cacheStats.Files }
-        $meta.finishedAt = (Get-LogTimestamp)
-        Save-JsonFile -Path $backup.MetaPath -Data $meta
-    }
+    # ---------- 5. 备份（+ 可选清缓存） ----------
+    # 从这里到镜像应用完成属于「改动文件」阶段；若失败会尝试把阶段一已 unload 的脚本重新加载回去。
+    try {
+        Write-Step '5/6 备份目标目录'
+        $backup = $null
+        if ($Cli.NoBackup) {
+            Write-Log '按要求跳过备份（-NoBackup，不建议）：如果更新失败将无法自动恢复。' 'WARN'
+        } else {
+            $backup = New-TargetBackup -Config $Config -Settings $Settings -PreviousMarker $localMarker
+            $meta = $backup.Meta
+            $meta.plannedAdded = @($analysis.Added)
+            $meta.plannedModified = @($analysis.Modified)
+            $meta.plannedDeleted = @($analysis.Deleted)
+            $meta.plannedUnchanged = $analysis.UnchangedCount
+            $meta.deployedCommitSha = $(if ($null -ne $remote) { [string]$remote.Sha } else { '' })
+            $meta.commitDate = $(if ($null -ne $remote) { [string]$remote.Date } else { '' })
+            $meta.status = 'applying'
+            Save-JsonFile -Path $backup.MetaPath -Data $meta
+        }
 
+        $cacheStats = $null
+        if ($Settings.ClearCache) {
+            Write-Step '5.1/6 清空脚本编译缓存'
+            $cachePath = Resolve-CachePath -Config $Config -Settings $Settings
+            Assert-CachePathSafe -CachePath $cachePath -TargetPath $Settings.TargetPath -BackupPath ([string]$Config.BackupPath)
+            Write-Log ('缓存目录：{0}' -f $cachePath)
+            $cacheStats = Clear-PathContents -Path $cachePath
+            if (-not $cacheStats.Exists) {
+                Write-Log '缓存目录不存在（无需清理）。' 'OK'
+            } else {
+                Write-Log ('缓存已清空：删除 {0} 个文件（{1}）。' -f $cacheStats.Files, (Format-Bytes -Bytes $cacheStats.Bytes)) 'OK'
+            }
+        }
+
+        # ---------- 6. 应用严格镜像 ----------
+        Write-Step '6/6 应用严格镜像（新增/覆盖 + 删除仓库中不存在的文件）'
+        $apply = $null
+        try {
+            $apply = Apply-Mirror -Analysis $analysis -Settings $Settings
+        } catch {
+            $applyError = $_.Exception.Message
+            Write-Log ('应用更新失败：{0}' -f $applyError) 'ERROR'
+            if ($null -ne $backup) {
+                Write-Log '正在用刚创建的备份自动恢复被改动/删除的文件...' 'WARN'
+                try {
+                    $restore = Restore-BackupFiles -BackupDir $backup.Dir -TargetRoot $Settings.TargetPath -AddedRelPaths @($analysis.Added)
+                    Write-Log ('已自动恢复：恢复 {0} 个文件，删除新增文件 {1} 个。' -f $restore.Restored, $restore.Deleted) 'OK'
+                    $meta.status = 'apply-failed-restored'
+                    Save-JsonFile -Path $backup.MetaPath -Data $meta
+                } catch {
+                    Write-Log ('自动恢复失败：{0}' -f $_.Exception.Message) 'ERROR'
+                    Write-Log ('请手动用该备份恢复：{0}' -f $backup.Dir) 'ERROR'
+                    $meta.status = 'apply-failed'
+                    try { Save-JsonFile -Path $backup.MetaPath -Data $meta } catch { }
+                }
+            } else {
+                Write-Log '本次没有备份（-NoBackup），无法自动恢复，请人工检查目标目录。' 'ERROR'
+            }
+            throw ('更新失败，已中止：{0}' -f $applyError)
+        }
+
+        if ($null -ne $backup) {
+            $meta.status = 'success'
+            $meta.appliedCopied = $apply.Copied
+            $meta.appliedDeleted = $apply.Deleted
+            $meta.appliedRemovedEmptyDirs = $apply.RemovedEmptyDirs
+            if ($null -ne $cacheStats) { $meta.cacheClearedFiles = $cacheStats.Files }
+            $meta.finishedAt = (Get-LogTimestamp)
+            Save-JsonFile -Path $backup.MetaPath -Data $meta
+        }
+    } catch {
+        # 镜像阶段失败：若阶段一已 unload 过脚本（文件此时仍然存在/已被自动恢复），尝试重新加载，避免留下「文件在但脚本未加载」状态。
+        $mirrorError = $_
+        if ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted -and @($preUnloadInfo.Completed).Count -gt 0) {
+            Write-Log ('镜像阶段失败：正在尝试把阶段一已卸载的 {0} 个脚本重新加载回来（best-effort）...' -f @($preUnloadInfo.Completed).Count) 'WARN'
+            try {
+                $recovery = Invoke-HotReloadPostLoad -Config $Config -Context $hotReload -AddedPaths @() -ChangedPaths @($analysis.Deleted) -CheckListFailed $false -Stage '更新失败恢复'
+                Write-Log ('失败恢复（重新加载已卸载脚本）结果：{0}' -f $recovery.Summary) $(if ([int]$recovery.ExitCode -eq 0) { 'OK' } else { 'WARN' })
+            } catch {
+                Write-Log ('失败恢复时重新加载脚本出错：{0}（请手动 sa load 或重启服务器）' -f $_.Exception.Message) 'ERROR'
+            }
+        }
+        throw $mirrorError
+    }
     # ---------- 写版本标记 / 保留份数 ----------
     $deployedSha = ''
     if ($null -ne $remote) { $deployedSha = [string]$remote.Sha }
@@ -1426,11 +2455,33 @@ function Invoke-UpdateFlow {
         Remove-OldBackups -BackupRoot $Settings.BackupRoot -Keep ([int]$Config.KeepBackups) -CurrentTimestamp $backup.Timestamp
     }
 
+    # ---------- 运行中热重载 · 阶段二：镜像后加载 changed/added（文件已更新；失败/超时退出码 3） ----------
+    $hotReloadInfo = $null
+    if ($hotReloadActive) {
+        $checkListFailed = (@($analysis.Added).Count -gt 0 -or @($analysis.Modified).Count -gt 0 -or ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted))
+        $removedScriptCount = @(Get-HotReloadScriptIds -RelPaths @($analysis.Deleted)).Count
+        $hotReloadInfo = Invoke-HotReloadPostLoad -Config $Config -Context $hotReload `
+            -AddedPaths @($analysis.Added) -ChangedPaths @($analysis.Modified) -RemovedScriptCount $removedScriptCount -CheckListFailed $checkListFailed -Stage '更新'
+        if ($hotReloadInfo.Done -and [int]$hotReloadInfo.ExitCode -ne 0) {
+            Write-Log ''
+            Write-Log ('严格镜像已完成（文件已更新），但运行中热重载未成功：{0}' -f $hotReloadInfo.Summary) 'ERROR'
+            Write-Log '文件状态说明：目标目录已是仓库最新版本，只是运行中的服务器可能没有成功加载新脚本。' 'WARN'
+            Write-Log '恢复建议：1) 在服务器控制台执行 sa listFailed / sa load；2) 修复失败脚本后再次运行本更新器（会重新比对，内容未变时不会重复下载/改动）；3) 仍不行就重启服务器。' 'WARN'
+            $summary = ('更新完成（文件已更新：新增 {0} / 修改 {1} / 删除 {2}），但 {3}' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $hotReloadInfo.Summary)
+            return New-UpdateResult -ExitCode 3 -Summary $summary
+        }
+    }
+
     # ---------- 收尾提示 ----------
     Write-Log ''
     Write-Log ('严格镜像完成：新增 {0} / 修改 {1} / 删除 {2} / 未变 {3}；复制与哈希校验通过。' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $analysis.UnchangedCount) 'OK'
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line 'WARN' }
+    } elseif ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) {
+        Write-Log '运行中热重载已完成：被删除脚本已先在镜像前 unload（文件随镜像删除），变更/新增脚本已在镜像后逐个 load；本次没有重启服务器。'
+        Write-Log '请在服务器控制台/日志确认没有脚本报错（config\logs\script-load\last-error.log 为空、脚本加载数量正常）。'
+    } elseif ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.ServerRunning -and -not $Settings.ClearCache) {
+        Write-Log '服务器保持运行中：本次没有需要热重载的 .kts 脚本变更，无需重启服务器。'
     } elseif ($Settings.ClearCache) {
         Write-Log '缓存已清空：启动服务器时会重新编译全部脚本（首次启动会慢一些），这是预期行为。'
         Write-Log '请启动服务器（运行 mdtserver\启动服务器.bat）后检查 config\logs\script-load\last-error.log 为空、脚本加载数量正常。'
@@ -1441,6 +2492,8 @@ function Invoke-UpdateFlow {
     $summaryExtra = ''
     if ($null -ne $backup) { $summaryExtra = '；备份 ' + $backup.Timestamp } else { $summaryExtra = '；未备份' }
     if ($Settings.ClearCache -and $null -ne $cacheStats) { $summaryExtra += ('；缓存清理 ' + $cacheStats.Files + ' 个文件') }
+    if ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted) { $summaryExtra += ('；' + $preUnloadInfo.Summary) }
+    if ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) { $summaryExtra += ('；' + $hotReloadInfo.Summary) }
     $summary = ('更新完成：新增 {0} / 修改 {1} / 删除 {2} / 未变 {3}{4}。' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $analysis.UnchangedCount, $summaryExtra)
     return New-UpdateResult -ExitCode 0 -Summary $summary
 }
@@ -1472,6 +2525,35 @@ function Resolve-RollbackBackup {
         throw ('REFUSED: 备份目录中没有可回滚的备份：{0}' -f $BackupRoot)
     }
     return $latest[0]
+}
+
+# 回滚前计算：备份中与当前目标内容不一致（或目标缺失）的文件，用于热重载 changed 列表。
+# （备份里包含目标目录全部参与镜像的文件，不能全部 reload，只请求真正被回滚改动的脚本。）
+function Get-RollbackChangedRelPaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$BackupDir,
+        [Parameter(Mandatory = $true)][string]$TargetRoot
+    )
+    $result = New-Object System.Collections.Generic.List[string]
+    $backupFull = (Get-Item -LiteralPath $BackupDir).FullName.TrimEnd('\')
+    $prefixLength = $backupFull.Length + 1
+    foreach ($file in (Get-ChildItem -LiteralPath $backupFull -Recurse -File -ErrorAction SilentlyContinue)) {
+        if ($file.FullName.Length -le $prefixLength) { continue }
+        $rel = $file.FullName.Substring($prefixLength)
+        $targetFile = Join-Path $TargetRoot $rel
+        if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) {
+            $result.Add($rel) | Out-Null
+            continue
+        }
+        try {
+            $backupHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+            $targetHash = (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256 -ErrorAction Stop).Hash
+            if ($backupHash -ne $targetHash) { $result.Add($rel) | Out-Null }
+        } catch {
+            $result.Add($rel) | Out-Null
+        }
+    }
+    return $result.ToArray()
 }
 
 function Invoke-RollbackFlow {
@@ -1507,6 +2589,14 @@ function Invoke-RollbackFlow {
         $plannedAdded = Get-JsonProp -Object $meta -Names @('plannedAdded')
         if ($null -ne $plannedAdded) { $addedRelPaths = @($plannedAdded) }
     }
+    # 回滚实际会被删除的「更新新增」文件（当前目标里存在的），用于热重载 removed 列表
+    $rollbackRemovedRelPaths = New-Object System.Collections.Generic.List[string]
+    foreach ($rel in @($addedRelPaths)) {
+        if ([string]::IsNullOrWhiteSpace([string]$rel)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $Settings.TargetPath ([string]$rel)) -PathType Leaf) {
+            $rollbackRemovedRelPaths.Add([string]$rel) | Out-Null
+        }
+    }
 
     if ($backupFiles.Count -eq 0 -and -not [bool]$Cli.Force) {
         throw ('REFUSED: 备份是空的（{0}）：回滚会把目标目录恢复到空状态，风险过高已拒绝。确认要清空请加 -Force。' -f $backup.FullName)
@@ -1517,8 +2607,51 @@ function Invoke-RollbackFlow {
         Write-Log ('将恢复文件：{0} 个（备份目录 → {1}）' -f $backupFiles.Count, $Settings.TargetPath)
         Write-Log ('将删除「该次更新新增、备份中不存在」的文件：{0} 个' -f @($addedRelPaths).Count)
         Write-FileList -Title '将删除的文件' -Files $addedRelPaths
+        $rbContext = $script:HotReloadContext
+        if ($null -ne $rbContext -and [bool]$rbContext.ServerRunning -and -not $Settings.IsWeb) {
+            if ([bool]$rbContext.UseHotReload) {
+                $rollbackChangedPreview = @(Get-RollbackChangedRelPaths -BackupDir $backup.FullName -TargetRoot $Settings.TargetPath)
+                $changedIds = @(Get-HotReloadScriptIds -RelPaths $rollbackChangedPreview)
+                $removedIds = @(Get-HotReloadScriptIds -RelPaths $rollbackRemovedRelPaths.ToArray())
+                $nonScriptPreview = @(Get-NonScriptRelPaths -RelPaths (@($rollbackChangedPreview) + @($rollbackRemovedRelPaths.ToArray())))
+                Write-Log '正式回滚将按以下顺序执行（DryRun 不发命令、不改文件）：'
+                Write-Log ('  ① 恢复文件前：先逐个 sa unload 将被删除的新增脚本（文件还在时）：{0}' -f $(if ($removedIds.Count -gt 0) { ($removedIds | ForEach-Object { 'sa unload ' + $_ }) -join ' → ' } else { '（无）' }))
+                Write-Log ('  ② 恢复备份文件（{0} 个）并删除该次更新新增的文件' -f $backupFiles.Count)
+                Write-Log ('  ③ 恢复后：{0}逐个 sa load 被恢复的脚本（changed {1} 个）：{2}' -f $(if ($removedIds.Count -gt 0) { '先 sa scan（等 1.5 秒，清理已删脚本注册表），然后' } else { '' }), $changedIds.Count, $(if ($changedIds.Count -gt 0) { ($changedIds | ForEach-Object { 'sa load ' + $_ }) -join ' → ' } else { '（无）' }))
+                Write-Log '  ④ sa listFailed 收尾（失败/超时退出码 3；unload 失败退出码 2 且目标零改动）'
+                if ($nonScriptPreview.Count -gt 0) {
+                    Write-Log ('注意：回滚涉及 {0} 个非 .kts 文件（.kt 库等），热重载无法处理，正式回滚后需要重启服务器才生效。' -f $nonScriptPreview.Count) 'WARN'
+                    Write-FileList -Title '需要重启才生效的非 .kts 文件' -Files $nonScriptPreview
+                }
+            } else {
+                Write-Log '服务器运行中但热重载不可用/关闭：正式回滚后需重启服务器（或 sa load）才会生效。' 'WARN'
+            }
+        } elseif ($null -ne $rbContext -and -not $Settings.IsWeb) {
+            Write-Log '服务器未运行：正式回滚按停服流程恢复文件，下次启动服务器时加载。'
+        }
         Write-Log 'DryRun：未修改任何文件。'
         return New-UpdateResult -ExitCode 0 -Summary ('DryRun 回滚预览完成（备份 {0}：将恢复 {1} 个文件，删除 {2} 个新增文件）。' -f $backup.Name, $backupFiles.Count, @($addedRelPaths).Count)
+    }
+
+    $rollbackChangedRelPaths = @()
+    if ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.UseHotReload -and -not $Settings.IsWeb) {
+        $rollbackChangedRelPaths = @(Get-RollbackChangedRelPaths -BackupDir $backup.FullName -TargetRoot $Settings.TargetPath)
+    }
+    # ---------- 运行中热重载 · 阶段一（回滚）：恢复前先卸载将被删除的新增脚本 ----------
+    # 同更新流程：必须先 unload（文件还在）再删文件，避免 SA 事务卡住 console socket。
+    $hotReloadCtx = $script:HotReloadContext
+    $hotReloadActive = ($null -ne $hotReloadCtx -and [bool]$hotReloadCtx.UseHotReload -and -not $Settings.IsWeb)
+    $preUnloadInfo = $null
+    if ($hotReloadActive) {
+        $rollbackRemovedIds = @(Get-HotReloadScriptIds -RelPaths @($rollbackRemovedRelPaths.ToArray()))
+        if ($rollbackRemovedIds.Count -gt 0) {
+            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReloadCtx -RemovedPaths @($rollbackRemovedRelPaths.ToArray()) -Stage '回滚'
+            if ([int]$preUnloadInfo.ExitCode -ne 0) {
+                Write-Log ''
+                Write-Log ('运行中热重载 · 阶段一失败：{0}' -f $preUnloadInfo.Summary) 'ERROR'
+                return New-UpdateResult -ExitCode 2 -Summary $preUnloadInfo.Summary
+            }
+        }
     }
 
     Write-Step '回滚：恢复文件'
@@ -1542,12 +2675,36 @@ function Invoke-RollbackFlow {
     Write-VersionMarker -Path $Settings.MarkerPath -Marker $marker
     Write-Log ('已更新本地版本标记（回滚后）：{0}' -f $Settings.MarkerPath)
 
+    # ---------- 运行中热重载 · 阶段二（回滚）：恢复后先 scan（若删了脚本）再逐个 load 被恢复的脚本 ----------
+    $hotReloadInfo = $null
+    if ($hotReloadActive) {
+        $checkListFailed = (@($rollbackChangedRelPaths).Count -gt 0 -or ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted))
+        $rollbackRemovedScriptCount = @(Get-HotReloadScriptIds -RelPaths @($rollbackRemovedRelPaths.ToArray())).Count
+        $hotReloadInfo = Invoke-HotReloadPostLoad -Config $Config -Context $hotReloadCtx `
+            -AddedPaths @() -ChangedPaths @($rollbackChangedRelPaths) -RemovedScriptCount $rollbackRemovedScriptCount -CheckListFailed $checkListFailed -Stage '回滚'
+        if ($hotReloadInfo.Done -and [int]$hotReloadInfo.ExitCode -ne 0) {
+            Write-Log ''
+            Write-Log ('回滚已恢复文件，但运行中热重载未成功：{0}' -f $hotReloadInfo.Summary) 'ERROR'
+            Write-Log '恢复建议：在服务器控制台执行 sa load / sa listFailed 排查失败脚本，或重启服务器。' 'WARN'
+            $summary = ('回滚完成（文件已恢复：{0} 个；删除更新新增 {1} 个），但 {2}' -f $restore.Restored, $restore.Deleted, $hotReloadInfo.Summary)
+            return New-UpdateResult -ExitCode 3 -Summary $summary
+        }
+    }
+
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line 'WARN' }
+    } elseif ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) {
+        Write-Log '运行中回滚已按「先 unload 将被删脚本 → 恢复文件 → 再 load 恢复的脚本」逐个热重载完成，本次没有重启服务器。'
+        Write-Log '请在服务器控制台/日志确认没有脚本报错（config\logs\script-load\last-error.log 为空、脚本加载数量正常）。'
+    } elseif ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.ServerRunning -and -not $Settings.IsWeb) {
+        Write-Log '服务器保持运行中：本次回滚没有需要热重载的 .kts 脚本变更，无需重启服务器。'
     } else {
         Write-Log '回滚完成。请启动服务器验证；如需确认版本，可查看本日志与备份元数据。'
     }
-    return New-UpdateResult -ExitCode 0 -Summary ('回滚完成（备份 {0}）：恢复 {1} 个文件，删除更新新增文件 {2} 个。' -f $backup.Name, $restore.Restored, $restore.Deleted)
+    $summaryExtra = ''
+    if ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted) { $summaryExtra += '；' + $preUnloadInfo.Summary }
+    if ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) { $summaryExtra += '；' + $hotReloadInfo.Summary }
+    return New-UpdateResult -ExitCode 0 -Summary ('回滚完成（备份 {0}）：恢复 {1} 个文件，删除更新新增文件 {2} 个{3}。' -f $backup.Name, $restore.Restored, $restore.Deleted, $summaryExtra)
 }
 
 # ----------------------------------------------------------------------------
@@ -1593,8 +2750,15 @@ function Show-OptionsSummary {
     } else {
         Write-Log ('服务器脚本目录（serverScriptsPath）：{0}' -f $Settings.TargetPath)
         Write-Log ('保护：目录 [{0}]；文件 [{1}]' -f (($Settings.ProtectedDirs) -join ', '), (($Settings.ProtectedFiles) -join ', '))
-        Write-Log ('要求停服（requireServerStopped）：{0}' -f $Config.RequireServerStopped)
+        Write-Log ('要求停服（requireServerStopped）：{0}（服务器运行中且热重载不可用/关闭时才生效）' -f $Config.RequireServerStopped)
         Write-Log ('游戏端口（gamePort）：{0}' -f $Config.GamePort)
+        if ([bool]$Settings.SupportsHotReload) {
+            Write-Log ('console socket（consoleSocketHost:consoleSocketPort）：{0}:{1}' -f $Config.ConsoleSocketHost, $Config.ConsoleSocketPort)
+            Write-Log ('脚本加载日志（reloadLogPath）：{0}' -f $Config.ReloadLogPath)
+            Write-Log ('单脚本超时（perScriptTimeoutSeconds）：{0} 秒；级联静默（reloadSettleMillis）：{1} 毫秒；连接超时（socketConnectTimeoutSeconds）：{2} 秒' -f $Config.PerScriptTimeoutSeconds, $Config.ReloadSettleMillis, $Config.SocketConnectTimeoutSeconds)
+        } else {
+            Write-Log '运行中热更新：本脚本不支持（清缓存版需要停服）。'
+        }
     }
     Write-Log ('备份根目录：{0}（本类备份：{1}，保留 {2} 份）' -f $Config.BackupPath, $Settings.BackupRoot, $Config.KeepBackups)
     if (-not [string]::IsNullOrWhiteSpace([string]$Config.LogDir)) { Write-Log ('日志目录：{0}' -f $Config.LogDir) }
@@ -1603,9 +2767,10 @@ function Show-OptionsSummary {
     }
     if (-not $Settings.IsWeb -and [int]$Config.WebPort -gt 0) { Write-Log ('Web 端口（webPort）：{0}' -f $Config.WebPort) }
     $flags = New-Object System.Collections.Generic.List[string]
-    foreach ($name in @('DryRun', 'Force', 'NoBackup', 'Rollback', 'KeepTemp')) {
+    foreach ($name in @('DryRun', 'Force', 'NoBackup', 'Rollback', 'KeepTemp', 'NoHotReload')) {
         if ($Cli.ContainsKey($name) -and [bool]$Cli[$name]) { $flags.Add($name) | Out-Null }
     }
+    if ($Cli.ContainsKey('HotReload') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.HotReload)) { $flags.Add('HotReload=' + [string]$Cli.HotReload) | Out-Null }
     if ($Cli.ContainsKey('RollbackTo') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.RollbackTo)) { $flags.Add('RollbackTo=' + [string]$Cli.RollbackTo) | Out-Null }
     if ($Cli.ContainsKey('SourceZip') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.SourceZip)) { $flags.Add('SourceZip') | Out-Null }
     if ($flags.Count -gt 0) { Write-Log ('命令行开关：{0}' -f ($flags -join ', ')) } else { Write-Log '命令行开关：无' }
@@ -1700,6 +2865,7 @@ function Invoke-MdtUpdater {
     $script:LogPath = ''
     $script:TempDir = ''
     $script:LockPath = ''
+    $script:HotReloadContext = $null
     $keepTemp = ($Cli.ContainsKey('KeepTemp') -and [bool]$Cli.KeepTemp)
     $settings = $null
     $config = $null
@@ -1748,19 +2914,17 @@ function Invoke-MdtUpdater {
             New-Directory -Path ([string]$config.BackupPath)
         }
 
-        # 预检：必须停服（插件/清缓存类；Web 更新不需要停游戏服；DryRun 不改文件故不检查）
-        if ($settings.NeedsServerStopped) {
-            if ([bool]$Cli.DryRun) {
-                Write-Log 'DryRun：跳过停服检查（预览不会改动任何文件；正式执行前必须关闭服务器）。' 'WARN'
-            } else {
-                Assert-ServerStopped -Config $config
-            }
-        } elseif (-not $settings.IsWeb -and -not [bool]$Cli.DryRun) {
-            Write-Log '配置 requireServerStopped=false：本次跳过停服检查（不推荐在服务器运行时更新文件！）' 'WARN'
+        # 预检：服务器运行状态 / 运行中热重载（console socket + 脚本加载日志）可用性
+        # 优先级：服务器未运行 → 普通停服流程；运行中且热重载可用 → 镜像后热重载；
+        #         热重载不可用/关闭 → 回退 requireServerStopped（true=拒绝2 / false=旧行为强制更新）。
+        $isRollback = ([bool]$Cli.Rollback -or ($Cli.ContainsKey('RollbackTo') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.RollbackTo)))
+        if (-not $settings.IsWeb) {
+            $script:HotReloadContext = Initialize-HotReloadContext -Config $config -Settings $settings -Cli $Cli -IsRollback $isRollback
+        } else {
+            $script:HotReloadContext = $null
         }
 
         # 回滚 / 更新
-        $isRollback = ([bool]$Cli.Rollback -or ($Cli.ContainsKey('RollbackTo') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.RollbackTo)))
         if ($isRollback) {
             $result = Invoke-RollbackFlow -Config $config -Settings $settings -Cli $Cli
         } else {

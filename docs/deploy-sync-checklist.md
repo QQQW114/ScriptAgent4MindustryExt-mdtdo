@@ -49,19 +49,50 @@
 
 | 脚本 | 作用 | 要点 |
 |---|---|---|
-| `update-plugins.bat` | 严格镜像 `scripts/**` → 生产 `config\scripts` | **必须先关闭服务器**；默认保护 `data\`、`external-cp\`、`cache\`；仓库已删除的脚本会同步删除；更新前自动备份，可 `-Rollback` |
+| `update-plugins.bat` | 严格镜像 `scripts/**` → 生产 `config\scripts` | **运行中可热重载**（console socket 逐个 unload/load，见 §3.2）；停服仅首次部署或含 `.kt` 库/模块改动；默认保护 `data\`、`external-cp\`、`cache\`；仓库已删除的脚本会同步删除；更新前自动备份，可 `-Rollback` |
 | `update-web.bat` | 严格镜像 `stats-web/**` → 生产 Web 目录 | 不用停游戏服；保护 `web-data\`、`web-config.json`、`web-config.ps1`；更新后**重启 Web 进程** |
-| `update-plugins-clear-cache.bat` | 先**显式清空**脚本编译缓存，再严格镜像 `scripts/**` | 同样必须停服；需要强制重编译时用 |
+| `update-plugins-clear-cache.bat` | 先**显式清空**脚本编译缓存，再严格镜像 `scripts/**` | 需要强制重编译时用；清缓存后**必须停服/重启**（运行中不能清编译缓存） |
 
 - 部署：复制整个 `updater\` 到生产（如 `E:\mdt-updater\`），改 `config.json` 里的
   `serverScriptsPath` / `statsWebPath` / `backupPath` 三个绝对路径即可；零 git、无需改服务器文件；
-- 推荐流程：`-DryRun` 预览变更清单 → 关闭服务器 → 正式更新 → 启动服务器检查脚本加载；
+- 推荐流程：`-DryRun` 预览变更清单 → **运行中直接正式更新**（socket 热重载，见 §3.2）→ 检查 `script-load` 日志与 `sa listFailed`；
+  首次部署或含 `.kt` 库改动时改为停服更新；
 - 支持 `-Proxy http://127.0.0.1:7897` / `-ProxyPort 7897`（也读环境变量 `HTTPS_PROXY`）；
 - Web 与插件用同一个仓库 zip，更新器只取 `scripts/` 与 `stats-web/`，忽略 `docs/` 等；
   更新器自身也在插件仓库根 `updater/`，可整目录复制新版升级；
 - **生产可用 updater 代替本清单第 1 节「脚本代码」+ 第 3 节 robocopy 的手工复制流程**
   （首次仍建议对照 `-DryRun` 输出核对删除清单；自定义脚本要加入 `protectedServerFiles`）。
 - 完整用法/参数/配置/FAQ 见 [`updater/README.md`](../updater/README.md)。
+
+### 3.2 生产启用运行中热更新（console socket + 脚本加载日志，2026-11-01）
+
+> 服务器运行中直接更新脚本、无需停服；机制与实测结果见 `updater/README.md` §10/§15 与 `scripts-maintenance.md` 第三十四批。
+
+**前置（需停服一次）**：生产 `mdtserver\config\server.properties` 增加三行（**只绑本机，不要暴露公网**）：
+
+```properties
+socketInput=true
+socketInputPort=6859
+socketInputAddress=localhost
+```
+
+端口需与 `updater/config.json` 的 `consoleSocketPort` 一致（默认 6859）。
+
+**首次启用步骤**：① 改好上面三行并重启服务器 → ② 把新版 `updater\` 整目录复制到生产（保留自己的 `config.json` 与 `logs\`）→
+③ **停服**跑一次 `update-plugins.bat`（确认无报错）→ ④ 启服后确认 `mdtserver\logs\script-load\current.log` 在持续写入
+（没有该日志则热重载无法判定完成，会按拒绝处理）。
+
+**日常更新（运行中）**：`update-plugins.bat -DryRun` 预览（含将逐个执行的 `sa unload/load` 计划）→ 直接 `update-plugins.bat`
+→ 更新器自动：镜像前逐个 `sa unload` 将删除脚本 → 备份/严格镜像 → `sa scan` → 镜像后逐个 `sa load` → `sa listFailed`；
+**exit 0** 即成功（文件已更新且脚本已热加载）。含 `.kt` 库/模块改动时工具会在改动前拒绝（退出码 2），此时需停服更新。
+
+**失败处理**：退出码 **2** = 尚未镜像、目标零改动（多为 socket/日志不可用或 `.kt` 变更），修复后可重跑或停服更新；
+退出码 **3** = 文件已更新但运行中热重载失败/超时/`sa listFailed` 非空，看 `mdtserver\logs\script-load\current.log`，
+在控制台 `sa load <id>` 修复，必要时重启服务器（**建议直接重启**以恢复干净状态）。
+
+**限制/安全**：`.kt` 库/模块改动必须停服；**先 unload 再删文件**的顺序由工具内置，请勿手工先删 `.kts` 再 unload（会让 SA 事务卡住）；
+单脚本热重载会级联重启依赖方（工具逐个等待）；console socket **等价服务器控制台**，只绑 localhost、勿端口转发到公网；
+更新器只发 `sa load/unload/scan/listFailed`，不做任意命令执行；重要改动仍建议维护窗口停服更新。
 
 ---
 ## 4. 「例程集」与变更声明惯例（2026-09-13 与用户约定）

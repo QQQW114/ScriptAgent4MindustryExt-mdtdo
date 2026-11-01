@@ -185,6 +185,12 @@
   （`startReportVote` 守卫 `PlayerData.authed`，未绑定提示拒绝）；**仅已绑定玩家可投票**（`canVote` 只放行已绑定且非被检举者同账号，
   游客不弹窗、参与人数/阈值只算已绑定）；弹窗/按钮/检举票/教程/帮助文案同步。冷启动验证通过（164/160/155、失败0、
   punishmentReport/voteTutorial/menu Enabled、KDoc 211）；**运行时投票链路未实测**。生产若曾手动改 `passRatePercent` 需改 75。
+- **更新器运行中热更新（2026-11-01）**：`mdtdo/updater/` 新增 console socket + 脚本加载日志的**运行中热重载**
+  （两阶段：镜像前逐个 `sa unload` 将删除脚本 → 备份/严格镜像 → `sa scan` → 镜像后逐个 `sa load` → `sa listFailed`；
+  每步以 `logs/script-load/current.log` 的 `[ScriptAgent]` 完成标记 + 静默等待，逐个串行）。**真实 e2e 已过**：
+  场景1（改2+增1）exit 0（load 6.1/6.6/3.6s）、场景2（删1+还原2）exit 0（镜像前 unload 3.2s；load 6.2/5.8s）、
+  `listFailed` 空、全程未重启；mock 125 项断言通过。限制：`.kt` 库/模块改动必须停服、unload 必须在删文件前、
+  exit 3 建议重启；console socket 只绑 localhost（用户已批准生产开启调试端口）。生产首次启用待验证（见待办 14）。
 
 ### B. 新增待办（在办 / 等外部条件）
 
@@ -231,6 +237,11 @@
 13. **检举收拢：待真实投票链路验证**（`67b977e`）。清单：①未绑定（游客）玩家无法发起检举（有明确提示）；
     ②未绑定玩家收不到检举投票弹窗、不参与人数/阈值统计；③已绑定玩家发起后 75% 阈值生效（含快速通过/超时判定）；
     ④被检举者本人不能投；⑤弹窗/检举票/教程/帮助文案为「仅已绑定、需 75% 赞成」；⑥生产若改过 `passRatePercent` 需确认已设为 75。
+14. **更新器运行中热更新：生产首次启用待验证**（开发服 e2e 已过，见 §A）。清单：①生产 `server.properties`
+    `socketInput=true`/`socketInputPort=6859`/`socketInputAddress=localhost` 生效且 6859 只在本机监听（Windows 防火墙/安全组未额外放行）；
+    ②首次停服跑一次 `update-plugins.bat` 并确认 `mdtserver\logs\script-load\current.log` 持续写入；
+    ③运行中真实更新一次（先 `-DryRun`）exit 0、`sa listFailed` 空；④失败路径回退实测（exit 2 零改动重跑、exit 3 重启恢复）；
+    ⑤含 `.kt` 库改动被正确拒绝（退出码 2）。步骤见 `deploy-sync-checklist.md` §3.2。
 
 ### C. 已完成 / 已决策（记录以免重复提议）
 

@@ -22,6 +22,57 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-01（第三十四批）：更新器运行中热更新（console socket + 脚本加载日志）
+
+类型：工具功能（`mdtdo/updater/`：`UpdateCommon.ps1` +1343、`update-plugins.ps1` +49、`config.json` +16、`README.md` +241 行）。
+**未改游戏脚本**；真实 e2e 已在开发服 B509（`socketInput=true`）完成。完整用法见 `updater/README.md` §10。
+
+### 1. 需求
+
+生产更新插件不再必须停服：服务器运行中直接 `update-plugins.bat` 完成严格镜像 + **逐个热重载**；
+含 `.kt` 库/模块改动仍需停服。用户已批准生产开启调试端口（只绑本机）。
+
+### 2. 实现要点（两阶段顺序 + 脚本加载日志等待）
+
+运行中流程：
+
+1. **镜像前**：对将被严格镜像删除的脚本**先逐个 `sa unload`**（此时 `.kts` 文件还在）——
+   实测对「源文件已不存在」的脚本发 `sa unload` 会让 SA 事务卡住 console socket（后续命令不再处理）；工具已内置该顺序；
+2. **备份 + 严格镜像**（新增/覆盖/删除 + 哈希校验；此步失败自动用备份恢复，并对已 unload 的脚本 best-effort 重新 load）；
+3. **镜像后**：有 added 先发一次 `sa scan`；再按 changed → added **逐个 `sa load`**；全部完成后 `sa listFailed`（失败行 → 退出码 3）。
+
+**逐个等待**：SA console socket 通常无回显，完成判定用脚本加载日志 `logs/script-load/current.log`（`reloadLogPath` 可覆盖）的
+`[ScriptAgent]` 行——出现目标 id 的 `启用脚本 <id>`（load）或 `卸载脚本 <id>:`（unload）后，再等
+`reloadSettleMillis`（默认 3000ms）内无新 `[ScriptAgent]` 行才发下一条（等依赖/被依赖级联重启完成）；
+单脚本超时 `perScriptTimeoutSeconds`（默认 120s）。
+
+**退出码**：镜像前 unload 失败/超时 → **2**（目标零改动、未生成备份）；镜像后 load 失败/超时/`sa listFailed` 非空 →
+**3**（文件已更新但运行中热重载失败：看 `script-load` 日志、`sa load <id>` 修复，必要时重启）。
+
+**拒绝红线（改动文件前中止，退出码 2）**：含非 `.kts`（`.kt` 库/模块等）变更、`hotReloadMode=off`/`-NoHotReload`、
+console socket 不可连、`reloadLogPath` 不存在。`-DryRun` 只预览逐个计划（不发命令、不改文件）；`-Rollback` 同样按两阶段逐个热重载。
+
+**新配置**：`hotReloadMode`（socket/auto/off，默认 socket）、`consoleSocketHost`（127.0.0.1）、`consoleSocketPort`（6859）、
+`reloadLogPath`（默认 `<scripts>\..\logs\script-load\current.log`）、`perScriptTimeoutSeconds`（120，钳制 10-600）、
+`reloadSettleMillis`（3000，钳制 500-15000）、`socketConnectTimeoutSeconds`（5，钳制 2-60）。
+
+### 3. 验证（真实 e2e，开发服 B509）
+
+- **场景 1（修改 2 + 新增 1）**：**exit 0**；`sa scan` → 逐个 load：voteDnd **6.1s** / tips **6.6s** / e2eProbe **3.6s**；
+  `sa listFailed` 空；文件更新、脚本 Enabled；**未重启服务器**。
+- **场景 2（删除 1 + 还原 2）**：**exit 0**；镜像前 `sa unload e2eProbe` **3.2s**（文件仍在）→ 备份/镜像 → 逐个 load
+  voteDnd **6.2s** / tips **5.8s**；文件恢复、探针卸载、`sa listFailed` 空；**未重启服务器**。顺序串行、无重叠已验证。
+- **mock 自动化测试 125 项断言全部通过**（临时目录 + 假 TCP socket + 假 `script-load/current.log`，覆盖两阶段顺序/等待/
+  退出码 2/3/`-DryRun`/`-Rollback`/拒绝路径等，见 `updater/README.md` §15）。
+
+### 4. 未验证 / 风险
+
+- **生产首次启用未验证**：生产 6859 是否可用/Windows 防火墙、首次停服部署、运行中真实更新、exit 2/3 失败回退路径实测。
+- console socket **等价服务器控制台**：只应绑 localhost（`server.properties`：`socketInput=true`、`socketInputPort=6859`、
+  `socketInputAddress=localhost`），**不要暴露公网**；更新器只发送 `sa load/unload/scan/listFailed` 四类命令。
+- 单脚本热重载会**级联重启**依赖方（更新器已用逐个等待处理）；重要改动建议维护窗口停服更新；`.kt` 库/模块改动**必须停服**。
+- 生产启用步骤见 [`deploy-sync-checklist.md`](deploy-sync-checklist.md) §3.2。
+
 ## 2026-11-01（第三十三批）：协管快捷操作迁移 MenuV3 + 分页 + 3++/4 免投票直达（PR #2）
 
 类型：脚本改造（`scripts/wayzer/cmds/quickOps.kts`，PR #2，贡献者 Luzy1203）。
