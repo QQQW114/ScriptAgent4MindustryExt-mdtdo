@@ -22,6 +22,34 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-01（第三十五批）：雷达技能跨图污染修复（贡献者 Sh_Zxy 直推 main）
+
+类型：脚本修复（`scripts/wayzer/user/skillShop.kts`，插件仓库提交 `eeb2f47`，贡献者 Sh_Zxy）。
+
+### 1. 问题
+
+雷达技能（`command("radar")`，别名「雷达」）释放后关闭战争迷雾 300 秒，到点把释放前的 `rules.fog` 写回；
+原实现只用一个脚本级令牌防「连续释放互相打架」，未考虑换图：换图时 `maps.manager.kt` 用新地图 Rules
+整体替换 `Vars.state.rules`，到点后上一张图的 `previousFog` 被写进新图并 `Call.setRules` 全服广播 →
+新地图的战争迷雾被错误关闭/打开，持续到本图结束。
+
+### 2. 修复
+
+释放时记录 `Vars.state.rules` 对象身份；到点后若身份已变（换过图）则放弃回写。
+同图内行为不变；300 秒内换图不碰新图 fog；生成器地图路径不替换 Rules 对象，行为同修复前。
+口径：换图时雷达效果丢失（雾立即回来）不在本次范围。
+
+### 3. 验证（贡献者提供）
+
+本地开发服（MindustryX server-2026.10.10.B509）冷启动：`共找到165脚本,加载成功161,启用成功157,出错0`；
+`scriptdiag count` 失败 0；`scriptdiag state wayzer/user/skillShop` = Enabled。
+**未验证**：300 秒计时到点与换图的真实时序（需实机触发）。
+
+### 4. 备注
+
+- 该提交由贡献者直接推送到 `origin/main`（非 PR 流程；后续协作请走 PR/分支，见 `collaboration-discipline.md`）；
+- Lead 已把修复同步进 mdtdo 源树（避免下次 mdtdo→仓库同步时被覆盖），并补记本维护批次。
+
 ## 2026-11-01（第三十四批）：更新器运行中热更新（console socket + 脚本加载日志）
 
 类型：工具功能（`mdtdo/updater/`：`UpdateCommon.ps1` +1343、`update-plugins.ps1` +49、`config.json` +16、`README.md` +241 行）。
