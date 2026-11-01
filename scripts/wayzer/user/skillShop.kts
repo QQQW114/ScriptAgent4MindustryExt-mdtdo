@@ -1107,12 +1107,18 @@ command("radar", "商店技能：雷达".with(), commands = SkillCommands) {
         // 但绝大多数地图默认 fog=false，导致这个技能实际上只能看着不能用。
         // 现在改为：无论当前是否开雾都以「开雾 300 秒」结算——记录释放前的 fog 值，到点按原值恢复。
         val previousFog = Vars.state.rules.fog
+        // 记录释放时的 Rules 对象身份：换图时 `Vars.state.rules` 会被整体替换成新地图的 Rules
+        // （maps.manager.kt 的 `Vars.state.rules = event.rules`），此时 previousFog 属于上一张图，
+        // 到点再回写就会错误地关掉/打开新图的战争迷雾并全服广播。用对象身份守卫杜绝跨图污染。
+        // 生成器地图路径不替换 Rules 对象，身份不变，恢复逻辑照常生效。
+        val rulesRef = Vars.state.rules
         val token = ++radarFogToken
         launch(Dispatchers.game) {
             Vars.state.rules.fog = false
             Call.setRules(Vars.state.rules)
             delay(300_000)
             if (token != radarFogToken) return@launch
+            if (Vars.state.rules !== rulesRef) return@launch
             Vars.state.rules.fog = previousFog
             Call.setRules(Vars.state.rules)
         }
