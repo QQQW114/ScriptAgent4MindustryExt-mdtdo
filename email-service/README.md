@@ -30,8 +30,10 @@
    - `mockSend=true` 可先做联调（不真实发信，不消耗额度）。
 3. 启动：
    - 调试：双击 `start-email-service.bat`；
-   - 生产：建议用「任务计划程序」以开机/登录触发，运行：
+   - 生产（推荐）：**管理员** PowerShell 执行 `.\install-scheduled-task.ps1` —— 自动创建开机自启任务「MDT Email Service」（SYSTEM），并做健康检查；
+   - 也可手动用「任务计划程序」运行：
      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "E:\mdt-email-service\server.ps1" -Config "E:\mdt-email-service\config.json"`，勾选「不管用户是否登录都运行」；
+   - 服务器部署的完整步骤见同目录 [`DEPLOY-服务器.md`](DEPLOY-服务器.md)；
 4. 默认监听 `127.0.0.1:40150`（**只本机可访问**，不要对公网开放）；若需其他机器访问，改 `listen.host` 并自行加防火墙+只允许可信 IP；
 5. 首次若提示"拒绝访问"，用**管理员**执行一次：
    `netsh http add urlacl url=http://127.0.0.1:40150/ user=Everyone`

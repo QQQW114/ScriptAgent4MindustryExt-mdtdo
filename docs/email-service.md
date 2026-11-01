@@ -32,10 +32,10 @@ X-Internal-Token: <内部 token>
 
 ## 生产部署
 
-1. 把 `email-service/` 目录复制到服务器（如 `E:\mdt-email-service`）；
-2. 复制 `config.example.json` → `config.json`，填 `internalToken` 与阿里云 AccessKey（或从开发机安全拷入）；
-3. 用 `start-email-service.bat` 启动，或用任务计划程序开机自启（详见 README §2）；
-4. 服务只监听 `127.0.0.1:40150`，**不要**在防火墙放行该端口。
+1. 把 `email-service/` 目录（交接包内含已填好的 `config.json`）复制到服务器，如 `E:\mdt-email-service`；
+2. 若从模板重建配置：复制 `config.example.json` → `config.json`，填 `internalToken` 与阿里云 AccessKey（生产建议直接使用交接包里的 config，避免密钥在聊天传递）；
+3. **管理员** PowerShell 执行 `.\install-scheduled-task.ps1`，创建开机自启任务「MDT Email Service」（SYSTEM）并自动健康检查；
+4. 服务只监听 `127.0.0.1:40150`，**不要**在防火墙放行该端口；
 
 ## 安全
 
