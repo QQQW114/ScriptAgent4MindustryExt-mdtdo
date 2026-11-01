@@ -58,7 +58,7 @@ Invoke-RestMethod http://127.0.0.1:40150/health
 $t = (Get-Content .\config.json -Raw -Encoding UTF8 | ConvertFrom-Json).internalToken
 Invoke-RestMethod -Uri 'http://127.0.0.1:40150/send' -Method Post -ContentType 'application/json; charset=utf-8' `
   -Headers @{ 'X-Internal-Token' = $t } `
-  -Body ([Text.Encoding]::UTF8.GetBytes('{"email":"3571850781@qq.com","code":"123456"}'))
+  -Body ([Text.Encoding]::UTF8.GetBytes('{"email":"123456789@qq.com","code":"123456"}'))
 ```
 
 返回 `ok:true` + `envId` 即成功；QQ 邮箱应能收到。

@@ -64,7 +64,7 @@ X-Internal-Token: <config.internalToken>
 
 ```json
 {
-  "email": "3571850781@qq.com",
+  "email": "123456789@qq.com",
   "code": "123456",
   "expireMinutes": 10,
   "purpose": "bind"
@@ -115,7 +115,7 @@ X-Internal-Token: <config.internalToken>
 ### PowerShell
 
 ```powershell
-$body = @{ email = '3571850781@qq.com'; code = '123456'; expireMinutes = 10 } | ConvertTo-Json -Compress
+$body = @{ email = '123456789@qq.com'; code = '123456'; expireMinutes = 10 } | ConvertTo-Json -Compress
 $r = Invoke-RestMethod -Uri 'http://127.0.0.1:40150/send' -Method Post -ContentType 'application/json; charset=utf-8' `
     -Headers @{ 'X-Internal-Token' = '<token>' } -Body ([Text.Encoding]::UTF8.GetBytes($body))
 $r | ConvertTo-Json
@@ -127,7 +127,7 @@ $r | ConvertTo-Json
 curl -s -X POST http://127.0.0.1:40150/send \
   -H "Content-Type: application/json" \
   -H "X-Internal-Token: <token>" \
-  -d '{"email":"3571850781@qq.com","code":"123456","expireMinutes":10}'
+  -d '{"email":"123456789@qq.com","code":"123456","expireMinutes":10}'
 ```
 
 ### Kotlin / Java（插件侧）

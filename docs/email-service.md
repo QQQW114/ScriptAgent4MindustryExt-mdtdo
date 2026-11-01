@@ -14,7 +14,7 @@ POST http://127.0.0.1:40150/send
 Content-Type: application/json
 X-Internal-Token: <内部 token>
 
-{"email":"3571850781@qq.com","code":"123456","expireMinutes":10}
+{"email":"123456789@qq.com","code":"123456","expireMinutes":10}
 ```
 
 成功：`200 {"ok":true,"requestId":"...","envId":"..."}`；
