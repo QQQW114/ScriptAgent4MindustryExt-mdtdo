@@ -568,7 +568,7 @@
     main.className = 'feed-main';
     if (ev.player) {
       // 玩家名统一走 UI.buildPlayerName：颜色标记安全渲染、长名不截断/可换行、title+点击看完整名
-      main.appendChild(UI.buildPlayerName(ev.player, { className: 'feed-player', playerId: ev.playerId }));
+      main.appendChild(UI.buildPlayerName(ev.player, { className: 'feed-player' }));
     }
     var text = document.createElement('span');
     text.className = 'feed-text';
@@ -871,7 +871,7 @@
     icon.setAttribute('aria-hidden', 'true');
     var main = document.createElement('div');
     main.className = 'history-main';
-    if (ev.player) main.appendChild(UI.buildPlayerName(ev.player, { className: 'history-player', playerId: ev.playerId }));
+    if (ev.player) main.appendChild(UI.buildPlayerName(ev.player, { className: 'history-player' }));
     var text = document.createElement('span');
     text.className = 'history-text';
     text.innerHTML = eventText(ev); // 安全：eventText 内部走 PortalMarkup.render

@@ -1,9 +1,11 @@
-﻿# 服务器门户 Web（stats-web）设计与使用说明
+# 服务器门户 Web（stats-web）设计与使用说明
 
 > 更新记录：2026-10-17 首次实现（服务器状态网站升级为「服务器门户」：欢迎页/状态页 + 游戏内实时事件流 + DP/地图上传审核 + 管理员后台）。
 > **2026-10-18 第二期**：服务器日志列表/下载/尾部预览（并发+限频+审计+Range+浏览器直链 token）、跨旋转文件的历史事件查询、
 > 状态接口新增宿主机上行带宽采样（`data.net`）、`liveEventFeed` 多份轮转（默认保留 12 份）与玩家名上限提升（默认 256 字符）、
 > 客户端断开写响应异常降噪、游戏控制台桥改为「可选增强」语义（不可达不影响审核，返回中性 `reloadHint`）。
+> **2026-11-01**：玩家名详情弹窗不再展示玩家 base64 UUID（`playerId`），仅保留显示名/原始记录/长度/截断说明
+> （数据契约仍保留 `playerId` 供历史检索，仅前端不显示；静态资源版本号更新为 `20261101a` 触发缓存刷新）。
 > 后端实现：`stats-web/server/**` + `stats-web/start-web.ps1`；前端实现：`stats-web/index.html`、`upload.html`、`admin.html`、`assets/**`；
 > 游戏侧事件流：`wayzer/ext/liveEventFeed.kts`（输出 `config/stats/live-events.jsonl`）；
 > 状态统计仍由 `wayzer/ext/serverStats.kts` 输出 `config/stats/server-status.json`（口径见 [server-status-stats.md](server-status-stats.md)）。

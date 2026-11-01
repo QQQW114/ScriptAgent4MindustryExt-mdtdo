@@ -293,7 +293,7 @@
    * 构建玩家名元素：彩色标记安全渲染、不二次截断（上限见 site-config.display.playerNameMaxChars，
    * 默认 512 = 上游事件流 maxPlayerChars 256 的 2 倍）、title 显示完整纯文本名、点击可查看完整原名。
    * @param {string} raw 原始玩家名（可能含 Mindustry 颜色标记）
-   * @param {object} [opts] {className, playerId, showDetail}
+   * @param {object} [opts] {className, showDetail}
    * @returns {HTMLElement}
    */
   function buildPlayerName(raw, opts) {
@@ -383,12 +383,7 @@
       lenNode.textContent = info.chars + ' 字符（前端显示上限 ' + ((global.PORTAL_SITE || {}).display || {}).playerNameMaxChars + '）';
       row('长度', lenNode);
     }
-    if (opts && opts.playerId) {
-      var idNode = document.createElement('code');
-      idNode.className = 'detail-raw';
-      idNode.textContent = String(opts.playerId);
-      row('playerId', idNode);
-    }
+    // 2026-11-01 用户要求：不再展示玩家 base64 UUID（playerId）。详情弹窗只保留名字/长度/截断说明。
     if (info.repaired) {
       var note = document.createElement('div');
       note.className = 'notice-hint';
