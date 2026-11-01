@@ -191,6 +191,8 @@
   场景1（改2+增1）exit 0（load 6.1/6.6/3.6s）、场景2（删1+还原2）exit 0（镜像前 unload 3.2s；load 6.2/5.8s）、
   `listFailed` 空、全程未重启；mock 125 项断言通过。限制：`.kt` 库/模块改动必须停服、unload 必须在删文件前、
   exit 3 建议重启；console socket 只绑 localhost（用户已批准生产开启调试端口）。生产首次启用待验证（见待办 14）。
+  **2026-11-01 追加**：热重载前后通过 console `say` 全服广播（开始/成功/失败/中止四类文案，best-effort，`hotReloadAnnounce=false` 可关）；
+  生产**已开 socketInput** 时首次部署**无需重启**（复制 updater→`-DryRun`→直接更新），未开端口才需改配置重启一次。
 
 ### B. 新增待办（在办 / 等外部条件）
 
@@ -239,9 +241,11 @@
     ④被检举者本人不能投；⑤弹窗/检举票/教程/帮助文案为「仅已绑定、需 75% 赞成」；⑥生产若改过 `passRatePercent` 需确认已设为 75。
 14. **更新器运行中热更新：生产首次启用待验证**（开发服 e2e 已过，见 §A）。清单：①生产 `server.properties`
     `socketInput=true`/`socketInputPort=6859`/`socketInputAddress=localhost` 生效且 6859 只在本机监听（Windows 防火墙/安全组未额外放行）；
-    ②首次停服跑一次 `update-plugins.bat` 并确认 `mdtserver\logs\script-load\current.log` 持续写入；
-    ③运行中真实更新一次（先 `-DryRun`）exit 0、`sa listFailed` 空；④失败路径回退实测（exit 2 零改动重跑、exit 3 重启恢复）；
-    ⑤含 `.kt` 库改动被正确拒绝（退出码 2）。步骤见 `deploy-sync-checklist.md` §3.2。
+    ②首次部署：**已开端口**时验证免重启路径（复制 updater→`-DryRun`→直接更新 exit 0）；未开端口时验证改配置重启一次后
+    `mdtserver\logs\script-load\current.log` 持续写入；③运行中真实更新一次（先 `-DryRun`）exit 0、`sa listFailed` 空；
+    ④失败路径回退实测（exit 2 零改动重跑、exit 3 重启恢复）；⑤含 `.kt` 库改动被正确拒绝（退出码 2）；
+    ⑥**游戏内 `say` 广播真实可见性**（开始/成功文案）；⑦**失败/中止广播文案**（exit 3 含失败脚本列表、exit 2 中止文案）；
+    ⑧`hotReloadAnnounce=false` 能关闭广播。步骤见 `deploy-sync-checklist.md` §3.2。
 
 ### C. 已完成 / 已决策（记录以免重复提议）
 

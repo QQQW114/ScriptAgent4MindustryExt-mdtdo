@@ -279,6 +279,10 @@ MDT DO 是一个完整的 Mindustry 专服产品，而不是若干互不相关�
   exit 2=镜像前失败零改动、exit 3=文件已更新但热重载失败（建议重启）；`.kt` 库改动必须停服、unload 必须先于删文件。
   真实 e2e（开发服 B509）两场景均 exit 0（改2+增1：6.1/6.6/3.6s；删1+还原2：unload 3.2s、load 6.2/5.8s、listFailed 空、未重启）；
   mock 125 项断言通过。用户已批准生产开启调试端口（只绑 localhost）；**生产首次启用待验证**。
+- **2026-11-01（更新器热重载广播 + 首次部署免重启）**：热重载前后通过 console `say` 全服提示（开始/成功/失败/中止四类文案，
+  best-effort、`hotReloadAnnounce=false` 可关）；生产**已开 socketInput** 时首次部署无需重启（复制 updater→`-DryRun`→直接更新），
+  未开端口才需改 `server.properties` 重启一次（或 `-NoHotReload` 停服更新）。真实游戏内可见性/失败文案待 e2e；
+  文档见 `deploy-sync-checklist.md` §3.2 与 `scripts-maintenance.md` 第三十四批 §5。
 
 ## 7. 已替代或明确不应恢复的方向
 

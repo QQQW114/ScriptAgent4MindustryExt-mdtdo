@@ -15,6 +15,9 @@
           ② 严格镜像（备份 → 写入/覆盖 → 删除文件）；
           ③ 镜像后：若有 added 或 removed，先发一次 sa scan（发现新脚本 + 清理已删除脚本的注册表，等 1.5 秒；两者都有也只发一次），再对 changed → added 逐个发 sa load；
              最后 sa listFailed 收尾；失败/超时/listFailed 非空 → 退出码 3（文件已更新，需 sa load 或重启服务器）；
+        ④ 全程：若 config.json 的 hotReloadAnnounce=true（默认），开始前/结束后各发一条 console say
+           广播提醒玩家（开始「服务器插件即将热重载更新…」、结束「插件更新完成…」或失败摘要）；
+           best-effort，发送失败只记 WARN，不影响更新退出码；-NoHotReload / 服务器未运行 / 无变更时不发。
         注意：运行中删除脚本必须「先 unload 再删文件」；反过来（文件已删再 unload）会让 SA 事务卡住 console socket。
       * 服务器运行中但热重载不可用/关闭：按 config.json 的 requireServerStopped 回退
         （true=拒绝执行退出码 2；false=旧行为在线更新，不推荐）。

@@ -215,7 +215,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
 
 ---
 
-## 10. 运行中热更新（console socket + 脚本加载日志）
+## 10. 运行中热更新（console socket + 脚本加载日志 + say 广播）
 
 ### 10.1 原理
 
@@ -237,10 +237,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
   `reloadSettleMillis`（默认 3000ms）内**没有新的 `[ScriptAgent]` 行**（等依赖方级联重启写完）。
 - **必须一个一个来**：每发一条命令，都要等上一个脚本「重编译 + 级联重启」全部完成，才发下一条。
   一口气全发会造成级联重启互相踩踏，出现奇怪的加载顺序问题（用户实测）。
+- **服务端广播（say）**：通过同一个 console socket 发 `say <文本>`（游戏内显示 `Server: ...`）。
+  仅在「服务器运行中 + 确实发生热重载 + 非 DryRun + `hotReloadAnnounce=true`」时，开始前发一条提醒，
+  结束后发「成功/失败摘要」；服务器未运行 / `-NoHotReload` / 无变更时不发；
+  （有 removed 时开始广播复用阶段一的 socket 会话；没有 removed 时在镜像前单独连接一次发开始广播；
+  结束广播复用阶段二的会话——都是同一种 console socket 通道。）
+  best-effort，发送失败只记 WARN，不影响更新退出码。
+- **socket 写法（关键）**：命令一律以**原始 UTF-8 字节 + `\n`** 写入 NetworkStream（等价于
+  `.agents/sa-cmd.ps1` 的验证写法），**不用 StreamWriter/WriteLine**（`\r\n`/BOM 会破坏 SA 的行解析，
+  实测会导致 server console socket 卡死、后续命令不再执行）。探测/单独 say 等短会话用完立即在 finally 中关闭。
 
 ### 10.2 执行流程（`update-plugins`，服务器运行中）
 
-1. 严格镜像分析（已有流程，`-DryRun` 到此打印计划后结束）；
+0. **开始广播**（`hotReloadAnnounce=true` 默认）：确认本次确实会热重载（服务器运行中、模式非 off、
+   确有 `.kts` 变更、非 `-DryRun`）后，在发任何 `sa unload`/镜像之前先发
+   `say 服务器插件即将热重载更新，请暂时避免使用菜单、技能等功能。`；
+1. 严格镜像分析（已有流程，`-DryRun` 到此打印计划后结束，不发任何命令）；
 2. 若 planned 变更包含**非 `.kts`** 文件（`.kt` 模块库等）→ **改动文件前中止**，退出码 2（库改动必须停服）；
 3. 热重载模式为 `off` → 中止退出码 2（提示停服或去掉 `-NoHotReload`）；
 4. console socket 连不上 / `reloadLogPath` 不存在 → **改动文件前中止**，退出码 2
@@ -258,14 +270,31 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
    （发现新脚本 + 清理已删除脚本的注册表；两者都有时也只发一次）；再按 changed → added 逐个 `sa load <id>`，
    同样逐脚本等日志完成标记 + 静默；单脚本超时/失败 → **停止后续，退出码 3（文件已更新）**；
 8. 全部完成后发 `sa listFailed`，读取 2~3 秒回显；若出现失败脚本行（形如 `[Failed] <id>`）→ 退出码 3；
-   否则退出码 0（`sa listFailed` 无失败时通常只有 autosave 等无关回显，会被忽略）。
-- **服务器未运行**：不连 socket，按停服流程更新，退出码 0，日志提示「下次启动服务器时加载」。
+   否则退出码 0（`sa listFailed` 无失败时通常只有 autosave 等无关回显，会被忽略）；
+9. **结束广播**（本次有广播时）：成功发 `say 插件更新完成，可以正常使用了。`；
+   失败/部分失败发 `say 插件更新完成，但有 N 个脚本重载失败：<id1>, <id2>, …；相关功能可能暂时不可用，
+   管理员会尽快处理。`（失败 id 取「失败脚本 + listFailed 失败 id」去重、最多列 5 个，剩余用「等 N 个」，
+   总长控制在 ~200 字以内）；若在阶段一就失败中止（退出码 2、尚未镜像），发
+   `say 插件更新中止，请稍后再试；部分功能可能暂时不可用。`。
+- **服务器未运行**：不连 socket、不发 say，按停服流程更新，退出码 0，日志提示「下次启动服务器时加载」。
 - **为什么必须「先 unload 再删文件」**：见 10.1；工具不会制造「源文件已删再 unload」的状态。
 
-### 10.3 前置条件与首次部署（需停服一次）
+### 10.3 前置条件与首次部署（按实际情况，不一定需要重启）
 
-1. 把新版 `updater\` 整目录复制到生产主机（保留自己的 `config.json` 与 `logs\`）；
-2. 编辑 `mdtserver\config\server.properties`，增加三行（**只绑本机，不要暴露公网**）：
+**先判断 console socket 是否已经在用**：如果生产 `server.properties` 已配置 `socketInput=true` /
+`socketInputPort=6859` / `socketInputAddress=localhost`，且 **6859 端口已在监听、`current.log` 在持续写入**
+→ 首次部署**不需要关闭或重启服务器**：
+
+1. 把新版 `updater\` 整目录复制到生产主机（updater 是独立 PowerShell 进程，与游戏服无关，可随时替换；
+   保留自己的 `config.json` 与 `logs\`）；
+2. （建议）`.\update-plugins.bat -DryRun` 预览将逐个执行哪些 sa 命令（不发命令、不改文件）；
+3. 直接运行 `.\update-plugins.bat`：更新器会严格镜像后通过 socket 逐个热重载，无需停服/重启。
+
+**如果 socketInput 还没开启**（6859 不在监听 / `current.log` 不存在）→ 需要启用端口并**重启一次**：
+
+1. 复制新版 `updater\`；
+2. 编辑 `mdtserver\config\server.properties` 增加三行（**只绑本机，不要暴露公网**；端口与
+   `config.json` 的 `consoleSocketPort` 一致，默认 6859）：
 
    ```properties
    socketInput=true
@@ -273,12 +302,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
    socketInputAddress=localhost
    ```
 
-   端口要与 `config.json` 的 `consoleSocketPort` 一致（默认 6859）；
-3. **关闭服务器** → 用新版 updater 跑一次 `.\update-plugins.bat`（停服更新一次，确认没有报错）；
-   → 启动服务器（之后 `mdtserver\logs\script-load\current.log` 会持续写入脚本加载日志）；
-4. 之后即可**运行中更新**：直接 `.\update-plugins.bat`，更新器会自动严格镜像 + 逐个热重载；
-5. 想先确认将执行什么：`.\update-plugins.bat -DryRun`（只下载比对 + 打印
-   「将逐个热重载：sa unload a → sa load b → ...」，不改文件、不发命令）。
+3. 关闭服务器 → 用新版 updater 跑一次 `.\update-plugins.bat`（或 `-NoHotReload` 走停服更新）→ 启动服务器；
+   之后 `current.log` 会持续写入，后续即可**运行中更新**（直接 `.\update-plugins.bat`）；
+4. 暂时不想开端口：用 `-NoHotReload`（要求服务器已关闭）也能正常更新，只是每次都要停服。
 
 ### 10.4 相关配置与参数（新增）
 
@@ -291,20 +317,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
 | `perScriptTimeoutSeconds` | `120` | 单脚本最长等待（10–600）；超时退出码 3 |
 | `reloadSettleMillis` | `3000` | 完成标记后的静默窗口（500–15000），等级联重启 |
 | `socketConnectTimeoutSeconds` | `5` | socket 连接超时（2–60） |
+| `hotReloadAnnounce` | `true` | 运行中热重载前后通过 `say` 广播提醒玩家（开始/成功/失败摘要）；`false` 完全不发。best-effort，发送失败只记 WARN 不影响退出码 |
 | `-NoHotReload` | — | 关闭热重载（等同 `-HotReload off`） |
-| `-DryRun` | — | 只打印计划（含将逐个执行的 sa 命令），不发命令、不改文件 |
+| `-DryRun` | — | 只打印计划（含将逐个执行的 sa 命令与是否会 say 广播），不发命令、不改文件 |
 
 ### 10.5 退出码 2 / 3：阶段一卸载失败 / 阶段二热重载失败
 
 - **退出码 2（阶段一：镜像前 unload 失败/超时）**：还没开始严格镜像，**目标目录零改动**；
-  但已执行的 `sa unload` 可能已生效（对应脚本在运行中的服务器里被卸载）。处理：
+  但已执行的 `sa unload` 可能已生效（对应脚本在运行中的服务器里被卸载），若开启广播会 best-effort 发
+  `say 插件更新中止，请稍后再试；部分功能可能暂时不可用。`。处理：
   查看 `script-load\current.log` 与更新器日志；直接重跑本更新器（会重新比对并继续），或重启服务器后再更新。
 - **退出码 3（阶段二：镜像后 load 失败/超时/listFailed 非空）**：**目标目录已经是新版文件**，
   但运行中的服务器没有成功加载全部脚本（编译失败/超时/listFailed 非空）；
   - 不需要重跑更新器：下一次运行内容未变时不会重复改文件；
   - 处理：看 `mdtserver\logs\script-load\current.log` 的 `[ScriptAgent]` 失败行；在服务器控制台执行
     `sa listFailed` / `sa load <id>`；修复后仍不行的重启服务器；
-  - 退出码 3 时更新器**不再发送后续脚本命令**（避免踩踏），已完成的脚本会列在控制台/日志里。
+  - 退出码 3 时更新器**不再发送后续脚本命令**（避免踩踏），已完成的脚本会列在控制台/日志里；
+    若开启广播，会 best-effort 发失败摘要 `say`（最多列 5 个失败 id）。
 
 ### 10.6 限制与注意事项
 
@@ -325,7 +354,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
 
 - console socket 等价于服务器控制台：**只应绑定 localhost**（`socketInputAddress=localhost`），
   不要设 `0.0.0.0`、不要端口转发到公网；
-- 更新器只发送 `sa load` / `sa unload` / `sa scan` / `sa listFailed` 这几类命令，不做任意命令执行；
+- 更新器只发送 `sa load` / `sa unload` / `sa scan` / `sa listFailed` / `say <固定提示文本>` 这几类命令，
+  不做任意命令执行；
 - 更新器只读取本机 `reloadLogPath` 日志，不额外联网（除原有的 GitHub 下载/版本检查外）。
 
 ---
@@ -439,6 +469,13 @@ A：可以（设置环境变量 `MDT_UPDATER_NO_PAUSE=1` 避免 pause 卡住）�
     `reloadSettleMillis` 才发下一条）、级联依赖日志等待、退出码 0；用 witness 断言了
     **删除脚本 unload 时文件还在**、**changed/added load 时文件已是新内容**；卸载完成标记兼容真实日志的
     `卸载脚本 <id>: `（带冒号）；`-Rollback` 也按「先 unload 将删脚本 → 恢复 → 再 load 恢复脚本」逐个热重载；
+  - socket 协议 v2 回归（79 项断言通过）：命令字节严格等于 UTF-8 文本 + `\n`（无 `\r`、无 BOM）；
+    成功/失败/中止/DryRun/removed-only/changed-only 各场景连接 open/close 全部配平（3/3、2/2、1/1，
+    含「无 removed 时单独 say 会话」），无残留连接；say 位置/三种文案/去重截断/开关等既有断言全部回归。
+  - say 服务端广播回归（60 项断言通过，含核心热重载路径）：`say`(开始) 在第一个 unload/scan/load 之前、
+    `say`(成功/失败/中止) 在 listFailed 之后；成功/失败（含失败 id）/中止三种文案；失败 id 去重 +
+    最多列 5 个 + 「等 N 个」截断（≤200 字）；`hotReloadAnnounce=false` 完全不发；DryRun/服务器未运行/
+    含 `.kt` 拒绝/无变更时不发；say 发送失败只 WARN 且不影响退出码；removed-only/changed-only 命令顺序回归。
   - 删除脚本后的 `sa scan` 回归（18 项断言通过）：removed-only 时镜像后会发且只发一次 `sa scan`、
     both(removed+added) 时也只发一次、changed-only 时完全不发；命令顺序为 unload → scan → loads → listFailed；
   - 拒绝路径（退出码 2、目标零改动、零命令）：含 `.kt` 模块库变更、console socket 不可达、

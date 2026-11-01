@@ -68,7 +68,9 @@
 
 > 服务器运行中直接更新脚本、无需停服；机制与实测结果见 `updater/README.md` §10/§15 与 `scripts-maintenance.md` 第三十四批。
 
-**前置（需停服一次）**：生产 `mdtserver\config\server.properties` 增加三行（**只绑本机，不要暴露公网**）：
+**前置（仅「未开端口」时需要停服一次）**：若生产**已**开启 console socket（`server.properties` 有下三行、6859 在监听、
+`mdtserver\logs\script-load\current.log` 在持续写入），可直接跳到「首次启用（条件式）」的免重启路径；否则先加三行并重启一次
+（**只绑本机，不要暴露公网**）：
 
 ```properties
 socketInput=true
@@ -78,13 +80,23 @@ socketInputAddress=localhost
 
 端口需与 `updater/config.json` 的 `consoleSocketPort` 一致（默认 6859）。
 
-**首次启用步骤**：① 改好上面三行并重启服务器 → ② 把新版 `updater\` 整目录复制到生产（保留自己的 `config.json` 与 `logs\`）→
-③ **停服**跑一次 `update-plugins.bat`（确认无报错）→ ④ 启服后确认 `mdtserver\logs\script-load\current.log` 在持续写入
-（没有该日志则热重载无法判定完成，会按拒绝处理）。
+**首次启用（条件式，2026-11-01 修正）**：
+
+- **已开端口（推荐/免重启）**：① 把新版 `updater\` 整目录复制到生产（保留自己的 `config.json` 与 `logs\`）→
+  ② `update-plugins.bat -DryRun` 确认计划 → ③ 直接 `update-plugins.bat` 正式更新（脚本经 socket **逐个热重载**，**无需重启服务器**）；
+- **未开端口**：① 按上面三行改 `server.properties` 并重启一次 → ② 复制新版 updater → ③ **停服**跑一次 `update-plugins.bat`
+  （确认无报错）→ ④ 启服后确认 `mdtserver\logs\script-load\current.log` 在持续写入
+  （没有该日志则热重载无法判定完成，会按拒绝处理）；也可用 `-NoHotReload` 走停服更新流程。
 
 **日常更新（运行中）**：`update-plugins.bat -DryRun` 预览（含将逐个执行的 `sa unload/load` 计划）→ 直接 `update-plugins.bat`
 → 更新器自动：镜像前逐个 `sa unload` 将删除脚本 → 备份/严格镜像 → `sa scan` → 镜像后逐个 `sa load` → `sa listFailed`；
 **exit 0** 即成功（文件已更新且脚本已热加载）。含 `.kt` 库/模块改动时工具会在改动前拒绝（退出码 2），此时需停服更新。
+
+**游戏内广播（热重载前后，2026-11-01 追加）**：运行中热重载时更新器会通过 console `say` 通知全服——
+开始前「服务器插件即将热重载更新，请暂时避免使用菜单、技能等功能。」；结束后成功「插件更新完成，可以正常使用了。」，
+失败/部分失败（exit 3）「插件更新完成，但有 N 个脚本重载失败：…；相关功能可能暂时不可用，管理员会尽快处理。」，
+镜像前中止（exit 2）「插件更新中止，请稍后再试；部分功能可能暂时不可用。」。广播为 best-effort（发送失败只 WARN、不影响退出码），
+且仅「服务器运行中 + 有热重载动作 + 非 `-DryRun`」时发送；`config.json` 的 **`hotReloadAnnounce=false`** 可关闭。
 
 **失败处理**：退出码 **2** = 尚未镜像、目标零改动（多为 socket/日志不可用或 `.kt` 变更），修复后可重跑或停服更新；
 退出码 **3** = 文件已更新但运行中热重载失败/超时/`sa listFailed` 非空，看 `mdtserver\logs\script-load\current.log`，

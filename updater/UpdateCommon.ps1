@@ -266,6 +266,7 @@ function Get-DefaultConfig {
         CachePath            = ''
         # 运行中热更新（console socket + 脚本加载日志）；缺字段时使用这些内置默认值，老配置无需修改
         HotReloadMode               = 'socket'
+        HotReloadAnnounce           = $true
         ConsoleSocketHost           = '127.0.0.1'
         ConsoleSocketPort           = 6859
         ReloadLogPath               = ''
@@ -331,6 +332,7 @@ function Get-EffectiveConfig {
         @{ Json = 'protectedWebFiles'; Key = 'ProtectedWebFiles'; Kind = 'stringArray' },
         @{ Json = 'cachePath'; Key = 'CachePath'; Kind = 'string' },
         @{ Json = 'hotReloadMode'; Key = 'HotReloadMode'; Kind = 'string' },
+        @{ Json = 'hotReloadAnnounce'; Key = 'HotReloadAnnounce'; Kind = 'bool' },
         @{ Json = 'consoleSocketHost'; Key = 'ConsoleSocketHost'; Kind = 'string' },
         @{ Json = 'consoleSocketPort'; Key = 'ConsoleSocketPort'; Kind = 'int' },
         @{ Json = 'reloadLogPath'; Key = 'ReloadLogPath'; Kind = 'string' },
@@ -1157,12 +1159,10 @@ function Open-ConsoleSocketSession {
     $stream = $client.GetStream()
     try { $stream.ReadTimeout = 1000 } catch { }
     try { $stream.WriteTimeout = 5000 } catch { }
-    $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)))
-    $writer.AutoFlush = $true
+    # 协议：原始 UTF-8 字节 + "\n"（见 Send-ConsoleCommand）；这里不再创建 StreamWriter。
     return [pscustomobject]@{
         Client       = $client
         Stream       = $stream
-        Writer       = $writer
         Host         = $hostName
         Port         = $port
         SentCommands = New-Object System.Collections.Generic.List[string]
@@ -1175,8 +1175,12 @@ function Send-ConsoleCommand {
         [Parameter(Mandatory = $true)][string]$Command
     )
     try {
-        $Session.Writer.WriteLine($Command)
-        $Session.Writer.Flush()
+        # 协议（与 .agents/sa-cmd.ps1 验证过的一致）：UTF-8 原始字节 + "\n"，直接写 NetworkStream。
+        # 不使用 StreamWriter/WriteLine：\r\n 行尾或 BOM 会破坏 SA console socket 的行解析，
+        # 实测会导致 server console socket 卡死（后续命令不再执行）。
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Command + "`n")
+        $Session.Stream.Write($bytes, 0, $bytes.Length)
+        $Session.Stream.Flush()
     } catch {
         throw ('发送 sa 命令失败：{0}（{1}）' -f $Command, $_.Exception.Message)
     }
@@ -1217,9 +1221,88 @@ function Read-ConsoleEcho {
 function Close-ConsoleSocketSession {
     param([AllowNull()]$Session)
     if ($null -eq $Session) { return }
-    try { $Session.Writer.Dispose() } catch { }
+    # 顺序：先 flush 已写入字节 → 关闭发送方向（FIN，让服务端干净读到 EOF）→ 释放流/连接。
+    # 所有短会话（只发 say / 只发 scan 等）都必须在 finally 里调用本函数，
+    # 避免遗留连接占住 SA 的 console socket 处理线程（会导致后续连接不再被处理）。
+    try { $Session.Stream.Flush() } catch { }
+    try {
+        if ($null -ne $Session.Client -and $Session.Client.Connected) {
+            $Session.Client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+        }
+    } catch { }
     try { $Session.Stream.Dispose() } catch { }
     try { $Session.Client.Close() } catch { }
+}
+
+# ----------------------------------------------------------------------------
+# 服务端广播（console say）：best-effort，发送失败只记 WARN，不影响更新退出码。
+# 仅在「服务器运行中 + 确实发生热重载 + 非 DryRun + hotReloadAnnounce=true」时使用。
+# ----------------------------------------------------------------------------
+
+$script:HotReloadSayStart = '服务器插件即将热重载更新，请暂时避免使用菜单、技能等功能。'
+$script:HotReloadSaySuccess = '插件更新完成，可以正常使用了。'
+$script:HotReloadSayAbort = '插件更新中止，请稍后再试；部分功能可能暂时不可用。'
+
+function Send-HotReloadSay {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [AllowEmptyString()][string]$Message
+    )
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $true }
+    try {
+        Send-ConsoleCommand -Session $Session -Command ('say ' + $Message)
+        Write-Log ('  已发送服务端广播（say）：{0}' -f $Message) 'OK'
+        return $true
+    } catch {
+        Write-Log ('服务端广播发送失败（best-effort，不影响更新结果）：{0}' -f $_.Exception.Message) 'WARN'
+        return $false
+    }
+}
+
+# 没有既有 socket 会话时（例如本次没有 removed、但马上要镜像）单独开一次连接发广播。
+function Send-HotReloadStandaloneSay {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [AllowEmptyString()][string]$Message
+    )
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+    $session = $null
+    try {
+        try { $session = Open-ConsoleSocketSession -Config $Config }
+        catch {
+            Write-Log ('服务端广播连接 socket 失败（best-effort，不影响更新结果）：{0}' -f $_.Exception.Message) 'WARN'
+            return $false
+        }
+        return (Send-HotReloadSay -Session $session -Message $Message)
+    } finally {
+        if ($null -ne $session) { Close-ConsoleSocketSession -Session $session }
+    }
+}
+
+# 失败广播文案：失败 id 去重，最多列 5 个，剩余用「等 N 个」，总长尽量 <=200 字。
+function New-HotReloadFailureAnnouncement {
+    param([AllowEmptyCollection()][string[]]$FailedIds = @())
+    $unique = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($id in @($FailedIds)) {
+        $text = [string]$id
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if ($seen.ContainsKey($text)) { continue }
+        $seen[$text] = $true
+        $unique.Add($text) | Out-Null
+    }
+    $total = $unique.Count
+    if ($total -eq 0) {
+        return '插件更新完成，但存在脚本重载失败；相关功能可能暂时不可用，管理员会尽快处理。'
+    }
+    $shown = @($unique | Select-Object -First 5)
+    while ($true) {
+        $listText = ($shown -join '、')
+        if ($total -gt $shown.Count) { $listText = $listText + (' 等 {0} 个' -f $total) }
+        $message = ('插件更新完成，但有 {0} 个脚本重载失败：{1}；相关功能可能暂时不可用，管理员会尽快处理。' -f $total, $listText)
+        if ($message.Length -le 200 -or $shown.Count -le 1) { return $message }
+        $shown = @($shown | Select-Object -First ($shown.Count - 1))
+    }
 }
 
 # 只读探测 console socket 能否连接（连接后立刻关闭，不发任何命令）。DryRun 也用这个。
@@ -1475,12 +1558,16 @@ function Invoke-ReloadActionsInSession {
 # 阶段一（严格镜像之前）：对「将被严格镜像删除」的 removed 脚本先逐个 sa unload。
 # 必须在文件还存在时 unload：实测对已删除源文件的脚本 unload 会让 SA 事务卡住 console socket。
 # 失败/超时 → 中止更新，退出码 2；此时还没开始镜像，目标目录零改动。
+# StartAnnouncement：若本次会真正热重载，在发第一条 unload 之前通过同一会话广播 say（best-effort）。
+# AbortAnnouncement：阶段一失败中止时通过同一会话广播 say（best-effort）。
 # 返回 { Done, Attempted, ExitCode, Summary, Stage, Actions, Completed, FailedAction, Commands, ElapsedSeconds }
 function Invoke-HotReloadPreUnload {
     param(
         [Parameter(Mandatory = $true)]$Config,
         [Parameter(Mandatory = $true)]$Context,
         [AllowEmptyCollection()][string[]]$RemovedPaths = @(),
+        [AllowEmptyString()][string]$StartAnnouncement = '',
+        [AllowEmptyString()][string]$AbortAnnouncement = '',
         [string]$Stage = '更新'
     )
     $actions = @(Get-HotReloadActionPlan -AddedPaths @() -ChangedPaths @() -RemovedPaths $RemovedPaths)
@@ -1515,6 +1602,10 @@ function Invoke-HotReloadPreUnload {
             return $info
         }
         $info.Attempted = $true
+        # 开始广播：必须在本阶段第一条 unload 之前（同一 socket 会话）
+        if (-not [string]::IsNullOrWhiteSpace($StartAnnouncement)) {
+            Send-HotReloadSay -Session $session -Message $StartAnnouncement | Out-Null
+        }
         $result = Invoke-ReloadActionsInSession -Config $Config -LogPath $logPath -Session $session -Actions $actions `
             -PerScriptTimeoutSeconds $perScriptTimeout -SettleMillis $settleMillis
         $info.Commands = @($result.Commands)
@@ -1529,6 +1620,9 @@ function Invoke-HotReloadPreUnload {
             Write-Log ('卸载失败/未完成（1 个）：{0}（{1}）' -f $result.FailedAction.Command, $why) 'ERROR'
             Write-Log '已停止后续操作，且目标目录零改动（还没开始严格镜像）。' 'WARN'
             Write-Log '处理建议：已执行的 unload 可能已生效；请重跑本更新器（会重新比对），或重启服务器后再更新。' 'WARN'
+            if (-not [string]::IsNullOrWhiteSpace($AbortAnnouncement)) {
+                Send-HotReloadSay -Session $session -Message $AbortAnnouncement | Out-Null
+            }
             $info.Done = $true
             $info.ExitCode = 2
             $info.Summary = ('镜像前卸载失败：{0}（{1}）；已中止，目标目录零改动；请重跑或重启服务器。' -f $result.FailedAction.Id, $why)
@@ -1550,6 +1644,7 @@ function Invoke-HotReloadPreUnload {
 # 阶段二（严格镜像之后）：若本次有 added 或 removed，先发一次 sa scan（发现新脚本 + 清理已删除
 # 脚本的注册表；added 与 removed 同时存在也只发一次，等 1.5 秒）；再逐个 sa load（changed → added），
 # 最后 sa listFailed 读取 2~3 秒回显。失败/超时/listFailed 非空 → 退出码 3（文件已更新）。
+# AnnounceEnd：本次确实发生了热重载时，在 sa listFailed 之后通过同一会话广播 say（成功/失败摘要，best-effort）。
 # CheckListFailed：即使本次没有新增/修改脚本（例如只删除了脚本），也执行 sa listFailed 收尾检查。
 # 返回 { Done, Attempted, ExitCode, Summary, Stage, Actions, Completed, FailedAction, FailedIds, Echo, Commands, ElapsedSeconds }
 function Invoke-HotReloadPostLoad {
@@ -1560,6 +1655,7 @@ function Invoke-HotReloadPostLoad {
         [AllowEmptyCollection()][string[]]$ChangedPaths = @(),
         [int]$RemovedScriptCount = 0,
         [bool]$CheckListFailed = $false,
+        [bool]$AnnounceEnd = $false,
         [string]$Stage = '更新'
     )
     $actions = @(Get-HotReloadActionPlan -AddedPaths $AddedPaths -ChangedPaths $ChangedPaths -RemovedPaths @())
@@ -1606,6 +1702,7 @@ function Invoke-HotReloadPostLoad {
             Write-Log '  存在新增/删除脚本：已发 sa scan（发现新脚本 + 清理已删除脚本的注册表），等待 1.5 秒。'
             Start-Sleep -Milliseconds 1500
         }
+        $knownIds = @($actions | ForEach-Object { $_.Id })
         $result = Invoke-ReloadActionsInSession -Config $Config -LogPath $logPath -Session $session -Actions $actions `
             -PerScriptTimeoutSeconds $perScriptTimeout -SettleMillis $settleMillis
         foreach ($command in @($result.Commands)) { $sentCommands.Add([string]$command) | Out-Null }
@@ -1621,9 +1718,33 @@ function Invoke-HotReloadPostLoad {
             Write-Log ('失败/未完成（1 个）：{0}（{1}）' -f $result.FailedAction.Command, $why) 'ERROR'
             Write-Log '已停止后续脚本命令（避免级联重启互相踩踏）；脚本文件已更新。' 'WARN'
             Write-Log '处理建议：1) 查看 script-load\current.log 的失败原因；2) 服务器控制台执行 sa listFailed / sa load；3) 修复后仍不行就重启服务器。' 'WARN'
+            # 失败收尾：尽量再读一次 sa listFailed 汇总失败 id（best-effort；发命令失败也不影响退出码）
+            $failedUnion = New-Object System.Collections.Generic.List[string]
+            $seen = @{}
+            foreach ($candidate in @($result.FailedAction.Id)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$candidate) -and -not $seen.ContainsKey([string]$candidate)) {
+                    $seen[[string]$candidate] = $true; $failedUnion.Add([string]$candidate) | Out-Null
+                }
+            }
+            $probe = $null
+            try {
+                $probe = Invoke-HotReloadListFailedProbe -Session $session -KnownIds $knownIds
+                $info.Echo = @($probe.Echo)
+                foreach ($candidate in @($probe.FailedIds)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+                    if ($seen.ContainsKey([string]$candidate)) { continue }
+                    $seen[[string]$candidate] = $true; $failedUnion.Add([string]$candidate) | Out-Null
+                }
+            } catch {
+                Write-Log ('失败收尾读取 sa listFailed 失败（best-effort）：{0}' -f $_.Exception.Message) 'WARN'
+            }
+            $info.FailedIds = @($failedUnion.ToArray())
+            if ($AnnounceEnd) {
+                $failureMessage = New-HotReloadFailureAnnouncement -FailedIds @($failedUnion.ToArray())
+                Send-HotReloadSay -Session $session -Message $failureMessage | Out-Null
+            }
             $info.Done = $true
             $info.ExitCode = 3
-            $info.FailedIds = @($result.FailedAction.Id)
             if ([bool]$result.FailedTimedOut) {
                 $info.Summary = ('运行中热重载超时：{0} 在 {1} 秒内未完成；已完成 {2} 个；文件已更新，请 sa load 或重启服务器。' -f $result.FailedAction.Id, $perScriptTimeout, @($result.Completed).Count)
             } else {
@@ -1631,18 +1752,24 @@ function Invoke-HotReloadPostLoad {
             }
             return $info
         }
-        $knownIds = @($actions | ForEach-Object { $_.Id })
         $probe = Invoke-HotReloadListFailedProbe -Session $session -KnownIds $knownIds
         $info.Echo = @($probe.Echo)
         if (@($probe.FailedIds).Count -gt 0) {
             Write-Log ('sa listFailed 显示仍有失败脚本（{0} 个）：{1}' -f @($probe.FailedIds).Count, (@($probe.FailedIds) -join ', ')) 'ERROR'
             Write-Log '脚本文件已更新，但运行中的服务器仍有脚本加载失败。' 'ERROR'
             Write-Log '处理建议：查看 script-load\current.log 与上面的回显；修复后在服务器控制台执行 sa load，或重启服务器。' 'WARN'
+            $info.FailedIds = @($probe.FailedIds)
+            if ($AnnounceEnd) {
+                $failureMessage = New-HotReloadFailureAnnouncement -FailedIds @($probe.FailedIds)
+                Send-HotReloadSay -Session $session -Message $failureMessage | Out-Null
+            }
             $info.Done = $true
             $info.ExitCode = 3
-            $info.FailedIds = @($probe.FailedIds)
             $info.Summary = ('运行中热重载后 sa listFailed 仍有失败脚本：{0}；文件已更新，请修复后 sa load 或重启服务器。' -f (@($probe.FailedIds) -join ', '))
             return $info
+        }
+        if ($AnnounceEnd) {
+            Send-HotReloadSay -Session $session -Message $script:HotReloadSaySuccess | Out-Null
         }
         $watch.Stop()
         $info.ElapsedSeconds = [math]::Round($watch.Elapsed.TotalSeconds, 1)
@@ -1691,6 +1818,7 @@ function Initialize-HotReloadContext {
         PerScriptTimeoutSeconds = [int]$Config.PerScriptTimeoutSeconds
         ReloadSettleMillis     = [int]$Config.ReloadSettleMillis
         NoOpGraceSeconds       = $script:NoOpGraceSeconds
+        AnnounceEnabled        = ($null -ne $Config.HotReloadAnnounce -and [bool]$Config.HotReloadAnnounce)
     }
     if ($Settings.IsWeb) { return $context }
     $state = Get-ServerRunState -Config $Config
@@ -1846,6 +1974,11 @@ function Show-HotReloadPreview {
     Write-Log '  ④ sa listFailed 收尾（阶段二失败/超时退出码 3；阶段一 unload 失败退出码 2 且目标零改动）'
     Write-Log ('  每个脚本：等日志出现完成标记后，再等 {0} 毫秒静默才发下一条；单脚本超时 {1} 秒；完全没有日志行时 {2} 秒后按 no-op 继续。' -f $Context.ReloadSettleMillis, $Context.PerScriptTimeoutSeconds, $Context.NoOpGraceSeconds)
     Write-Log ('  console socket：{0}:{1}；脚本加载日志：{2}' -f [string]$Context.Socket.Host, [int]$Context.Socket.Port, [string]$Context.LogPath)
+    if ([bool]$Context.AnnounceEnabled) {
+        Write-Log '  正式执行前后会各发一条 say 服务端广播：开始「服务器插件即将热重载更新…」、结束「插件更新完成…/失败摘要」，玩家游戏内可见。'
+    } else {
+        Write-Log '  已关闭 say 服务端广播（hotReloadAnnounce=false），热重载前后不发提示。'
+    }
     Write-Log '  DryRun 只做只读探测：不发任何 sa 命令、不改目标文件。'
 }
 
@@ -2327,13 +2460,29 @@ function Invoke-UpdateFlow {
         Write-Log ('运行中热更新预检通过：本次变更全部为 .kts 脚本（{0} 个）；将先逐个 sa unload 将被删除的脚本（文件还在时）→ 严格镜像 → 再逐个 sa load 变更/新增脚本。' -f (@(Get-HotReloadScriptIds -RelPaths $allChanges)).Count) 'OK'
     }
 
+    # ---------- 4.1.1 运行中热重载：服务端广播（say）判定（best-effort） ----------
+    $announceEnabled = ($null -ne $Config.HotReloadAnnounce -and [bool]$Config.HotReloadAnnounce)
+    $announceActionCount = (@(Get-HotReloadScriptIds -RelPaths (@($analysis.Added) + @($analysis.Modified) + @($analysis.Deleted)))).Count
+    $doAnnounce = ($hotReloadActive -and $announceEnabled -and $announceActionCount -gt 0)
+    if ($doAnnounce) {
+        Write-Log '提示：热重载前后会通过 console say 广播提醒玩家（hotReloadAnnounce=true；best-effort，失败不影响更新）。'
+    } elseif ($hotReloadActive -and $announceActionCount -gt 0 -and -not $announceEnabled) {
+        Write-Log '提示：hotReloadAnnounce=false，热重载前后不发 say 广播。'
+    }
+
     # ---------- 4.2 运行中热重载 · 阶段一：镜像前卸载将被删除的脚本 ----------
     # 实测：必须先 unload（文件还在）再严格镜像删文件；先删文件再 unload 会让 SA 事务卡住 console socket。
     $preUnloadInfo = $null
     if ($hotReloadActive) {
         $removedScriptIds = @(Get-HotReloadScriptIds -RelPaths @($analysis.Deleted))
+        # 开始广播必须发生在任何 unload/镜像之前；本阶段没有 removed 时先单独发一次
+        if ($doAnnounce -and $removedScriptIds.Count -eq 0) {
+            Send-HotReloadStandaloneSay -Config $Config -Message $script:HotReloadSayStart | Out-Null
+        }
         if ($removedScriptIds.Count -gt 0) {
-            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReload -RemovedPaths @($analysis.Deleted) -Stage '更新'
+            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReload -RemovedPaths @($analysis.Deleted) `
+                -StartAnnouncement $(if ($doAnnounce) { $script:HotReloadSayStart } else { '' }) `
+                -AbortAnnouncement $(if ($doAnnounce) { $script:HotReloadSayAbort } else { '' }) -Stage '更新'
             if ([int]$preUnloadInfo.ExitCode -ne 0) {
                 Write-Log ''
                 Write-Log ('运行中热重载 · 阶段一失败：{0}' -f $preUnloadInfo.Summary) 'ERROR'
@@ -2424,6 +2573,7 @@ function Invoke-UpdateFlow {
                 Write-Log ('失败恢复时重新加载脚本出错：{0}（请手动 sa load 或重启服务器）' -f $_.Exception.Message) 'ERROR'
             }
         }
+        if ($doAnnounce) { Send-HotReloadStandaloneSay -Config $Config -Message $script:HotReloadSayAbort | Out-Null }
         throw $mirrorError
     }
     # ---------- 写版本标记 / 保留份数 ----------
@@ -2461,7 +2611,7 @@ function Invoke-UpdateFlow {
         $checkListFailed = (@($analysis.Added).Count -gt 0 -or @($analysis.Modified).Count -gt 0 -or ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted))
         $removedScriptCount = @(Get-HotReloadScriptIds -RelPaths @($analysis.Deleted)).Count
         $hotReloadInfo = Invoke-HotReloadPostLoad -Config $Config -Context $hotReload `
-            -AddedPaths @($analysis.Added) -ChangedPaths @($analysis.Modified) -RemovedScriptCount $removedScriptCount -CheckListFailed $checkListFailed -Stage '更新'
+            -AddedPaths @($analysis.Added) -ChangedPaths @($analysis.Modified) -RemovedScriptCount $removedScriptCount -CheckListFailed $checkListFailed -AnnounceEnd $doAnnounce -Stage '更新'
         if ($hotReloadInfo.Done -and [int]$hotReloadInfo.ExitCode -ne 0) {
             Write-Log ''
             Write-Log ('严格镜像已完成（文件已更新），但运行中热重载未成功：{0}' -f $hotReloadInfo.Summary) 'ERROR'
@@ -2619,6 +2769,7 @@ function Invoke-RollbackFlow {
                 Write-Log ('  ② 恢复备份文件（{0} 个）并删除该次更新新增的文件' -f $backupFiles.Count)
                 Write-Log ('  ③ 恢复后：{0}逐个 sa load 被恢复的脚本（changed {1} 个）：{2}' -f $(if ($removedIds.Count -gt 0) { '先 sa scan（等 1.5 秒，清理已删脚本注册表），然后' } else { '' }), $changedIds.Count, $(if ($changedIds.Count -gt 0) { ($changedIds | ForEach-Object { 'sa load ' + $_ }) -join ' → ' } else { '（无）' }))
                 Write-Log '  ④ sa listFailed 收尾（失败/超时退出码 3；unload 失败退出码 2 且目标零改动）'
+                Write-Log ('  执行前后会各发一条 say 服务端广播（hotReloadAnnounce={0}）。' -f $rbContext.AnnounceEnabled)
                 if ($nonScriptPreview.Count -gt 0) {
                     Write-Log ('注意：回滚涉及 {0} 个非 .kts 文件（.kt 库等），热重载无法处理，正式回滚后需要重启服务器才生效。' -f $nonScriptPreview.Count) 'WARN'
                     Write-FileList -Title '需要重启才生效的非 .kts 文件' -Files $nonScriptPreview
@@ -2642,10 +2793,22 @@ function Invoke-RollbackFlow {
     $hotReloadCtx = $script:HotReloadContext
     $hotReloadActive = ($null -ne $hotReloadCtx -and [bool]$hotReloadCtx.UseHotReload -and -not $Settings.IsWeb)
     $preUnloadInfo = $null
+    $doAnnounce = $false
     if ($hotReloadActive) {
+        $announceEnabled = ($null -ne $Config.HotReloadAnnounce -and [bool]$Config.HotReloadAnnounce)
+        $rollbackAnnounceCount = (@(Get-HotReloadScriptIds -RelPaths (@($rollbackChangedRelPaths) + @($rollbackRemovedRelPaths.ToArray())))).Count
+        $doAnnounce = ($announceEnabled -and $rollbackAnnounceCount -gt 0)
         $rollbackRemovedIds = @(Get-HotReloadScriptIds -RelPaths @($rollbackRemovedRelPaths.ToArray()))
+        if ($doAnnounce) {
+            Write-Log '提示：回滚热重载前后会通过 console say 广播提醒玩家（best-effort，失败不影响更新）。'
+        }
+        if ($doAnnounce -and $rollbackRemovedIds.Count -eq 0) {
+            Send-HotReloadStandaloneSay -Config $Config -Message $script:HotReloadSayStart | Out-Null
+        }
         if ($rollbackRemovedIds.Count -gt 0) {
-            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReloadCtx -RemovedPaths @($rollbackRemovedRelPaths.ToArray()) -Stage '回滚'
+            $preUnloadInfo = Invoke-HotReloadPreUnload -Config $Config -Context $hotReloadCtx -RemovedPaths @($rollbackRemovedRelPaths.ToArray()) `
+                -StartAnnouncement $(if ($doAnnounce) { $script:HotReloadSayStart } else { '' }) `
+                -AbortAnnouncement $(if ($doAnnounce) { $script:HotReloadSayAbort } else { '' }) -Stage '回滚'
             if ([int]$preUnloadInfo.ExitCode -ne 0) {
                 Write-Log ''
                 Write-Log ('运行中热重载 · 阶段一失败：{0}' -f $preUnloadInfo.Summary) 'ERROR'
@@ -2655,8 +2818,14 @@ function Invoke-RollbackFlow {
     }
 
     Write-Step '回滚：恢复文件'
-    $restore = Restore-BackupFiles -BackupDir $backup.FullName -TargetRoot $Settings.TargetPath -AddedRelPaths $addedRelPaths
-    Write-Log ('已恢复 {0} 个文件，删除更新新增文件 {1} 个。' -f $restore.Restored, $restore.Deleted) 'OK'
+    try {
+        $restore = Restore-BackupFiles -BackupDir $backup.FullName -TargetRoot $Settings.TargetPath -AddedRelPaths $addedRelPaths
+        Write-Log ('已恢复 {0} 个文件，删除更新新增文件 {1} 个。' -f $restore.Restored, $restore.Deleted) 'OK'
+    } catch {
+        $restoreError = $_
+        if ($doAnnounce) { Send-HotReloadStandaloneSay -Config $Config -Message $script:HotReloadSayAbort | Out-Null }
+        throw $restoreError
+    }
 
     # 版本标记回滚到「更新前版本」，避免下次版本检查误判
     $previous = $null
@@ -2681,7 +2850,7 @@ function Invoke-RollbackFlow {
         $checkListFailed = (@($rollbackChangedRelPaths).Count -gt 0 -or ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted))
         $rollbackRemovedScriptCount = @(Get-HotReloadScriptIds -RelPaths @($rollbackRemovedRelPaths.ToArray())).Count
         $hotReloadInfo = Invoke-HotReloadPostLoad -Config $Config -Context $hotReloadCtx `
-            -AddedPaths @() -ChangedPaths @($rollbackChangedRelPaths) -RemovedScriptCount $rollbackRemovedScriptCount -CheckListFailed $checkListFailed -Stage '回滚'
+            -AddedPaths @() -ChangedPaths @($rollbackChangedRelPaths) -RemovedScriptCount $rollbackRemovedScriptCount -CheckListFailed $checkListFailed -AnnounceEnd $doAnnounce -Stage '回滚'
         if ($hotReloadInfo.Done -and [int]$hotReloadInfo.ExitCode -ne 0) {
             Write-Log ''
             Write-Log ('回滚已恢复文件，但运行中热重载未成功：{0}' -f $hotReloadInfo.Summary) 'ERROR'
@@ -2756,6 +2925,7 @@ function Show-OptionsSummary {
             Write-Log ('console socket（consoleSocketHost:consoleSocketPort）：{0}:{1}' -f $Config.ConsoleSocketHost, $Config.ConsoleSocketPort)
             Write-Log ('脚本加载日志（reloadLogPath）：{0}' -f $Config.ReloadLogPath)
             Write-Log ('单脚本超时（perScriptTimeoutSeconds）：{0} 秒；级联静默（reloadSettleMillis）：{1} 毫秒；连接超时（socketConnectTimeoutSeconds）：{2} 秒' -f $Config.PerScriptTimeoutSeconds, $Config.ReloadSettleMillis, $Config.SocketConnectTimeoutSeconds)
+            Write-Log ('热重载服务端广播（hotReloadAnnounce）：{0}' -f $Config.HotReloadAnnounce)
         } else {
             Write-Log '运行中热更新：本脚本不支持（清缓存版需要停服）。'
         }
