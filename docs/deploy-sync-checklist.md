@@ -11,6 +11,7 @@
 | 游戏服务端 JAR | `mdtserver\server-2026.10.10.B509.jar`（MindustryX `prerelease-2026.10.10.B509` / Mindustry **v160.7**，SHA-256 `FC1B01AB…AC74`） | **必须是 MindustryX 构建**，不能用官方 Mindustry 的 jar（`trafficMonitor.kts` 直接依赖 `mindustryX.events.SendPacketEvent`）；回滚线 B495/X37/B491/B485 都保留 |
 | `jar=` 指向 | `server.properties` | 只改这一个键；`jar=` 指向的文件不存在时启动脚本会直接报错（不会静默换 jar） |
 | 脚本代码 | `mdtserver\config\scripts\`（**排除** `data`、`external-cp`、`cache`） | 等价于插件仓库 `ScriptAgent4MindustryExt-mdtdo` 里被 git 跟踪的那套文件；插件仓库的 `.gitignore` 已经把 `*.db`、`logs`、`external-cp/*` 排除掉 |
+| 邮件服务（**仅主服 MDT DO**） | 插件仓库 `email-service/` → 生产 `E:\mdt-email-service`（路径可配） | 只新增/更新服务文件；**生产 `config.json`（密钥/发件配置）与 `logs\`、`dist\` 必须保留**，见 §3.3 |
 | ScriptAgent 插件本体 | `mdtserver\config\mods\ScriptAgent4MindustryExt-3.4.0-allInOne.jar` | 文件名不变但内容已是维护者提供的**未发行竞态修复构建**（运行时 `ScriptAgent c2823c1`）。生产若在用更旧的包必须替换（并保留旧包备份） |
 | 依赖库 | `mdtserver\libs\` | SA 脚本的依赖集合：kotlin 编译器/stdlib、exposed + h2、mongo/redis 客户端、jackson、jansi/jline 等。**同步策略：补齐/更新缺失项，不要删除生产上多出来的未知 jar**；`libs\maven`、`libs\poms` 目录也要一起带 |
 | 启动器（仅当生产也用本仓库启动器） | `start-server.ps1` / `启动服务器.bat` / `start-server.sh` | 这些是仓库自带的守护启动器（崩溃重启/日志轮转/H2 预热），生产若用自建启动脚本则跳过 |
@@ -62,6 +63,9 @@
   更新器自身也在插件仓库根 `updater/`，可整目录复制新版升级；
 - **生产可用 updater 代替本清单第 1 节「脚本代码」+ 第 3 节 robocopy 的手工复制流程**
   （首次仍建议对照 `-DryRun` 输出核对删除清单；自定义脚本要加入 `protectedServerFiles`）。
+- **2026-11-02 新增两服一键脚本**：主服 `update-mainserver.bat`（插件 + email-service）、
+  分服 `update-subserver.bat`（只插件、默认分支 `mdc-do`）、`update-email-service.bat`（只邮件服务）；
+  分支用途与用法见 §3.3。
 - 完整用法/参数/配置/FAQ 见 [`updater/README.md`](../updater/README.md)。
 
 ### 3.2 生产启用运行中热更新（console socket + 脚本加载日志，2026-11-01）
@@ -105,6 +109,47 @@ socketInputAddress=localhost
 **限制/安全**：`.kt` 库/模块改动必须停服；**先 unload 再删文件**的顺序由工具内置，请勿手工先删 `.kts` 再 unload（会让 SA 事务卡住）；
 单脚本热重载会级联重启依赖方（工具逐个等待）；console socket **等价服务器控制台**，只绑 localhost、勿端口转发到公网；
 更新器只发 `sa load/unload/scan/listFailed`，不做任意命令执行；重要改动仍建议维护窗口停服更新。
+
+### 3.3 两服分支策略与快速同步（2026-11-02 新增）
+
+**两个服、两个分支（分支由 Lead 统一维护，更新器只按分支名下载 zip，不会切/改 git 分支）**：
+
+| 服务器 | 用途 | Git 分支 | 一键脚本 | 部署内容 |
+|---|---|---|---|---|
+| **主服 MDT DO** | 功能最全的正式服，**跟进账号/邮箱验证系统** | **`main`**（Lead 把账号/邮箱系统合并到 main 后） | `update-mainserver.bat` | 插件 `scripts/**` + `email-service/**` |
+| **分服 MDC DO** | 保持原有玩法基线，**不跟进账号系统** | **`mdc-do`**（当前 main 基线，不含账号系统） | `update-subserver.bat` | 只部署插件 `scripts/**`（无 email-service、无账号系统） |
+
+```bat
+:: 每次先 DryRun（零风险：只下载+比对+打印清单，不改文件、不发 sa 命令）
+update-mainserver.bat -DryRun
+update-subserver.bat  -DryRun
+:: 正式更新
+update-mainserver.bat            :: 插件(main，运行中可 socket 逐个热重载) + email-service(只增改)
+update-subserver.bat             :: 只插件，默认分支 mdc-do
+update-mainserver.bat -NoEmailService   :: 主服只更新插件
+update-mainserver.bat -NoScripts        :: 主服只更新 email-service
+update-email-service.bat -Rollback      :: 邮件服务单独回滚
+```
+
+**注意事项（务必遵守）**：
+
+1. **先 `-DryRun` 再正式执行**；首次部署或出现删除清单异常时先人工核对（严格镜像会删仓库里没有的脚本，
+   自定义文件请加到 `config.json` 的 `protectedServerFiles`）。
+2. **`.kt` 库/模块改动必须停服**：工具会在改动文件前拒绝（退出码 2）；纯 `.kts` 脚本在服务器运行中且
+   `socketInput` 可用时才会逐个热重载（同 §3.2）。
+3. **分服不要用 `main` 分支**：`update-subserver.bat` 默认 `mdc-do`，这才是不含账号系统的基线；
+   `-Branch` 只用于临时演练/指定别的基线，长期指向 `main` 会把账号/邮箱系统带到分服。
+4. **email-service 生产配置绝不能覆盖**：`config.json`（密钥/发件配置）、`logs\`、`dist\` 默认受保护，
+   更新器默认**只新增/更新、不删除**本地文件；仓库里没有 `config.json`。更新完需**重启邮件服务进程**
+   （结束旧窗口/停止计划任务 → 重新运行 `email-service\start-email-service.bat`），输出会提示检测到的进程 PID。
+   主服脚本还会在**改动任何文件前**预检 `emailServicePath`（未配置/目录不存在 → 退出码 2，插件阶段也不动）。
+5. **路径按服务器配置**：主服示例 `serverScriptsPath=E:\mdtserver\config\scripts`、
+   `emailServicePath=E:\mdt-email-service`、`statsWebPath=E:\stats-web`、`backupPath=E:\mdt-updater-backup`；
+   分服只配 `serverScriptsPath`/`backupPath`，无需 `emailServicePath`。
+6. **密钥/路径不入库**：`config.json` 里只写本机绝对路径；生产 `email-service\config.json`、`server.properties`、
+   Web 管理员凭据都不进仓库。
+7. 主服脚本退出码为两阶段聚合（`1` > `2` > `3` > `0`）；阶段 1（插件）失败时会跳过 email-service 阶段。
+8. 分服若要更新 Web 门户，仍用独立的 `update-web.bat`（如果分服也跑 Web）；分服同步脚本本身不动 `stats-web`。
 
 ---
 ## 4. 「例程集」与变更声明惯例（2026-09-13 与用户约定）
@@ -189,5 +234,10 @@ socketInputAddress=localhost
 - ScriptAgent 使用的是**未发行的修复构建**，正式发行版尚未提供，生产是否采用需用户/运维确认（`project-memory.md` 风险项）。
 - 真实多人 / 高上行 / 运行中卸载 DP / 生产大库的观察项见
   [当前问题与待办](current-issues.md) 第 6 节；跑数据量更大的生产库前务必先备份。
+- **2026-11-02 新增的主服/分服/email-service 快速同步脚本**：已在开发机用临时目录 + 伪造仓库 zip 完成
+  95 项断言演练（Windows PowerShell 5.1，主服两阶段、严格镜像/保护目录、email-service 保护 `config.json`/`logs`、
+  分服 `mdc-do` 默认分支、`.bat` 包装、退出码 2 拒绝路径、email 预检等）；并做了**真实 GitHub DryRun**
+  （`main` / `mdc-do` 分支均可下载，主服两阶段预览退出码 0）。**未验证项**：真实生产路径 `E:\...` 的正式更新、
+  代理下载、真实邮件服务进程重启、真实运行中 socket 热重载；生产首次使用务必先 `-DryRun` 对照，再按 §3.3 执行。
 - 相关文档：[官方 v159 / MindustryX 兼容层](official-v159-compat.md)、[网络同步与完整重同步](v159-network-sync.md)、
   [脚本维护总览](scripts-maintenance.md)、[Agent 调试经验](agent-debug-experience.md)。

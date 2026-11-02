@@ -1,7 +1,12 @@
 {
-  "_comment": "MDT 更新器配置。使用前必须把 serverScriptsPath / statsWebPath / backupPath 改成生产机器上的绝对路径（Windows 路径在 JSON 里要写成双反斜杠，例如 E:\\\\mdtserver\\\\config\\scripts）。脚本内置同样的默认值兜底，所以缺字段不会报错；以下划线开头的 _comment_* 字段只是说明，脚本会忽略。",
-  "_comment_repo": "插件仓库（owner/name）。仓库根目录应包含 scripts/ 与 stats-web/，更新器会忽略 docs/、README.md、LICENSE.md、.gitignore 和 updater/。",
-  "_comment_branch": "仓库分支，默认 main。",
+  "_comment": "MDT 更新器配置。使用前必须把 serverScriptsPath / statsWebPath / backupPath（主服还要 emailServicePath）改成生产机器上的绝对路径（Windows 路径在 JSON 里要写成双反斜杠，例如 E:\\\\mdtserver\\\\config scripts）。脚本内置同样的默认值兜底，所以缺字段不会报错；以下划线开头的 _comment_* 字段只是说明，脚本会忽略。",
+  "_comment_servers": "两个服共用同一套 updater，但机器/路径/分支不同：主服 MDT DO 用 update-mainserver.bat（分支 main，同步 scripts + email-service）；分服 MDC DO 用 update-subserver.bat（默认分支 mdc-do，只同步 scripts，不部署 email-service/账号系统）。",
+  "_comment_repo": "插件仓库（owner/name）。仓库根目录应包含 scripts/、stats-web/ 与 email-service/，更新器会忽略 docs/、README.md、LICENSE.md、.gitignore 和 updater/。",
+  "_comment_branch": "仓库分支，默认 main（主服分支）。分服不靠这里改分支：update-subserver.bat 默认用 mdc-do，也可 -Branch 覆盖。",
+  "_comment_emailServicePath": "邮件服务目录的绝对路径（主服 MDT DO 使用；示例 E:\\\\mdt-email-service）。update-mainserver / update-email-service 使用；分服不部署邮件服务，可留空。",
+  "_comment_protectedEmailDirs": "邮件服务目录中受保护的子目录（相对路径）：不复制、不备份、不删除。默认 logs（运行日志，必须保留）与 dist（本地打包产物）。",
+  "_comment_protectedEmailFiles": "邮件服务目录中受保护的文件：默认 config.json（生产密钥/发件配置，绝不能被仓库里的 config.example.json 或默认配置覆盖）。",
+  "_comment_emailServicePruneDeleted": "邮件服务是否严格镜像（删除目标目录中仓库没有的文件）：false（默认）= 只新增/更新、保留本地额外文件；true = 与插件 scripts/ 相同的严格镜像语义。",
   "_comment_proxy": "下载代理，例如 http://127.0.0.1:7897。留空 = 直连；若系统设置了环境变量 HTTPS_PROXY 也会自动使用。",
   "_comment_proxyPort": "本机代理端口快捷方式（只监听 127.0.0.1）。proxy 与 proxyPort 同时存在时以 proxy 为准。",
   "_comment_proxyFallbackDirect": "代理失败后是否自动回退直连（true/false）。",
@@ -44,6 +49,15 @@
     "web-config.json",
     "web-config.ps1"
   ],
+  "emailServicePath": "E:\\mdt-email-service",
+  "protectedEmailDirs": [
+    "logs",
+    "dist"
+  ],
+  "protectedEmailFiles": [
+    "config.json"
+  ],
+  "emailServicePruneDeleted": false,
   "cachePath": "",
   "hotReloadMode": "socket",
   "consoleSocketHost": "127.0.0.1",
