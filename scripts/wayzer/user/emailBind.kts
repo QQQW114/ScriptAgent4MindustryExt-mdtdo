@@ -76,12 +76,22 @@ private fun lockForUnbound(accountId: Int, uid: String) {
     if (isAdminTier(uid)) return
     val trust = with(trustLevel) { getTrustLevelCode(uid) }
     val seniority = with(seniorityLevel) { getSeniorityLevelCode(uid) }
+    // 未补绑只“封顶到 2 级”，不能把低等级抬到 2 级（低等级保持原等级并锁定，补绑后原样恢复）。
+    val trustCapped = with(trustLevel) {
+        if (trustLevelOrder(trust) > trustLevelOrder("2")) "2" else trust
+    }
+    val seniorityCapped = with(seniorityLevel) {
+        if (seniorityLevelOrder(seniority) > seniorityLevelOrder("2")) "2" else seniority
+    }
     MdtStorage.setSetting("email.lock.$accountId", "$trust|$seniority")
     with(trustLevel) {
-        setTrustLevel(uid, "2")
+        setTrustLevel(uid, trustCapped)
         setTrustLevelLocked(uid, true)
     }
-    with(seniorityLevel) { setManualSeniorityLevel(uid, "2") }
+    with(seniorityLevel) {
+        setManualSeniorityLevel(uid, seniorityCapped)
+        setSeniorityLevelLocked(uid, true)
+    }
 }
 
 private fun unlockAfterBind(accountId: Int, uid: String) {
@@ -271,31 +281,30 @@ private suspend fun bindExisting(player: Player) {
     player.sendMessage((if (error == null) "[green]QQ 邮箱绑定成功" else "[red]$error").with())
 }
 
-onEnable {
-    command("bindemail", "绑定 QQ 邮箱") {
-        body {
-            val p = player ?: returnReply("[red]仅限游戏内使用".with())
-            bindExisting(p)
-        }
+command("bindemail", "绑定 QQ 邮箱") {
+    body {
+        val p = player ?: returnReply("[red]仅限游戏内使用".with())
+        bindExisting(p)
     }
-    command("emailbind", "管理指令：查询/重置邮箱绑定") {
-        usage = "<accountId> [reset]"
-        permission = "wayzer.admin.account"
-        body {
-            val id = arg.getOrNull(0)?.toIntOrNull() ?: returnReply("[red]用法：/emailbind <accountId> [reset]".with())
-            val email = MdtStorage.getSetting("email.bind.$id")
-            if (email == null) returnReply("[yellow]account:$id 未绑定邮箱".with())
-            if (arg.getOrNull(1) == "reset") {
-                MdtStorage.setSettings(
-                    mapOf(
-                        "email.bind.$id" to null,
-                        "email.index.${sha256(email)}" to null,
-                    )
+}
+
+command("emailbind", "管理指令：查询/重置邮箱绑定") {
+    usage = "<accountId> [reset]"
+    permission = "wayzer.admin.account"
+    body {
+        val id = arg.getOrNull(0)?.toIntOrNull() ?: returnReply("[red]用法：/emailbind <accountId> [reset]".with())
+        val email = MdtStorage.getSetting("email.bind.$id")
+        if (email == null) returnReply("[yellow]account:$id 未绑定邮箱".with())
+        if (arg.getOrNull(1) == "reset") {
+            MdtStorage.setSettings(
+                mapOf(
+                    "email.bind.$id" to null,
+                    "email.index.${sha256(email)}" to null,
                 )
-                returnReply("[green]已清除 account:$id 的邮箱绑定".with())
-            }
-            returnReply("[cyan]account:$id 绑定邮箱：[white]$email".with())
+            )
+            returnReply("[green]已清除 account:$id 的邮箱绑定".with())
         }
+        returnReply("[cyan]account:$id 绑定邮箱：[white]$email".with())
     }
 }
 

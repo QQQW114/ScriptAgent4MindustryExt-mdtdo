@@ -124,18 +124,19 @@ private fun processRequests() {
     }
 }
 
-onEnable {
-    command("migrateaccount", "迁移账号用户名（仅改 username/QQ binding）") {
-        usage = "<accountId> <newQq> [--clear-email]"
-        permission = "wayzer.admin.account"
-        body {
-            val id = arg.getOrNull(0)?.toIntOrNull() ?: returnReply("[red]用法：/migrateaccount <accountId> <newQq> [--clear-email]".with())
-            val newQq = arg.getOrNull(1) ?: returnReply("[red]缺少新 QQ".with())
-            val clear = arg.getOrNull(2) == "--clear-email"
-            val r = migrate(id, newQq, clear)
-            returnReply(((if (r.ok) "[green]" else "[red]") + r.message).with())
-        }
+command("migrateaccount", "迁移账号用户名（仅改 username/QQ binding）") {
+    usage = "<accountId> <newQq> [--clear-email]"
+    permission = "wayzer.admin.account"
+    body {
+        val id = arg.getOrNull(0)?.toIntOrNull() ?: returnReply("[red]用法：/migrateaccount <accountId> <newQq> [--clear-email]".with())
+        val newQq = arg.getOrNull(1) ?: returnReply("[red]缺少新 QQ".with())
+        val clear = arg.getOrNull(2) == "--clear-email"
+        val r = migrate(id, newQq, clear)
+        returnReply(((if (r.ok) "[green]" else "[red]") + r.message).with())
     }
+}
+
+onEnable {
     launch(Dispatchers.IO) {
         while (true) {
             runCatching { processRequests() }.onFailure { Log.err("[accountMigrate] ${it.message}") }
