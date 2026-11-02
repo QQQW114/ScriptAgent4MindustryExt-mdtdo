@@ -1,6 +1,6 @@
 @file:Depends("wayzer/mdtDatabase", "MDT数据库")
 @file:Depends("wayzer/user/trustLevel", "信任等级")
-@file:Depends("wayzer/user/seniorityLevel", "资历等级")
+@file:Depends("wayzer/user/seniorityLevel", "资历等级（仅清理旧版锁定快照）")
 @file:Depends("wayzer/user/trustPoint", "MDC")
 @file:Depends("coreMindustry/utilTextInput", "邮箱/验证码输入")
 
@@ -31,6 +31,7 @@ private val textInput = contextScript<UtilTextInput>()
 private val emailServiceUrl by config.key("http://127.0.0.1:40150/send", "邮箱验证码服务地址")
 private val emailServiceToken by config.key("", "邮箱验证码服务 internalToken")
 private val emailCodeTtlMinutes by config.key(10, "验证码有效期（分钟）")
+private val emailInputTimeoutSeconds by config.key(180, "邮箱/验证码输入超时（秒）")
 private val ipDailyRegisterLimit by config.key(3, "每 IP 每天成功注册上限")
 private val bindRewardOld by config.key(1000, "老账号补绑奖励 MDC")
 private val bindRewardNew by config.key(300, "新账号绑定奖励 MDC")
@@ -72,38 +73,35 @@ private fun rewardOnce(accountId: Int, amount: Int, label: String) {
     MdtStorage.setSetting(key, "done")
 }
 
+/** 未绑定邮箱：只把信任等级封顶到 2 级并锁定；资历等级完全不限制（用户 2026-11-02 口径）。 */
 private fun lockForUnbound(accountId: Int, uid: String) {
     if (MdtStorage.getSetting("email.bind.$accountId") != null) return
     if (MdtStorage.getSetting("email.lock.$accountId") != null) return
     if (isAdminTier(uid)) return
     val trust = with(trustLevel) { getTrustLevelCode(uid) }
-    val seniority = with(seniorityLevel) { getSeniorityLevelCode(uid) }
-    // 未补绑只“封顶到 2 级”，不能把低等级抬到 2 级（低等级保持原等级并锁定，补绑后原样恢复）。
     val trustCapped = with(trustLevel) {
         if (trustLevelOrder(trust) > trustLevelOrder("2")) "2" else trust
     }
-    val seniorityCapped = with(seniorityLevel) {
-        if (seniorityLevelOrder(seniority) > seniorityLevelOrder("2")) "2" else seniority
-    }
-    MdtStorage.setSetting("email.lock.$accountId", "$trust|$seniority")
+    // 兼容旧快照格式 "信任|资历"：新逻辑只保存信任等级，解绑时忽略旧资历部分。
+    MdtStorage.setSetting("email.lock.$accountId", trust)
     with(trustLevel) {
         setTrustLevel(uid, trustCapped)
         setTrustLevelLocked(uid, true)
     }
-    with(seniorityLevel) {
-        setManualSeniorityLevel(uid, seniorityCapped)
-        setSeniorityLevelLocked(uid, true)
-    }
+    Log.info("[emailBind] 未绑定邮箱，信任等级封顶为 $trustCapped（原 $trust）uid=$uid")
 }
 
 private fun unlockAfterBind(accountId: Int, uid: String) {
     val snapshot = MdtStorage.getSetting("email.lock.$accountId") ?: return
+    // 旧版本快照可能是 "trust|seniority"（协作者早期版本会锁资历）；资历等级已不参与限制，
+    // 这里只在发现旧快照时顺手恢复/解锁一次，新快照只保存信任等级。
     val parts = snapshot.split('|', limit = 2)
+    val trustCode = parts[0].ifBlank { "2" }
+    with(trustLevel) {
+        setTrustLevel(uid, trustCode)
+        setTrustLevelLocked(uid, false)
+    }
     if (parts.size == 2) {
-        with(trustLevel) {
-            setTrustLevel(uid, parts[0].ifBlank { "2" })
-            setTrustLevelLocked(uid, false)
-        }
         with(seniorityLevel) {
             setSeniorityLevel(uid, parts[1].ifBlank { "2" })
             setSeniorityLevelLocked(uid, false)
@@ -112,9 +110,19 @@ private fun unlockAfterBind(accountId: Int, uid: String) {
     MdtStorage.setSetting("email.lock.$accountId", null)
 }
 
+fun isEmailBound(accountId: Int): Boolean =
+    MdtStorage.getSetting("email.bind.$accountId") != null
+
+/** 是否 3++/4 级工作人员（未绑定也不降信任等级，入服弹窗也不打扰）。 */
+fun isStaffUid(uid: String): Boolean = isAdminTier(uid)
+
 fun onAccountLogin(accountId: Int, uid: String) {
-    if (MdtStorage.getSetting("email.bind.$accountId") == null) lockForUnbound(accountId, uid)
-    else unlockAfterBind(accountId, uid)
+    runCatching {
+        if (!isEmailBound(accountId)) lockForUnbound(accountId, uid)
+        else unlockAfterBind(accountId, uid)
+    }.onFailure {
+        Log.err("[emailBind] 登录时同步邮箱绑定/信任状态失败 account=$accountId uid=$uid: ${it.message}")
+    }
 }
 
 private fun canRegisterFromIp(ip: String): Boolean {
@@ -159,8 +167,14 @@ private suspend fun sendCode(email: String, code: String): String? {
 
 private suspend fun askEmail(player: Player, title: String): String? {
     val raw = with(textInput) {
-        textInput(player, title, "请输入 QQ 邮箱（例如 123456@qq.com）。只允许数字@qq.com。", lengthLimit = 64, timeoutMillis = 60_000)
-    } ?: return null
+        textInput(
+            player, title, "请输入 QQ 邮箱（例如 123456@qq.com）。只允许数字@qq.com。",
+            lengthLimit = 64, timeoutMillis = emailInputTimeoutSeconds * 1000
+        )
+    } ?: run {
+        player.sendMessage("[yellow]邮箱输入已取消或超时；可重新输入 /bindemail 或 /register 重试".with())
+        return null
+    }
     val email = normalizeEmail(raw)
     if (!isQqEmail(email)) {
         player.sendMessage("[red]只允许 数字@qq.com，例如 123456@qq.com".with())
@@ -171,8 +185,14 @@ private suspend fun askEmail(player: Player, title: String): String? {
 
 private suspend fun askCode(player: Player): String? {
     val raw = with(textInput) {
-        textInput(player, "输入验证码", "请输入邮箱收到的 6 位验证码。", lengthLimit = 6, isNumeric = true, timeoutMillis = 60_000)
-    } ?: return null
+        textInput(
+            player, "输入验证码", "请输入邮箱收到的 6 位验证码（可等待邮件到达，最多 ${emailInputTimeoutSeconds} 秒）。",
+            lengthLimit = 6, isNumeric = true, timeoutMillis = emailInputTimeoutSeconds * 1000
+        )
+    } ?: run {
+        player.sendMessage("[yellow]验证码输入已取消或超时；可重新发送验证码后重试".with())
+        return null
+    }
     return raw.trim().takeIf { Regex("^\\d{6}$").matches(it) } ?: run {
         player.sendMessage("[red]验证码必须是 6 位数字".with())
         null
@@ -276,7 +296,14 @@ fun bindEmail(accountId: Int, emailRaw: String, qqRaw: String, isNewAccount: Boo
     )
     val uid = "account:$accountId"
     unlockAfterBind(accountId, uid)
-    rewardOnce(accountId, if (isNewAccount) bindRewardNew else bindRewardOld, if (isNewAccount) "新玩家邮箱绑定奖励" else "老玩家补绑奖励")
+    // 奖励失败不能影响绑定结果（兜底：只记日志，玩家稍后可找管理员补）。
+    runCatching {
+        rewardOnce(
+            accountId,
+            if (isNewAccount) bindRewardNew else bindRewardOld,
+            if (isNewAccount) "新玩家邮箱绑定奖励" else "老玩家补绑奖励"
+        )
+    }.onFailure { Log.err("[emailBind] 发放绑定奖励失败 account=$accountId: ${it.message}") }
     return null
 }
 
@@ -323,14 +350,19 @@ private suspend fun bindExisting(player: Player) {
     player.sendMessage((if (error == null) "[green]QQ 邮箱绑定成功" else "[red]$error").with())
 }
 
-command("bindemail", "绑定 QQ 邮箱") {
+/** 供入服弹窗“绑定邮箱”按钮/其它脚本复用的公开入口。 */
+suspend fun bindEmailFlow(player: Player) = bindExisting(player)
+
+command("bindemail", "绑定/补绑 QQ 邮箱（验证码，绑定后信任等级恢复并奖励 1000 MDC）") {
+    aliases = listOf("绑定邮箱", "emailbindme")
+    usage = "[无需参数，按提示输入 数字@qq.com 与验证码]"
     body {
         val p = player ?: returnReply("[red]仅限游戏内使用".with())
         bindExisting(p)
     }
 }
 
-command("emailbind", "管理指令：查询/重置邮箱绑定") {
+command("emailbind", "管理指令：查询/清除玩家邮箱绑定") {
     usage = "<accountId> [reset]"
     permission = "wayzer.admin.account"
     body {
@@ -355,6 +387,8 @@ listen<EventType.PlayerJoin> { event ->
     launch(Dispatchers.game) {
         delay(3_000L)
         if (!Groups.player.contains(p) || !PlayerData[p].authed) return@launch
-        accountIdOf(p)?.let { lockForUnbound(it, PlayerData[p].id) }
+        runCatching {
+            accountIdOf(p)?.let { lockForUnbound(it, PlayerData[p].id) }
+        }.onFailure { Log.err("[emailBind] 离线/入服同步信任等级失败: ${it.message}") }
     }
 }

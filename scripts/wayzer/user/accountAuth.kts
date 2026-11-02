@@ -469,8 +469,9 @@ private suspend fun askQq(player: Player, title: String, message: String = "请�
 
 private suspend fun askPassword(player: Player, title: String, message: String): String? {
     val passwordMaxLength = PASSWORD_MAX_LENGTH
+    // 注册/登录输入放宽到 180 秒，避免玩家在密码框里思考时被 60 秒超时打断。
     return with(textInput) {
-        textInput(player, title, message, lengthLimit = passwordMaxLength, timeoutMillis = 60_000)
+        textInput(player, title, message, lengthLimit = passwordMaxLength, timeoutMillis = 180_000)
     }?.trim()?.takeIf { it.isNotEmpty() }
 }
 
@@ -796,7 +797,7 @@ onEnable {
     pruneSessionOnlineCache(now)
 }
 
-command("captcha", "获取注册验证码") {
+command("captcha", "获取注册验证码（4 位，注册前输入）") {
     aliases = listOf("验证码", "authcode", "code")
     attr(ClientOnly)
     body {
@@ -823,13 +824,13 @@ command("captcha", "获取注册验证码") {
     }
 }
 
-command("account", "打开账号注册/登录页面") {
+command("account", "打开账号注册/登录菜单（注册需 QQ 邮箱验证码）") {
     aliases = listOf("账号")
     attr(ClientOnly)
     body { openAccountMenu(player!!) }
 }
 
-command("register", "注册MDTDO账号") {
+command("register", "注册 MDT 账号（需 QQ 邮箱验证码，注册后绑定并解锁完整功能）") {
     aliases = listOf("注册")
     attr(ClientOnly)
     body { registerFlow(player!!) }

@@ -545,6 +545,17 @@ open class MenuV3(
         /** token -> 会话。回调按 token 路由，因此全局只需要一个监听器。 */
         private val activeSessions = java.util.concurrent.ConcurrentHashMap<Long, MenuV3>()
 
+        /** 该玩家当前是否有未关闭的 MenuV3 菜单（用于入服弹窗等避免覆盖已有弹窗）。 */
+        fun isAnyMenuOpen(player: Player): Boolean =
+            activeSessions.values.any { it.player === player && !it.closed }
+
+        /** 玩家离线/切服时关闭其全部会话，避免 activeSessions 泄漏。 */
+        fun closeAll(player: Player) {
+            activeSessions.values.toList()
+                .filter { it.player === player && !it.closed }
+                .forEach { it.close() }
+        }
+
         private fun nextSessionToken(): Long = tokenSeq.incrementAndGet()
 
         /**

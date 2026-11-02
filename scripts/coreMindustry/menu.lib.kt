@@ -122,6 +122,7 @@ open class MenuBuilder<T : Any>(
             return null
         }
 
+        beginTracking(player)
         try {
             return withTimeoutOrNull(timeoutMillis.toLong()) {
                 val options = menu.map { it.toTypedArray() }.toTypedArray()
@@ -144,6 +145,7 @@ open class MenuBuilder<T : Any>(
                 }
             }
         } finally {
+            endTracking(player)
             close()
         }
     }
@@ -151,6 +153,24 @@ open class MenuBuilder<T : Any>(
     fun close() {
         if (!followup) return
         Call.hideFollowUpMenu(_menuId)
+    }
+
+    companion object {
+        private val activeMenuCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+        /** 该玩家当前是否有未关闭的 MenuBuilder 菜单（帮助菜单等旧式菜单）。 */
+        fun isAnyMenuOpen(player: Player): Boolean =
+            (activeMenuCounts[player.uuid()] ?: 0) > 0
+
+        private fun beginTracking(player: Player) {
+            activeMenuCounts.merge(player.uuid(), 1, Int::plus)
+        }
+
+        private fun endTracking(player: Player) {
+            activeMenuCounts.computeIfPresent(player.uuid()) { _, count ->
+                if (count <= 1) null else count - 1
+            }
+        }
     }
 }
 
