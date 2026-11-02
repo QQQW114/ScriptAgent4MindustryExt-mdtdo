@@ -137,7 +137,7 @@ serverFeatures.registrationOnlineRequirementHours  注册前在线小时数（0~
 ## 8. 验证记录（2026-11-02，开发服 B509）
 
 - 去 captcha、在线时长改小时、100 封/天与“注册邮件已满”提示后：
-  - 冷启动：**168 脚本 / 164 加载 / 159 启用 / 出错 0**；`scriptdiag` 失败 0；`sa listFailed` 空；根指令 **163**（`/captcha` 已移除）；
+  - 冷启动：**168 脚本 / 164 加载 / 159 启用 / 出错 0**；`scriptdiag` 失败 0；`sa listFailed` 空；根指令 **163~164**（`/captcha` 已移除；当前开发服 `scriptdiag` 显示 164）；
   - `/captcha` 已变成“无效指令”；`/bindemail`、`/register` 命令存在；
   - `/registerrequirement` 查询/设置实测：默认 1 小时 → `10` 小时 → `0`（关闭）→ 回到 `1` 小时均生效；
   - `email-service` 临时 mock 限额测试：全局 1 封时第一封 mock 成功，第二封不同邮箱返回 `429 SERVICE_DAILY_LIMIT`，文案 **「注册邮件已满，请隔天再尝试」**；正式配置 `globalDailyLimit=100`、health 正常。
