@@ -7,6 +7,7 @@
 @file:Depends("wayzer/user/seniorityLevel", "资历等级")
 @file:Depends("wayzer/user/trustPromotion", "信任晋升检测")
 @file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
+@file:Depends("wayzer/user/emailBind", "QQ邮箱绑定验证")
 
 package wayzer.user
 
@@ -19,6 +20,7 @@ import wayzer.lib.TrustPointChangedEvent
 import kotlin.random.Random
 
 private val passwordTool = contextScript<AccountPassword>()
+private val emailBind = contextScript<wayzer.user.EmailBind>()
 private val textInput = contextScript<coreMindustry.UtilTextInput>()
 private val ipGuard = contextScript<AccountIpGuard>()
 private val trustLevel = contextScript<TrustLevel>()
@@ -80,9 +82,8 @@ private fun denyAccountAdmin(operator: Player?): Boolean {
 
 private val registerWarning = """
     请务必加入QQ群并牢记账号密码。
-    账号以 QQ 号作为唯一标识。
-    如果没有你的 QQ，后续账号清理、误封申诉、找回密码都可能无法处理。
-    请不要使用他人的 QQ 注册。
+    注册必须验证 QQ 邮箱（只允许 数字@qq.com），邮箱前缀就是你的 QQ 号。
+    请不要使用他人的 QQ 或 QQ 邮箱注册。
 """.trimIndent()
 
 private fun normalizeQq(input: String): String? {
@@ -451,6 +452,7 @@ private fun finishLogin(
                     " 当前账号余额：[gold]${migratedMdc.targetCurrent} MDC"
         )
     }
+    with(emailBind) { onAccountLogin(account.id, subjectUid) }
     clearLoginFailure(player)
     return true
 }
@@ -535,15 +537,20 @@ suspend fun registerFlow(player: Player) {
     if (!with(ipGuard) { allowAccountRegister(player) }) return
     if (!verifyCaptchaFlow(player, "注册账号")) return
 
-    val qq = askQq(player, "注册账号", "$registerWarning\n\n请输入要注册的 QQ 号：") ?: return
+    val password = askNewPasswordTwice(player, "注册账号") ?: return
+    val (qq, email) = with(emailBind) { verifyEmailForRegistration(player) } ?: return
     if (MdtStorage.findAccountByQq(qq) != null) {
         player.sendMessage("[red]此 QQ 已注册，请使用 /login 登录；如忘记密码请联系管理员")
         return
     }
-    val password = askNewPasswordTwice(player, "注册账号") ?: return
     val account = MdtStorage.createAccount(qq, with(passwordTool) { hashPassword(password) })
     if (account == null) {
         player.sendMessage("[red]注册失败：此 QQ 可能已被注册")
+        return
+    }
+    val bindError = with(emailBind) { bindEmail(account.id, email, qq, isNewAccount = true) }
+    if (bindError != null) {
+        player.sendMessage("[red]注册失败：$bindError，请联系管理员清理 account:${account.id}")
         return
     }
     finishLogin(player, account, "注册", migrateGuestMdcFromUid = guestUid)
