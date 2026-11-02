@@ -24,6 +24,7 @@ name = "服务器功能设置"
 private val KEY_MDC_MULTIPLIER = "serverFeatures.mdcSettlementMultiplier"
 private val KEY_FORUM_ENABLED = "serverFeatures.forumEnabled"
 private val KEY_REGISTER_ONLINE_REQUIREMENT = "serverFeatures.registrationOnlineRequirementEnabled"
+private val KEY_REGISTER_ONLINE_REQUIREMENT_HOURS = "serverFeatures.registrationOnlineRequirementHours"
 private val KEY_SOCIAL_ACTIONS_ENABLED = "serverFeatures.socialActionsEnabled"
 private val KEY_DEFAULT_BOUND_LEVEL = "serverFeatures.defaultBoundTrustLevel"
 private val KEY_DEFAULT_BOUND_LEVEL_SENIORITY_MIGRATED = "serverFeatures.defaultBoundLevelSeniorityMigrated"
@@ -32,11 +33,16 @@ private val FEATURE_KEYS = listOf(
     KEY_MDC_MULTIPLIER,
     KEY_FORUM_ENABLED,
     KEY_REGISTER_ONLINE_REQUIREMENT,
+    KEY_REGISTER_ONLINE_REQUIREMENT_HOURS,
     KEY_SOCIAL_ACTIONS_ENABLED,
     KEY_DEFAULT_BOUND_LEVEL,
     KEY_DEFAULT_BOUND_LEVEL_SENIORITY_MIGRATED,
     LEGACY_TEST_MODE_KEY,
 )
+
+/** 注册前在线时长（小时）显示文本；0 = 关闭。 */
+private fun registrationHoursText(hours: Int): String =
+    if (hours <= 0) "[yellow]关闭" else "[green]${hours}小时"
 
 private val trustLevel = contextScript<TrustLevel>()
 private val seniorityLevel = contextScript<SeniorityLevel>()
@@ -74,7 +80,7 @@ private fun multiplierText(value: Double): String =
 private class FeatureSettingsService : ServerFeatureSettings {
     @Volatile private var mdcMultiplier = 1.0
     @Volatile private var forum = true
-    @Volatile private var registrationOnlineRequirement = true
+    @Volatile private var registrationOnlineRequirementHours = 1
     @Volatile private var socialActions = true
     @Volatile private var defaultBoundLevel = "1"
 
@@ -85,7 +91,11 @@ private class FeatureSettingsService : ServerFeatureSettings {
             ?.let(::normalizeMultiplier)
             ?: 1.0
         forum = values[KEY_FORUM_ENABLED]?.toBooleanStrictOrNull() ?: true
-        registrationOnlineRequirement = values[KEY_REGISTER_ONLINE_REQUIREMENT]?.toBooleanStrictOrNull() ?: true
+        // 新键优先；旧数据库只有布尔开关时迁移成 1/0 小时（false=关闭）。
+        registrationOnlineRequirementHours = values[KEY_REGISTER_ONLINE_REQUIREMENT_HOURS]
+            ?.toIntOrNull()
+            ?.coerceIn(0, 72)
+            ?: if (values[KEY_REGISTER_ONLINE_REQUIREMENT]?.toBooleanStrictOrNull() == false) 0 else 1
         socialActions = values[KEY_SOCIAL_ACTIONS_ENABLED]?.toBooleanStrictOrNull() ?: true
         defaultBoundLevel = values[KEY_DEFAULT_BOUND_LEVEL]
             ?.let(::normalizeDefaultLevel)
@@ -95,7 +105,8 @@ private class FeatureSettingsService : ServerFeatureSettings {
         val normalized = linkedMapOf<String, String?>(
             KEY_MDC_MULTIPLIER to multiplierText(mdcMultiplier),
             KEY_FORUM_ENABLED to forum.toString(),
-            KEY_REGISTER_ONLINE_REQUIREMENT to registrationOnlineRequirement.toString(),
+            KEY_REGISTER_ONLINE_REQUIREMENT to (registrationOnlineRequirementHours > 0).toString(),
+            KEY_REGISTER_ONLINE_REQUIREMENT_HOURS to registrationOnlineRequirementHours.toString(),
             KEY_SOCIAL_ACTIONS_ENABLED to socialActions.toString(),
             KEY_DEFAULT_BOUND_LEVEL to defaultBoundLevel,
             // 旧测试模式已彻底弃用；保留旧键并强制置 false，兼容旧数据库且阻止旧状态复活。
@@ -113,9 +124,25 @@ private class FeatureSettingsService : ServerFeatureSettings {
 
     override fun mdcSettlementMultiplier(): Double = mdcMultiplier
     override fun forumEnabled(): Boolean = forum
-    override fun registrationOnlineRequirementEnabled(): Boolean = registrationOnlineRequirement
+    override fun registrationOnlineRequirementEnabled(): Boolean = registrationOnlineRequirementHours > 0
     override fun socialActionsEnabled(): Boolean = socialActions
     override fun defaultBoundTrustLevelCode(): String = defaultBoundLevel
+
+    /** 注册前在线时长（小时）；0=关闭。 */
+    fun registrationOnlineRequirementHoursValue(): Int = registrationOnlineRequirementHours
+
+    fun setRegistrationOnlineRequirementHours(hours: Int): Int {
+        val fixed = hours.coerceIn(0, 72)
+        MdtStorage.setSettings(
+            mapOf(
+                KEY_REGISTER_ONLINE_REQUIREMENT_HOURS to fixed.toString(),
+                // 旧键保留同步，兼容仍读取布尔开关的旧逻辑/脚本。
+                KEY_REGISTER_ONLINE_REQUIREMENT to (fixed > 0).toString(),
+            )
+        )
+        registrationOnlineRequirementHours = fixed
+        return fixed
+    }
 
     override fun setMdcSettlementMultiplier(value: Double): Double {
         val fixed = normalizeMultiplier(value)
@@ -131,8 +158,8 @@ private class FeatureSettingsService : ServerFeatureSettings {
     }
 
     override fun setRegistrationOnlineRequirementEnabled(enabled: Boolean): Boolean {
-        MdtStorage.setSetting(KEY_REGISTER_ONLINE_REQUIREMENT, enabled.toString())
-        registrationOnlineRequirement = enabled
+        // 开启时沿用原小时数（默认 1），关闭=0 小时。
+        setRegistrationOnlineRequirementHours(if (enabled) registrationOnlineRequirementHours.coerceAtLeast(1) else 0)
         return enabled
     }
 
@@ -157,7 +184,7 @@ private class FeatureSettingsService : ServerFeatureSettings {
     override fun statusText(): String = """
         |[cyan]结算MDC倍率：[white]×${multiplierText(mdcMultiplier)} [gray](范围0~20，仅4级可改)
         |[cyan]帖子系统：[white]${if (forum) "[green]开启" else "[red]关闭"}
-        |[cyan]注册一小时要求：[white]${if (registrationOnlineRequirement) "[green]开启" else "[yellow]关闭"}
+        |[cyan]注册在线时长要求：[white]${registrationHoursText(registrationOnlineRequirementHours)} [gray](0=关闭，可在 /registerrequirement 修改)
         |[cyan]点赞/点踩/认可：[white]${if (socialActions) "[green]开启" else "[red]关闭"}
         |[cyan]已绑定玩家默认等级：[white]$defaultBoundLevel [gray](信任+资历，仅1~3，仅4级可改)
     """.trimMargin()
@@ -278,11 +305,16 @@ private suspend fun openServerFeatureMenu(player: Player) {
             openServerFeatureMenu(player)
         }
         newRow()
-        option("注册一小时要求\n${if (featureSettings.registrationOnlineRequirementEnabled()) "[green]开启" else "[yellow]关闭"}") {
-            val enabled = withContext(Dispatchers.IO) {
-                featureSettings.setRegistrationOnlineRequirementEnabled(!featureSettings.registrationOnlineRequirementEnabled())
+        option("注册在线时长要求\n${registrationHoursText(featureSettings.registrationOnlineRequirementHoursValue())}") {
+            val current = featureSettings.registrationOnlineRequirementHoursValue()
+            val next = when {
+                current <= 0 -> 1
+                current == 1 -> 5
+                current < 10 -> 10
+                else -> 0
             }
-            broadcast("[yellow]注册一小时在线要求已由 [white]${player.name}[yellow] ${if (enabled) "开启" else "关闭"}".with())
+            val fixed = withContext(Dispatchers.IO) { featureSettings.setRegistrationOnlineRequirementHours(next) }
+            broadcast("[yellow]注册在线时长要求已由 [white]${player.name}[yellow] 修改为 [white]${registrationHoursText(fixed)}".with())
             openServerFeatureMenu(player)
         }
         option("点赞/点踩/认可\n${if (featureSettings.socialActionsEnabled()) "[green]开启" else "[red]关闭"}") {
@@ -373,9 +405,9 @@ private suspend fun updateForumEnabled(enabled: Boolean, operator: String) {
     broadcast("[yellow]帖子系统已由 [white]$operator[yellow] ${if (enabled) "[green]开启" else "[red]关闭"}".with())
 }
 
-private suspend fun updateRegistrationRequirement(enabled: Boolean, operator: String) {
-    withContext(Dispatchers.IO) { featureSettings.setRegistrationOnlineRequirementEnabled(enabled) }
-    broadcast("[yellow]注册一小时在线要求已由 [white]$operator[yellow] ${if (enabled) "[green]开启" else "[yellow]关闭"}".with())
+private suspend fun updateRegistrationRequirementHours(hours: Int, operator: String) {
+    val fixed = withContext(Dispatchers.IO) { featureSettings.setRegistrationOnlineRequirementHours(hours) }
+    broadcast("[yellow]注册在线时长要求已由 [white]$operator[yellow] 修改为 [white]${registrationHoursText(fixed)}".with())
 }
 
 private suspend fun updateSocialActions(enabled: Boolean, operator: String) {
@@ -482,9 +514,13 @@ command("serverfeatures", "管理指令：查看服务器功能总览/菜单") {
                 updateForumEnabled(enabled, operator)
             }
             "registertime", "register", "注册时长", "注册要求" -> {
-                val enabled = parseFeatureToggle(arg.getOrNull(1))
-                    ?: returnReply("[red]用法：/registerrequirement <on|off>".with())
-                updateRegistrationRequirement(enabled, operator)
+                val raw = arg.getOrNull(1)?.trim()?.lowercase()
+                val hours = when (raw) {
+                    "off", "关", "关闭" -> 0
+                    "on", "开", "开启" -> featureSettings.registrationOnlineRequirementHoursValue().coerceAtLeast(1)
+                    else -> raw?.toIntOrNull()?.coerceIn(0, 72)
+                } ?: returnReply("[red]用法：/registerrequirement <0~72|on|off>".with())
+                updateRegistrationRequirementHours(hours, operator)
             }
             "social", "reputation", "赞踩认可" -> {
                 val enabled = parseFeatureToggle(arg.getOrNull(1))
@@ -528,17 +564,22 @@ command("forumtoggle", "管理指令：查看/开关帖子系统") {
     }
 }
 
-command("registerrequirement", "管理指令：查看/开关注册前一小时在线要求") {
-    aliases = listOf("registertime", "registrationrequirement", "注册要求", "注册时长开关")
-    usage = "[on|off]"
+command("registerrequirement", "管理指令：查看/设置注册前在线时长要求（0~72 小时，0=关闭）") {
+    aliases = listOf("registertime", "registrationrequirement", "注册要求", "注册时长")
+    usage = "[0~72|on|off]"
     permission = "wayzer.admin.serverFeatures"
     body {
         if (!canManageServerFeatures(player)) returnReply("[red]仅已登录的4级玩家或控制台可修改。".with())
         if (arg.isEmpty()) {
-            returnReply("[cyan]注册前一小时在线要求：${if (featureSettings.registrationOnlineRequirementEnabled()) "[green]开启" else "[yellow]关闭"}".with())
+            returnReply("[cyan]注册前在线时长要求：[white]${registrationHoursText(featureSettings.registrationOnlineRequirementHoursValue())}".with())
         }
-        val enabled = parseFeatureToggle(arg[0]) ?: returnReply("[red]用法：/registerrequirement <on|off>".with())
-        updateRegistrationRequirement(enabled, featureOperator(player))
+        val raw = arg[0].trim().lowercase()
+        val hours = when (raw) {
+            "off", "关", "关闭" -> 0
+            "on", "开", "开启" -> featureSettings.registrationOnlineRequirementHoursValue().coerceAtLeast(1)
+            else -> raw.toIntOrNull()?.coerceIn(0, 72)
+        } ?: returnReply("[red]用法：/registerrequirement <0~72|on|off>".with())
+        updateRegistrationRequirementHours(hours, featureOperator(player))
     }
 }
 

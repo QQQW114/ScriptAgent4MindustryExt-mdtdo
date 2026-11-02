@@ -17,7 +17,6 @@ import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import wayzer.lib.ServerFeatureSettings
 import wayzer.lib.TrustPointChangedEvent
-import kotlin.random.Random
 
 private val passwordTool = contextScript<AccountPassword>()
 private val emailBind = contextScript<wayzer.user.EmailBind>()
@@ -32,11 +31,9 @@ private val QQ_MAX_LENGTH = 12
 private val PASSWORD_MAX_LENGTH = 64
 private val LOGIN_FAIL_LIMIT = 5
 private val LOGIN_BLOCK_MILLIS = 60_000L
-private val CAPTCHA_LENGTH = 4
-private val REGISTER_CAPTCHA_MIN_ONLINE_MILLIS = 60L * 60L * 1000L
+private val REGISTER_ONLINE_HOURS_KEY = "serverFeatures.registrationOnlineRequirementHours"
 
 private val minPasswordLength by config.key(6, "账号密码最小长度")
-private val captchaExpireMillis by config.key(5 * 60_000L, "注册验证码有效期(ms)")
 private val sessionOnlineCacheMaxEntries by config.key(5_000, "本次启动注册在线时长缓存最大离线UUID数")
 
 private data class LoginFailState(
@@ -53,20 +50,24 @@ private data class AccountLookupResult(
     val subjectUid: String,
 )
 
-private data class CaptchaState(
-    val code: String,
-    val expiresAt: Long,
-)
-
 private val loginFails = mutableMapOf<String, LoginFailState>()
-private val loginCaptchas = mutableMapOf<String, CaptchaState>()
 private val sessionOnlineMillis = mutableMapOf<String, Long>()
 private val sessionJoinAtMillis = mutableMapOf<String, Long>()
 private val sessionLastSeenAtMillis = mutableMapOf<String, Long>()
 private val ipv4Regex = Regex("""\d{1,3}(?:\.\d{1,3}){3}""")
 
+/** 注册前要求的“本次启动累计在线小时数”，0=关闭；旧版布尔开关自动兼容成 0/1 小时。 */
+private fun registrationOnlineRequirementHours(): Int {
+    MdtStorage.getSetting(REGISTER_ONLINE_HOURS_KEY)?.toIntOrNull()?.let { return it.coerceIn(0, 72) }
+    val legacyEnabled = ServerFeatureSettings.getOrNull()?.registrationOnlineRequirementEnabled() ?: true
+    return if (legacyEnabled) 1 else 0
+}
+
+private fun registrationOnlineRequirementMillis(): Long =
+    registrationOnlineRequirementHours().toLong() * 60L * 60L * 1000L
+
 private fun registrationOnlineRequirementEnabled(): Boolean =
-    ServerFeatureSettings.getOrNull()?.registrationOnlineRequirementEnabled() ?: true
+    registrationOnlineRequirementHours() > 0
 
 private fun defaultBoundTrustLevelCode(): String =
     ServerFeatureSettings.getOrNull()?.defaultBoundTrustLevelCode()?.takeIf { it in setOf("1", "2", "3") } ?: "1"
@@ -143,7 +144,6 @@ private fun pruneSessionOnlineCache(now: Long = System.currentTimeMillis()) {
         if (removeCount <= 0) break
         sessionOnlineMillis.remove(key)
         sessionLastSeenAtMillis.remove(key)
-        loginCaptchas.remove(key)
         removeCount--
     }
     if (removeCount > 0) {
@@ -165,24 +165,33 @@ private fun formatSessionOnlineDuration(millis: Long, roundUp: Boolean = false):
     return parts.joinToString("")
 }
 
-private fun registerCaptchaOnlineStatus(player: Player, prefix: String = "[yellow]注册验证码获取条件："): String {
-    if (!registrationOnlineRequirementEnabled()) {
-        return "$prefix [green]管理员已关闭一小时在线要求，可立即输入 [gold]/captcha[green] 获取验证码。\n" +
-                "[gray]登录不需要验证码；注册仍需4位验证码以防止误操作。"
+private fun registrationOnlineStatusText(player: Player, prefix: String = "[yellow]注册在线时长要求："): String {
+    val hours = registrationOnlineRequirementHours()
+    if (hours <= 0) {
+        return "$prefix [green]管理员已关闭注册在线时长要求，可直接输入 [gold]/register[green] 注册。"
     }
     val online = currentSessionOnlineMillis(player).coerceAtLeast(0L)
-    val required = REGISTER_CAPTCHA_MIN_ONLINE_MILLIS
+    val required = registrationOnlineRequirementMillis()
     val left = (required - online).coerceAtLeast(0L)
     val onlineText = formatSessionOnlineDuration(online)
     val progress = if (left > 0) {
         val leftText = formatSessionOnlineDuration(left, roundUp = true)
-        "[gray]你当前累计在线：[white]$onlineText[gray] / [white]1小时[gray]；还需要继续在线：[gold]$leftText[gray]。"
+        "[gray]你当前累计在线：[white]$onlineText[gray] / [white]${hours}小时[gray]；还需要继续在线：[gold]$leftText[gray]。"
     } else {
-        "[green]你已满足注册验证码在线条件：[white]$onlineText[green] / 1小时；现在可以输入 [gold]/captcha[green] 获取验证码。"
+        "[green]你已满足注册在线条件：[white]$onlineText[green] / ${hours}小时；现在可以输入 [gold]/register[green] 注册。"
     }
-    return "$prefix 本次服务器启动内累计在线满 [gold]1小时[yellow]。\n" +
+    return "$prefix 本次服务器启动内累计在线满 [gold]${hours}小时[yellow]。\n" +
             "$progress\n" +
-            "[gray]该时长只在本次服务端启动内统计；已有账号可直接使用 [gold]/login[] 登录，登录不需要验证码。"
+            "[gray]该时长只在本次服务端启动内统计；已有账号可直接使用 [gold]/login[] 登录（登录不受此限制）。"
+}
+
+private fun registrationOnlineRequirementError(player: Player): String? {
+    val hours = registrationOnlineRequirementHours()
+    if (hours <= 0) return null
+    val online = currentSessionOnlineMillis(player)
+    if (online >= registrationOnlineRequirementMillis()) return null
+    return "[yellow]注册需要本次启动累计在线满 ${hours} 小时。\n" +
+            registrationOnlineStatusText(player)
 }
 
 private fun checkLoginCooldown(player: Player): Boolean {
@@ -224,72 +233,6 @@ private fun recordLoginFailure(player: Player) {
 
 private fun clearLoginFailure(player: Player) {
     loginFailKeys(player).forEach { loginFails.remove(it) }
-}
-
-private fun captchaKey(player: Player): String = player.uuid()
-
-private fun issueCaptcha(player: Player): String {
-    val code = Random.nextInt(0, 10_000).toString().padStart(CAPTCHA_LENGTH, '0')
-    loginCaptchas[captchaKey(player)] = CaptchaState(
-        code = code,
-        expiresAt = System.currentTimeMillis() + captchaExpireMillis.coerceAtLeast(60_000L),
-    )
-    return code
-}
-
-private fun registerCaptchaOnlineError(player: Player): String? {
-    if (!registrationOnlineRequirementEnabled()) return null
-    val online = currentSessionOnlineMillis(player)
-    val required = REGISTER_CAPTCHA_MIN_ONLINE_MILLIS
-    if (online >= required) return null
-    return "[yellow]为防止批量注册，暂不能获取注册验证码。\n" +
-            registerCaptchaOnlineStatus(player)
-}
-
-private fun captchaLeftSeconds(player: Player): Long {
-    val state = loginCaptchas[captchaKey(player)] ?: return 0L
-    return ((state.expiresAt - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-}
-
-private fun hasValidCaptcha(player: Player): Boolean {
-    val state = loginCaptchas[captchaKey(player)] ?: return false
-    if (state.expiresAt <= System.currentTimeMillis()) {
-        loginCaptchas.remove(captchaKey(player))
-        return false
-    }
-    return true
-}
-
-private suspend fun verifyCaptchaFlow(player: Player, title: String): Boolean {
-    if (!hasValidCaptcha(player)) {
-        player.sendMessage(
-            "[yellow]请先输入 [gold]/captcha[] 获取4位注册验证码，再继续注册。\n" +
-                    registerCaptchaOnlineStatus(player, "[yellow]如果获取失败，请查看还需在线多久：")
-        )
-        return false
-    }
-    val state = loginCaptchas[captchaKey(player)] ?: return false
-    val leftSeconds = captchaLeftSeconds(player)
-    val lengthLimit = CAPTCHA_LENGTH
-    val input = with(textInput) {
-        textInput(
-            player,
-            "$title - 验证码",
-            "请输入你刚才通过 /captcha 获取的4位验证码。\n验证码剩余：${leftSeconds}秒。",
-            lengthLimit = lengthLimit,
-            isNumeric = true,
-            timeoutMillis = 60_000,
-        )
-    }?.trim() ?: return false
-
-    return if (input == state.code && state.expiresAt > System.currentTimeMillis()) {
-        loginCaptchas.remove(captchaKey(player))
-        true
-    } else {
-        loginCaptchas.remove(captchaKey(player))
-        player.sendMessage("[red]验证码错误或已过期，请重新输入 [gold]/captcha[] 获取新注册验证码。")
-        false
-    }
 }
 
 private fun currentAccount(player: Player): MdtStorage.AccountRecord? {
@@ -496,18 +439,16 @@ private suspend fun askNewPasswordTwice(player: Player, title: String): String? 
 suspend fun openAccountMenu(player: Player) {
     val authed = PlayerData[player].authed
     val account = if (authed) currentAccount(player) else null
-    val captchaStatus = if (!authed) "\n${registerCaptchaOnlineStatus(player, "[gray]注册验证码状态：")}" else ""
-    val registerRequirementText = if (registrationOnlineRequirementEnabled()) {
-        "注册前需本次启动累计在线满1小时，并输入 [gold]/captcha[] 获取4位注册验证码。"
-    } else {
-        "管理员已关闭注册一小时要求；可立即输入 [gold]/captcha[] 获取4位注册验证码。"
-    }
+    val registerRequirementText = if (registrationOnlineRequirementEnabled())
+        "注册前需本次启动累计在线满 ${registrationOnlineRequirementHours()} 小时（管理员可调，0=关闭）。"
+    else
+        "管理员已关闭注册在线时长要求，可直接注册。"
     MenuBuilder<Unit>("MDT账号系统") {
         msg = """
             |[cyan]当前状态：[white]${if (authed) "已登录" else "未登录"}
             |[cyan]当前账号：[white]${account?.qq ?: "无"}
             |[gray]同一客户端通常会自动登录；默认未登录玩家仍可游玩。
-            |[gray]登录账号不需要验证码；$registerRequirementText$captchaStatus
+            |[gray]登录账号不需要验证码；$registerRequirementText
             |
             |[yellow]注册提示：
             |$registerWarning
@@ -536,8 +477,7 @@ suspend fun registerFlow(player: Player) {
         return
     }
     if (!with(ipGuard) { allowAccountRegister(player) }) return
-    if (!verifyCaptchaFlow(player, "注册账号")) return
-
+    registrationOnlineRequirementError(player)?.let { player.sendMessage(it); return }
     val password = askNewPasswordTwice(player, "注册账号") ?: return
     val (qq, email) = with(emailBind) { verifyEmailForRegistration(player) } ?: return
     if (MdtStorage.findAccountByQq(qq) != null) {
@@ -754,11 +694,10 @@ listen<EventType.PlayerJoin> {
     sessionLastSeenAtMillis[key] = now
     pruneSessionOnlineCache(now)
     if (!PlayerData[player].authed) {
-        val registerText = if (registrationOnlineRequirementEnabled()) {
-            "注册需本次启动累计在线满1小时后用 [gold]/captcha[] 获取验证码。"
-        } else {
-            "管理员已关闭注册一小时要求，可立即用 [gold]/captcha[] 获取验证码后注册。"
-        }
+        val registerText = if (registrationOnlineRequirementEnabled())
+            "注册需本次启动累计在线满 ${registrationOnlineRequirementHours()} 小时后输入 /register。"
+        else
+            "管理员已关闭注册在线时长要求，可直接输入 /register 注册。"
         player.sendMessage("[yellow]你尚未登录账号。已有账号可直接输入 [gold]/login[] 登录；$registerText")
     }
 }
@@ -779,12 +718,10 @@ listen<EventType.PlayerLeave> {
     pruneSessionOnlineCache(now)
     // 不在离线时清空登录失败记录：否则批量尝试密码可通过重连绕过 UUID/IP 冷却。
     pruneLoginFailures()
-    loginCaptchas.remove(captchaKey(it.player))
 }
 
 listen<EventType.ResetEvent> {
     loginFails.clear()
-    loginCaptchas.clear()
 }
 
 onEnable {
@@ -795,33 +732,6 @@ onEnable {
         sessionLastSeenAtMillis[key] = now
     }
     pruneSessionOnlineCache(now)
-}
-
-command("captcha", "获取注册验证码（4 位，注册前输入）") {
-    aliases = listOf("验证码", "authcode", "code")
-    attr(ClientOnly)
-    body {
-        val p = player!!
-        if (PlayerData[p].authed) {
-            returnReply("[yellow]你已经登录账号，无需获取验证码。".with())
-        }
-        registerCaptchaOnlineError(p)?.let { returnReply(it.with()) }
-        val code = issueCaptcha(p)
-        val onlineText = formatSessionOnlineDuration(currentSessionOnlineMillis(p))
-        val conditionText = if (registrationOnlineRequirementEnabled()) {
-            "[gray]已满足注册在线条件：本次启动累计在线 [white]$onlineText[gray] / 1小时。"
-        } else {
-            "[green]管理员已关闭注册一小时在线要求。"
-        }
-        reply(
-            """
-            |[cyan]你的注册验证码是：[gold]$code
-            |[gray]有效期：${captchaExpireMillis.coerceAtLeast(60_000L) / 1000L}秒。
-            |$conditionText
-            |[yellow]请继续输入 /register，并在弹窗中填写该验证码。
-        """.trimMargin().with()
-        )
-    }
 }
 
 command("account", "打开账号注册/登录菜单（注册需 QQ 邮箱验证码）") {

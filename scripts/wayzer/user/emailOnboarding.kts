@@ -93,7 +93,8 @@ private suspend fun showRegisterPrompt(player: Player) {
                 |
                 |[gray]注册后可解锁[white]完整服务器功能[]：等级提升、技能系统、MDC 经济、成就与更多玩法。
                 |[gray]注册必须绑定 [white]QQ 邮箱（邮箱验证码）[]，否则无法完成注册。
-                |[gray]基本流程：[white]/captcha[] 获取注册验证码 → [white]/register[] → 输入密码、QQ 邮箱、邮箱验证码。
+                |[gray]基本流程：[white]/register[] → 输入密码、QQ 邮箱、邮箱验证码。
+                |[gray]若管理员开启了注册前在线时长要求，需要先挂机满足小时数（具体提示会显示在注册时）。
                 |[gray]已有账号可打开账号菜单后使用 [white]/login[]；也可随时输入 [white]/help[] 查看玩家指令。
             """.trimMargin()
             option("[green]注册 / 登录账号") {

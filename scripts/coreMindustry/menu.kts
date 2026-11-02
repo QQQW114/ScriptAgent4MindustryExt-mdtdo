@@ -102,7 +102,6 @@ private val lastHelpOpenAt = mutableMapOf<String, Long>()
 
 private val playerHelpEntries = listOf(
     HelpEntryDef("account", "[cyan]账号系统", "注册/登录/修改密码"),
-    HelpEntryDef("captcha", "[cyan]注册验证码", "注册前获取4位验证码；登录不需要验证码"),
     HelpEntryDef("register", "[cyan]注册账号", "注册 MDT 账号（需 QQ 邮箱验证码；注册后解锁等级/技能/经济等完整功能）"),
     HelpEntryDef("bindemail", "[cyan]绑定QQ邮箱", "补绑 QQ 邮箱（验证码）；未绑定信任等级最高 2 级，绑定后恢复并奖励 1000 MDC"),
     HelpEntryDef("login", "[cyan]登录账号", "登录 MDT 账号"),
@@ -200,7 +199,7 @@ private val adminHelpEntries = listOf(
     HelpEntryDef("databasefeatures", "[cyan]数据库业务功能", "统一暂停玩家可操作或高频数据库业务"),
     HelpEntryDef("mdcmultiplier", "[yellow]结算MDC倍率", "查看/修改玩家结算MDC倍率"),
     HelpEntryDef("forumtoggle", "[pink]帖子系统开关", "开启或关闭/post帖子功能"),
-    HelpEntryDef("registerrequirement", "[yellow]注册时长要求", "开关注册前一小时在线要求"),
+    HelpEntryDef("registerrequirement", "[yellow]注册在线时长要求", "设置注册前需本次启动累计在线的小时数（0=关闭，支持0~72小时）"),
     HelpEntryDef("socialactions", "[yellow]赞踩认可开关", "开启或关闭点赞、点踩与认可"),
     HelpEntryDef("defaultboundlevel", "[yellow]已绑定默认等级", "同时调整已绑定玩家的默认信任/资历下限"),
     HelpEntryDef("achat", "[cyan]管理员频道", "发送仅4级/admin可见的消息"),

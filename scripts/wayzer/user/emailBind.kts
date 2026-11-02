@@ -144,6 +144,20 @@ private fun markRegisterFromIp(ip: String) {
     MdtStorage.setSetting(key, "$today|${count + 1}")
 }
 
+private fun mapEmailServiceError(status: Int, text: String): String {
+    if (status == 0) return "邮件服务暂不可用，请稍后再试"
+    val error = Regex("\"error\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+    return when (error) {
+        "SERVICE_DAILY_LIMIT", "QUOTA_EXCEEDED" -> "注册邮件已满，请隔天再尝试"
+        "EMAIL_DAILY_LIMIT" -> "该邮箱今日验证码次数已达上限"
+        "EMAIL_COOLDOWN" -> "发送太频繁，请稍后再试"
+        "DOMAIN_NOT_ALLOWED", "INVALID_EMAIL" -> "只支持 QQ 邮箱（@qq.com）"
+        "INVALID_CODE" -> "验证码格式错误"
+        "EMAIL_SERVICE_CONFIG" -> "邮件服务配置异常，请联系管理员"
+        else -> if (status == 429) "发送太频繁，请稍后再试" else "邮件发送失败，请稍后再试"
+    }
+}
+
 private suspend fun sendCode(email: String, code: String): String? {
     if (emailServiceToken.isBlank()) return "邮件服务 token 未配置"
     val result = withContext(Dispatchers.IO) {
@@ -157,12 +171,12 @@ private suspend fun sendCode(email: String, code: String): String? {
             conn.setRequestProperty("X-Internal-Token", emailServiceToken)
             val body = """{"email":"$email","code":"$code","expireMinutes":$emailCodeTtlMinutes,"purpose":"bind"}"""
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val ok = conn.responseCode == 200
-            val text = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
-            ok to text
-        }.getOrElse { false to (it.message ?: "邮件服务连接失败") }
+            val status = conn.responseCode
+            val text = (if (status == 200) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
+            status to text
+        }.getOrElse { 0 to (it.message ?: "") }
     }
-    return if (result.first) null else "邮件发送失败：${result.second.take(120)}"
+    return if (result.first == 200) null else mapEmailServiceError(result.first, result.second)
 }
 
 private suspend fun askEmail(player: Player, title: String): String? {
