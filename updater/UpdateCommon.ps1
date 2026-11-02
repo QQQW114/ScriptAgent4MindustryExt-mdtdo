@@ -2,9 +2,9 @@
 # MDT 更新器公共模块（由三个入口脚本 dot-source 使用）
 # 要求：Windows PowerShell 5.1+；本文件需保存为 UTF-8 with BOM。
 #
-# 入口脚本（update-plugins.ps1 / update-web.ps1 /
-# update-plugins-clear-cache.ps1）只负责解析参数，然后调用：
-#   Invoke-MdtUpdater -Kind <plugins|web|plugins-clear-cache> -UpdaterDir <本目录> -Cli <参数表>
+# 入口脚本（update-plugins.ps1 / update-web.ps1 / update-plugins-clear-cache.ps1 /
+# update-mainserver.ps1 / update-subserver.ps1 / update-email-service.ps1）只负责解析参数，然后调用：
+#   Invoke-MdtUpdater -Kind <plugins|web|plugins-clear-cache|email> -UpdaterDir <本目录> -Cli <参数表>
 # 返回值即进程退出码（0 成功 / 1 失败 / 2 拒绝执行 / 3 文件已更新但运行中热重载失败或超时）。
 #
 # 运行中热更新：update-plugins 在服务器运行中且 console socket（server.properties 的
@@ -14,7 +14,7 @@
 # 失败/超时返回退出码 3；镜像前 unload 失败返回退出码 2（目标零改动）。
 # ============================================================================
 
-$script:UpdaterVersion = '1.1.0'
+$script:UpdaterVersion = '1.2.0'
 $script:LogWriter = $null
 $script:LogPath = ''
 $script:TempDir = ''
@@ -263,6 +263,11 @@ function Get-DefaultConfig {
         ProtectedServerFiles = @()
         ProtectedWebDirs     = @('web-data')
         ProtectedWebFiles    = @('web-config.json', 'web-config.ps1')
+        # 邮件服务（主服 MDT DO）：仓库 email-service/** → EmailServicePath；默认只新增/更新、不删除本地文件
+        EmailServicePath         = ''
+        ProtectedEmailDirs       = @('logs', 'dist')
+        ProtectedEmailFiles      = @('config.json')
+        EmailServicePruneDeleted = $false
         CachePath            = ''
         # 运行中热更新（console socket + 脚本加载日志）；缺字段时使用这些内置默认值，老配置无需修改
         HotReloadMode               = 'socket'
@@ -330,6 +335,10 @@ function Get-EffectiveConfig {
         @{ Json = 'protectedServerFiles'; Key = 'ProtectedServerFiles'; Kind = 'stringArray' },
         @{ Json = 'protectedWebDirs'; Key = 'ProtectedWebDirs'; Kind = 'stringArray' },
         @{ Json = 'protectedWebFiles'; Key = 'ProtectedWebFiles'; Kind = 'stringArray' },
+        @{ Json = 'emailServicePath'; Key = 'EmailServicePath'; Kind = 'string' },
+        @{ Json = 'protectedEmailDirs'; Key = 'ProtectedEmailDirs'; Kind = 'stringArray' },
+        @{ Json = 'protectedEmailFiles'; Key = 'ProtectedEmailFiles'; Kind = 'stringArray' },
+        @{ Json = 'emailServicePruneDeleted'; Key = 'EmailServicePruneDeleted'; Kind = 'bool' },
         @{ Json = 'cachePath'; Key = 'CachePath'; Kind = 'string' },
         @{ Json = 'hotReloadMode'; Key = 'HotReloadMode'; Kind = 'string' },
         @{ Json = 'hotReloadAnnounce'; Key = 'HotReloadAnnounce'; Kind = 'bool' },
@@ -432,6 +441,7 @@ function Get-EffectiveConfig {
     # 路径解析（相对路径按 updater 目录解析；推荐绝对路径）
     $config.ServerScriptsPath = Resolve-UserPath -Path ([string]$config.ServerScriptsPath) -BaseDir $UpdaterDir
     $config.StatsWebPath = Resolve-UserPath -Path ([string]$config.StatsWebPath) -BaseDir $UpdaterDir
+    $config.EmailServicePath = Resolve-UserPath -Path ([string]$config.EmailServicePath) -BaseDir $UpdaterDir
     $config.BackupPath = Resolve-UserPath -Path ([string]$config.BackupPath) -BaseDir $UpdaterDir
     $config.CachePath = Resolve-UserPath -Path ([string]$config.CachePath) -BaseDir $UpdaterDir
     # 脚本加载日志（完成判定依据）：留空 = <serverScriptsPath>\..\logs\script-load\current.log
@@ -482,12 +492,36 @@ function Get-KindSettings {
         [Parameter(Mandatory = $true)][string]$Kind,
         [Parameter(Mandatory = $true)]$Config
     )
+    if ($Kind -eq 'email') {
+        $backupRoot = Join-Path ([string]$Config.BackupPath) 'email'
+        return [pscustomobject]@{
+            Kind             = $Kind
+            IsWeb            = $false
+            IsEmail          = $true
+            SourceSubdir     = 'email-service'
+            KindLabel        = '邮件服务（email-service）'
+            TargetPath       = [string]$Config.EmailServicePath
+            ProtectedDirs    = @($Config.ProtectedEmailDirs)
+            ProtectedFiles   = @($Config.ProtectedEmailFiles)
+            BackupKind       = 'email'
+            BackupRoot       = $backupRoot
+            MarkerPath       = (Join-Path $backupRoot '.last-version')
+            NeedsServerStopped = $false
+            RequireServerStopped = $false
+            SupportsHotReload = $false
+            ClearCache       = $false
+            # 默认不删除目标目录中仓库没有的文件（邮件服务目录可能有人工放置的脚本/密钥/备份）；
+            # 需要严格镜像时在 config.json 设 emailServicePruneDeleted=true
+            PruneDeleted     = [bool]$Config.EmailServicePruneDeleted
+        }
+    }
     $isWeb = ($Kind -eq 'web')
     if ($isWeb) {
         $backupRoot = Join-Path ([string]$Config.BackupPath) 'web'
         return [pscustomobject]@{
             Kind             = $Kind
             IsWeb            = $true
+            IsEmail          = $false
             SourceSubdir     = 'stats-web'
             KindLabel        = 'Web 门户（stats-web）'
             TargetPath       = [string]$Config.StatsWebPath
@@ -500,12 +534,14 @@ function Get-KindSettings {
             RequireServerStopped = $false
             SupportsHotReload = $false
             ClearCache       = $false
+            PruneDeleted     = $true
         }
     }
     $backupRoot = Join-Path ([string]$Config.BackupPath) 'plugins'
     return [pscustomobject]@{
         Kind             = $Kind
         IsWeb            = $false
+        IsEmail          = $false
         SourceSubdir     = 'scripts'
         KindLabel        = '服务器插件脚本（scripts）'
         TargetPath       = [string]$Config.ServerScriptsPath
@@ -519,6 +555,7 @@ function Get-KindSettings {
         # 运行中热更新只对普通 update-plugins 开放；清缓存版要求停服强制重编译
         SupportsHotReload = ($Kind -eq 'plugins')
         ClearCache       = ($Kind -eq 'plugins-clear-cache')
+        PruneDeleted     = $true
     }
 }
 
@@ -699,6 +736,29 @@ function Get-RepoSourceDir {
 
 function Assert-SourceContent {
     param([Parameter(Mandatory = $true)]$Settings, [Parameter(Mandatory = $true)][string]$SourceDir)
+    if ($Settings.IsEmail) {
+        $required = @('server.ps1', 'Send-Email.ps1', 'start-email-service.bat', 'config.example.json')
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($rel in $required) {
+            if (-not (Test-Path -LiteralPath (Join-Path $SourceDir $rel) -PathType Leaf)) { $missing.Add($rel) | Out-Null }
+        }
+        if ($missing.Count -gt 0) {
+            throw ('下载内容校验失败：email-service 缺少关键文件 {0}。已中止，目标目录没有任何改动。' -f ($missing -join ', '))
+        }
+        $files = @(Get-RelativeFiles -Root $SourceDir)
+        if ($files.Count -lt 5) {
+            throw ('下载内容校验失败：email-service 只有 {0} 个文件，不像完整目录。已中止。' -f $files.Count)
+        }
+        $size = 0
+        foreach ($rel in $files) { $size += (Get-Item -LiteralPath (Join-Path $SourceDir $rel)).Length }
+        Write-Log ('校验通过：email-service\ 共 {0} 个文件（{1}）。' -f $files.Count, (Format-Bytes -Bytes $size)) 'OK'
+        # 仓库里不应出现生产配置（email-service/.gitignore 已排除 config.json）；万一出现也只警告：
+        # config.json 默认在受保护文件里，不会被复制到目标，但真实密钥一旦入库应立即轮换。
+        if ($files -contains 'config.json') {
+            Write-Log '警告：仓库 email-service 中出现 config.json（默认受保护、不会被复制到目标）；若其中含真实密钥/密码，请立即从仓库移除并轮换。' 'WARN'
+        }
+        return
+    }
     if ($Settings.IsWeb) {
         $required = @('index.html', 'start-web.ps1')
         $missing = New-Object System.Collections.Generic.List[string]
@@ -858,7 +918,7 @@ function Write-MirrorReport {
     Write-FileList -Title '修改文件' -Files $Analysis.Modified
     Write-FileList -Title '删除文件（仓库中已不存在，按严格镜像删除）' -Files $Analysis.Deleted
     if ($Analysis.SourceProtected.Count -gt 0) {
-        Write-Log ('仓库中受保护、不会复制到目标的文件（{0} 个，例如 data\config.conf、external-cp\.gitkeep、web-config.json）：' -f $Analysis.SourceProtected.Count)
+        Write-Log ('仓库中受保护、不会复制到目标的文件（{0} 个，例如 data\config.conf、external-cp\.gitkeep、web-config.json、email-service\config.json）：' -f $Analysis.SourceProtected.Count)
         foreach ($rel in $Analysis.SourceProtected) { Write-Detail ('  - ' + $rel) }
     }
 }
@@ -1801,7 +1861,7 @@ function Initialize-HotReloadContext {
         [bool]$IsRollback = $false
     )
     $context = [pscustomobject]@{
-        Applicable             = (-not $Settings.IsWeb)
+        Applicable             = (-not $Settings.IsWeb -and -not $Settings.IsEmail)
         Supported              = [bool]$Settings.SupportsHotReload
         Mode                   = [string]$Config.HotReloadMode
         ServerRunning          = $false
@@ -1820,7 +1880,7 @@ function Initialize-HotReloadContext {
         NoOpGraceSeconds       = $script:NoOpGraceSeconds
         AnnounceEnabled        = ($null -ne $Config.HotReloadAnnounce -and [bool]$Config.HotReloadAnnounce)
     }
-    if ($Settings.IsWeb) { return $context }
+    if ($Settings.IsWeb -or $Settings.IsEmail) { return $context }
     $state = Get-ServerRunState -Config $Config
     $context.ServerState = $state
     $context.ServerRunning = [bool]$state.Running
@@ -2003,6 +2063,27 @@ function Get-WebRunningHint {
             $lines.Add(('找到正在运行的 Web 进程：PID={0}，命令行：{1}' -f [int]$process.ProcessId, (Format-CommandLineForLog -CommandLine ([string]$process.CommandLine)))) | Out-Null
         }
     } catch { }
+    return $lines.ToArray()
+}
+
+# 邮件服务更新后的提示：更新器不会重启邮件服务进程，需要人工/计划任务重启才生效。
+function Get-EmailServiceRunningHint {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $found = New-Object System.Collections.Generic.List[string]
+    try {
+        $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction Stop |
+            Where-Object { [string]$_.CommandLine -match '(?i)email-service|start-email-service\.(bat|ps1)|Send-Email\.ps1' })
+        foreach ($process in $procs) {
+            $found.Add(('PID={0}，命令行：{1}' -f [int]$process.ProcessId, (Format-CommandLineForLog -CommandLine ([string]$process.CommandLine)))) | Out-Null
+        }
+    } catch { }
+    if ($found.Count -gt 0) {
+        $lines.Add('检测到邮件服务进程正在运行（更新后需要重启邮件服务才会加载新文件）：') | Out-Null
+        foreach ($line in $found) { $lines.Add('  - ' + $line) | Out-Null }
+        $lines.Add('重启方式：结束上面的进程 / 停止计划任务后，重新运行 email-service\start-email-service.bat（或 install-scheduled-task.ps1 创建的计划任务）。') | Out-Null
+    } else {
+        $lines.Add('未检测到正在运行的邮件服务进程；下次启动邮件服务时加载新文件。') | Out-Null
+    }
     return $lines.ToArray()
 }
 
@@ -2338,12 +2419,21 @@ function Show-Preview {
     }
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line }
+    } elseif ($Settings.IsEmail) {
+        if (@($Analysis.SkippedDeletions).Count -gt 0) {
+            Write-Log ('注意：email-service 默认只新增/更新、不删除本地文件；目标目录中仓库没有的 {0} 个文件将保留（如需严格镜像请设 emailServicePruneDeleted=true）：' -f @($Analysis.SkippedDeletions).Count) 'WARN'
+            Write-FileList -Title '保留（不删除）的本地文件' -Files @($Analysis.SkippedDeletions)
+        }
+        Write-Log '正式执行时会先备份邮件服务目录（受保护文件不备份），再新增/更新文件；不会重启邮件服务进程。'
+        foreach ($line in (Get-EmailServiceRunningHint)) { Write-Log $line }
     } elseif ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.UseHotReload) {
         Write-Log '正式执行时不会重启服务器：脚本会在严格镜像后通过 console socket 逐个热重载（详见下方评估）。'
     } else {
         Write-Log '正式执行时不会自动启动/重启服务器；更新完成后请自行启动服务器验证。'
     }
-    if (-not $Settings.IsWeb) {
+    if ($Settings.IsWeb -or $Settings.IsEmail) {
+        # Web / 邮件服务不涉及运行中热重载
+    } else {
         Show-HotReloadPreview -Analysis $Analysis -Context $script:HotReloadContext
     }
     $shaText = '（未知）'
@@ -2430,6 +2520,15 @@ function Invoke-UpdateFlow {
     # ---------- 4. 严格镜像分析 ----------
     Write-Step '4/6 严格镜像分析（对比仓库与目标目录）'
     $analysis = Get-MirrorAnalysis -SourceRoot $sourceDir -TargetRoot $Settings.TargetPath -ProtectedDirs $Settings.ProtectedDirs -ProtectedFiles $Settings.ProtectedFiles
+    # email-service 默认不是严格镜像：只新增/更新，不删除目标目录中仓库没有的文件（保护人工放置的脚本/备份/密钥）。
+    $analysis | Add-Member -NotePropertyName SkippedDeletions -NotePropertyValue @()
+    if (-not [bool]$Settings.PruneDeleted -and @($analysis.Deleted).Count -gt 0) {
+        $skippedDeletions = @($analysis.Deleted)
+        $analysis.Deleted = @()
+        $analysis | Add-Member -NotePropertyName SkippedDeletions -NotePropertyValue $skippedDeletions -Force
+        Write-Log ('本次不删除本地文件：email-service 默认只新增/更新、不删除（目标目录中仓库没有的 {0} 个文件会保留；如需严格镜像请在 config.json 设 emailServicePruneDeleted=true）。' -f $skippedDeletions.Count) 'WARN'
+        Write-FileList -Title '保留（不删除）的本地文件' -Files $skippedDeletions -ConsoleLimit 20
+    }
     Write-MirrorReport -Analysis $analysis -Settings $Settings
 
     if ($Cli.DryRun) {
@@ -2439,7 +2538,7 @@ function Invoke-UpdateFlow {
 
     # ---------- 4.1 运行中热重载：变更类型预检（必须在改动任何文件之前） ----------
     $hotReload = $script:HotReloadContext
-    $hotReloadActive = ($null -ne $hotReload -and [bool]$hotReload.UseHotReload -and -not $Settings.IsWeb)
+    $hotReloadActive = ($null -ne $hotReload -and [bool]$hotReload.UseHotReload -and -not $Settings.IsWeb -and -not $Settings.IsEmail)
     if ($hotReloadActive) {
         $allChanges = @()
         $allChanges += @($analysis.Added)
@@ -2627,6 +2726,13 @@ function Invoke-UpdateFlow {
     Write-Log ('严格镜像完成：新增 {0} / 修改 {1} / 删除 {2} / 未变 {3}；复制与哈希校验通过。' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $analysis.UnchangedCount) 'OK'
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line 'WARN' }
+    } elseif ($Settings.IsEmail) {
+        Write-Log '邮件服务文件已更新（受保护的 config.json / logs / dist 未被改动）。更新器不会重启邮件服务：' 'WARN'
+        foreach ($line in (Get-EmailServiceRunningHint)) { Write-Log $line 'WARN' }
+        if (@($analysis.SkippedDeletions).Count -gt 0) {
+            Write-Log ('已保留目标目录中仓库没有的 {0} 个本地文件（未删除，见上方清单）。' -f @($analysis.SkippedDeletions).Count)
+        }
+        Write-Log '提示：生产密钥/发件配置保存在 email-service\config.json（受保护、不会被覆盖）；如仓库新增了配置字段，请对照 config.example.json 手动补到生产 config.json。'
     } elseif ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) {
         Write-Log '运行中热重载已完成：被删除脚本已先在镜像前 unload（文件随镜像删除），变更/新增脚本已在镜像后逐个 load；本次没有重启服务器。'
         Write-Log '请在服务器控制台/日志确认没有脚本报错（config\logs\script-load\last-error.log 为空、脚本加载数量正常）。'
@@ -2644,6 +2750,7 @@ function Invoke-UpdateFlow {
     if ($Settings.ClearCache -and $null -ne $cacheStats) { $summaryExtra += ('；缓存清理 ' + $cacheStats.Files + ' 个文件') }
     if ($null -ne $preUnloadInfo -and [bool]$preUnloadInfo.Attempted) { $summaryExtra += ('；' + $preUnloadInfo.Summary) }
     if ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) { $summaryExtra += ('；' + $hotReloadInfo.Summary) }
+    if (@($analysis.SkippedDeletions).Count -gt 0) { $summaryExtra += ('；保留本地文件 ' + @($analysis.SkippedDeletions).Count + ' 个') }
     $summary = ('更新完成：新增 {0} / 修改 {1} / 删除 {2} / 未变 {3}{4}。' -f $analysis.Added.Count, $analysis.Modified.Count, $analysis.Deleted.Count, $analysis.UnchangedCount, $summaryExtra)
     return New-UpdateResult -ExitCode 0 -Summary $summary
 }
@@ -2785,13 +2892,13 @@ function Invoke-RollbackFlow {
     }
 
     $rollbackChangedRelPaths = @()
-    if ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.UseHotReload -and -not $Settings.IsWeb) {
+    if ($null -ne $script:HotReloadContext -and [bool]$script:HotReloadContext.UseHotReload -and -not $Settings.IsWeb -and -not $Settings.IsEmail) {
         $rollbackChangedRelPaths = @(Get-RollbackChangedRelPaths -BackupDir $backup.FullName -TargetRoot $Settings.TargetPath)
     }
     # ---------- 运行中热重载 · 阶段一（回滚）：恢复前先卸载将被删除的新增脚本 ----------
     # 同更新流程：必须先 unload（文件还在）再删文件，避免 SA 事务卡住 console socket。
     $hotReloadCtx = $script:HotReloadContext
-    $hotReloadActive = ($null -ne $hotReloadCtx -and [bool]$hotReloadCtx.UseHotReload -and -not $Settings.IsWeb)
+    $hotReloadActive = ($null -ne $hotReloadCtx -and [bool]$hotReloadCtx.UseHotReload -and -not $Settings.IsWeb -and -not $Settings.IsEmail)
     $preUnloadInfo = $null
     $doAnnounce = $false
     if ($hotReloadActive) {
@@ -2862,6 +2969,8 @@ function Invoke-RollbackFlow {
 
     if ($Settings.IsWeb) {
         foreach ($line in (Get-WebRunningHint -Config $Config)) { Write-Log $line 'WARN' }
+    } elseif ($Settings.IsEmail) {
+        Write-Log '邮件服务文件已回滚（受保护的 config.json / logs / dist 未被改动）。请重启邮件服务进程，旧文件才会生效。' 'WARN'
     } elseif ($null -ne $hotReloadInfo -and [bool]$hotReloadInfo.Attempted) {
         Write-Log '运行中回滚已按「先 unload 将被删脚本 → 恢复文件 → 再 load 恢复的脚本」逐个热重载完成，本次没有重启服务器。'
         Write-Log '请在服务器控制台/日志确认没有脚本报错（config\logs\script-load\last-error.log 为空、脚本加载数量正常）。'
@@ -2916,6 +3025,11 @@ function Show-OptionsSummary {
     if ($Settings.IsWeb) {
         Write-Log ('统计 Web 目录（statsWebPath）：{0}' -f $Settings.TargetPath)
         Write-Log ('保护：目录 [{0}]；文件 [{1}]' -f (($Settings.ProtectedDirs) -join ', '), (($Settings.ProtectedFiles) -join ', '))
+    } elseif ($Settings.IsEmail) {
+        Write-Log ('邮件服务目录（emailServicePath）：{0}' -f $Settings.TargetPath)
+        Write-Log ('保护：目录 [{0}]；文件 [{1}]' -f (($Settings.ProtectedDirs) -join ', '), (($Settings.ProtectedFiles) -join ', '))
+        Write-Log ('严格镜像（删除本地多余文件）：{0}（false = 只新增/更新，保留目标目录里的额外文件，默认）' -f $(if ([bool]$Settings.PruneDeleted) { 'true' } else { 'false' }))
+        Write-Log '邮件服务是独立进程：更新文件后不会自动重启，需要重启邮件服务才生效（更新器会提示正在运行的进程）。'
     } else {
         Write-Log ('服务器脚本目录（serverScriptsPath）：{0}' -f $Settings.TargetPath)
         Write-Log ('保护：目录 [{0}]；文件 [{1}]' -f (($Settings.ProtectedDirs) -join ', '), (($Settings.ProtectedFiles) -join ', '))
@@ -2935,7 +3049,7 @@ function Show-OptionsSummary {
     if ($Settings.ClearCache) {
         Write-Log ('缓存目录（cachePath）：{0}' -f (Resolve-CachePath -Config $Config -Settings $Settings))
     }
-    if (-not $Settings.IsWeb -and [int]$Config.WebPort -gt 0) { Write-Log ('Web 端口（webPort）：{0}' -f $Config.WebPort) }
+    if (-not $Settings.IsWeb -and -not $Settings.IsEmail -and [int]$Config.WebPort -gt 0) { Write-Log ('Web 端口（webPort）：{0}' -f $Config.WebPort) }
     $flags = New-Object System.Collections.Generic.List[string]
     foreach ($name in @('DryRun', 'Force', 'NoBackup', 'Rollback', 'KeepTemp', 'NoHotReload')) {
         if ($Cli.ContainsKey($name) -and [bool]$Cli[$name]) { $flags.Add($name) | Out-Null }
@@ -3074,6 +3188,7 @@ function Invoke-MdtUpdater {
         if ([string]::IsNullOrWhiteSpace([string]$settings.TargetPath)) {
             $hint = 'serverScriptsPath'
             if ($settings.IsWeb) { $hint = 'statsWebPath' }
+            if ($settings.IsEmail) { $hint = 'emailServicePath' }
             throw ('REFUSED: 尚未配置 {0}，请编辑 config.json 填写绝对路径。' -f $hint)
         }
         if (-not (Test-Path -LiteralPath $settings.TargetPath -PathType Container)) {
@@ -3088,7 +3203,7 @@ function Invoke-MdtUpdater {
         # 优先级：服务器未运行 → 普通停服流程；运行中且热重载可用 → 镜像后热重载；
         #         热重载不可用/关闭 → 回退 requireServerStopped（true=拒绝2 / false=旧行为强制更新）。
         $isRollback = ([bool]$Cli.Rollback -or ($Cli.ContainsKey('RollbackTo') -and -not [string]::IsNullOrWhiteSpace([string]$Cli.RollbackTo)))
-        if (-not $settings.IsWeb) {
+        if (-not $settings.IsWeb -and -not $settings.IsEmail) {
             $script:HotReloadContext = Initialize-HotReloadContext -Config $config -Settings $settings -Cli $Cli -IsRollback $isRollback
         } else {
             $script:HotReloadContext = $null
