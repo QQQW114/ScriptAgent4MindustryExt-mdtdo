@@ -22,7 +22,7 @@
 - 发信地址：`noreply@dm.mdtdomindustry.cn`（DirectMail 控制台类型：**触发类邮件**；状态正常）
 - 发件人显示名：`MDT 服务器`
 - 服务商：阿里云邮件推送 DirectMail（API `SingleSendMail`，HTTPS `https://dm.aliyuncs.com/`）
-- 免费额度：共 2000 封；每天 200 封；服务端默认全局限 150 封/天。
+- 免费额度：共 2000 封；每天 200 封；服务端默认全局限 100 封/天。
 
 ## 变更注意
 
