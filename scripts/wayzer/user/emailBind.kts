@@ -34,6 +34,8 @@ private val emailCodeTtlMinutes by config.key(10, "验证码有效期（分钟�
 private val ipDailyRegisterLimit by config.key(3, "每 IP 每天成功注册上限")
 private val bindRewardOld by config.key(1000, "老账号补绑奖励 MDC")
 private val bindRewardNew by config.key(300, "新账号绑定奖励 MDC")
+private val codeSendCooldownSeconds by config.key(60, "验证码发送冷却（秒，按账号/IP）")
+private val codeSendDailyLimit by config.key(10, "每身份每日验证码发送上限")
 
 private data class PendingCode(
     val email: String,
@@ -177,14 +179,54 @@ private suspend fun askCode(player: Player): String? {
     }
 }
 
+private fun sendRateKeys(player: Player): List<String> {
+    val keys = mutableListOf<String>()
+    accountIdOf(player)?.let { keys += "account:$it" }
+    keys += "ip:${sha256(playerIp(player))}"
+    return keys
+}
+
+/** 发送验证码前的账号/IP 限流（邮件服务只按收件邮箱限流，防止换邮箱刷爆额度）。 */
+private fun checkSendRateLimit(keys: List<String>): String? {
+    val now = System.currentTimeMillis()
+    val today = java.time.LocalDate.now().toString()
+    for (key in keys) {
+        val raw = MdtStorage.getSetting("email.send.$key") ?: continue
+        val parts = raw.split('|', limit = 3)
+        if (parts.getOrNull(0) != today) continue
+        val count = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val last = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+        if (now - last < codeSendCooldownSeconds * 1000L) return "发送太频繁，请稍后再试"
+        if (count >= codeSendDailyLimit) return "今日验证码发送次数已达上限"
+    }
+    return null
+}
+
+private fun markSendAttempt(keys: List<String>) {
+    val now = System.currentTimeMillis()
+    val today = java.time.LocalDate.now().toString()
+    for (key in keys) {
+        val raw = MdtStorage.getSetting("email.send.$key")
+        val parts = raw?.split('|', limit = 3).orEmpty()
+        val count = if (parts.getOrNull(0) == today) (parts.getOrNull(1)?.toIntOrNull() ?: 0) else 0
+        MdtStorage.setSetting("email.send.$key", "$today|${count + 1}|$now")
+    }
+}
+
 private suspend fun verifyEmailCode(player: Player, email: String, purpose: String): Boolean {
     val key = player.uuid()
+    val rateKeys = sendRateKeys(player)
+    checkSendRateLimit(rateKeys)?.let {
+        player.sendMessage("[red]$it".with())
+        return false
+    }
     val code = (100000..999999).random().toString()
     val error = sendCode(email, code)
     if (error != null) {
         player.sendMessage("[red]$error".with())
         return false
     }
+    markSendAttempt(rateKeys)
     val expiresAt = System.currentTimeMillis() + emailCodeTtlMinutes * 60_000L
     pending[key] = PendingCode(email, sha256("$email|$code"), expiresAt)
     player.sendMessage("[green]验证码已发送到 $email，请在 ${emailCodeTtlMinutes} 分钟内输入。".with())
