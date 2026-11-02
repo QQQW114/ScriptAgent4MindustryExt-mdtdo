@@ -34,7 +34,7 @@ $script:MockSend = [bool]$rawConfig.mockSend
 $limits = $rawConfig.limits
 $script:CooldownSeconds = if ($limits -and $limits.perEmailCooldownSeconds) { [int]$limits.perEmailCooldownSeconds } else { 60 }
 $script:EmailDailyLimit = if ($limits -and $limits.perEmailDailyLimit) { [int]$limits.perEmailDailyLimit } else { 5 }
-$script:GlobalDailyLimit = if ($limits -and $limits.globalDailyLimit) { [int]$limits.globalDailyLimit } else { 150 }
+$script:GlobalDailyLimit = if ($limits -and $limits.globalDailyLimit) { [int]$limits.globalDailyLimit } else { 100 }
 
 $aliyun = $rawConfig.aliyun
 if (-not $aliyun) { throw '配置缺少 aliyun 段' }
@@ -153,7 +153,7 @@ function Get-FailureMessage([string]$Code) {
         'INVALID_CODE' { return '验证码必须是 4-8 位数字' }
         'EMAIL_COOLDOWN' { return '发送太频繁，请稍后再试' }
         'EMAIL_DAILY_LIMIT' { return '该邮箱今日发送次数已达上限' }
-        'SERVICE_DAILY_LIMIT' { return '今日验证码发送额度已用完，请明天再试' }
+        'SERVICE_DAILY_LIMIT' { return '注册邮件已满，请隔天再尝试' }
         'QUOTA_EXCEEDED' { return '邮件服务额度不足，请联系管理员' }
         'EMAIL_SERVICE_CONFIG' { return '邮件服务配置异常，请联系管理员' }
         'UNAUTHORIZED' { return '内部鉴权失败' }

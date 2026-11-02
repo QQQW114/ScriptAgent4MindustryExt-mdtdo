@@ -100,7 +100,7 @@ X-Internal-Token: <config.internalToken>
 | 401 | `UNAUTHORIZED` | 缺少/错误 `X-Internal-Token` |
 | 429 | `EMAIL_COOLDOWN` | 同一邮箱发送太频繁（默认 60 秒） |
 | 429 | `EMAIL_DAILY_LIMIT` | 同一邮箱今日次数超限（默认 5 次） |
-| 429 | `SERVICE_DAILY_LIMIT` | 服务全局每日额度用完（默认 150，低于阿里云免费 200/天） |
+| 429 | `SERVICE_DAILY_LIMIT` | 服务全局每日额度用完（默认 100，低于阿里云免费 200/天） |
 | 429 | `QUOTA_EXCEEDED` | 阿里云额度不足 |
 | 502 | `EMAIL_SERVICE_CONFIG` | 阿里云鉴权/发信域名/发信地址配置异常（查服务日志） |
 | 502 | `SEND_FAILED` | 其他发送失败 |
@@ -164,7 +164,7 @@ val respText = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader(
 | `allowDomains` | `["qq.com","foxmail.com"]` | 允许收件的域名；空数组=任意 |
 | `limits.perEmailCooldownSeconds` | 60 | 同邮箱重发冷却 |
 | `limits.perEmailDailyLimit` | 5 | 同邮箱每日上限 |
-| `limits.globalDailyLimit` | 150 | 服务每日总上限（留阿里云 200/天余量） |
+| `limits.globalDailyLimit` | 100 | 服务每日总上限（默认 100；留阿里云 200/天余量） |
 | `mockSend` | false | true=不真实发信，返回 mock 成功（联调用） |
 | `logDir` | `logs` | 日志目录 |
 
@@ -184,7 +184,7 @@ val respText = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader(
 - 服务只监听 `127.0.0.1`，不要开公网；公网端口 40150 不需要也不要在防火墙放行；
 - `config.json` 含 AccessKey，**已被 .gitignore 排除，禁止提交仓库/发群**；
 - 日志中的邮箱做打码（如 `35***@qq.com`），不记录验证码与密钥；
-- 阿里云额度：免费共 2000 封、每天 200 封；本服务默认全局 150/天留余量；
+- 阿里云额度：免费共 2000 封、每天 200 封；本服务默认全局 100/天留余量；
 - 停服：关闭对应 `powershell.exe` 进程 / 任务计划程序里停止任务；日志在 `logs/`。
 
 ---

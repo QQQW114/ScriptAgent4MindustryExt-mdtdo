@@ -16,7 +16,7 @@
   "limits": {
     "perEmailCooldownSeconds": 60,
     "perEmailDailyLimit": 5,
-    "globalDailyLimit": 150
+    "globalDailyLimit": 100
   },
   "mockSend": false,
   "logDir": "logs"

@@ -83,4 +83,4 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:40150/send' -Method Post -ContentType '
 - 停止/卸载：管理员执行 `.\install-scheduled-task.ps1 -Remove`；
 - 更新服务文件：先停止任务 → 覆盖 `server.ps1` / `Send-Email.ps1` → 再启动；
 - **不要**在防火墙放行 40150；不要改 `listen.host` 为 `0.0.0.0`（除非明确要内网其他机器调用，并已加防火墙仅允许内网 IP）；
-- 阿里云额度免费 200 封/天；服务默认全局 150/天，保留余量。
+- 阿里云额度免费 200 封/天；服务默认全局 100/天，保留余量。
