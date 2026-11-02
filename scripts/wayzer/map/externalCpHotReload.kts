@@ -110,6 +110,11 @@ private var contentModuleGuardLastLogMillis = 0L
 /** 短期守护的扫描间隔：原本每帧一次全量 Building 扫描，2026-09-12 起降频到该间隔。 */
 private var contentModuleGuardLastScanMillis = 0L
 
+// 地图标签 @dp / @nodp 产生的本局 DP 策略；由 wayzer/map/mapDpTags 在 MapChangeEvent 设置。
+private var mapDpBlockAll = false
+private var mapDpAllowedTargets: Set<String>? = null
+private var mapDpPolicySource = ""
+
 private fun externalCpDir(): File = File(Vars.dataDirectory.file(), "scripts/$externalCpDirName")
 
 private fun ensureExternalCpDir(): File = externalCpDir().also { dir ->
@@ -1294,6 +1299,7 @@ private fun syncWorldAfterExternalCpChange(reason: String, delayMillis: Long = w
 
 private fun applyExternalCp(cp: ExternalCpFile, operator: String): ExternalCpResult {
     return mutateExternalCp {
+        mapDpPolicyError(cp)?.let { return@mutateExternalCp ExternalCpResult(false, it) }
         val key = fileKey(cp.name)
         val readResult = try {
             readExternalCpPatch(cp)
@@ -1403,6 +1409,7 @@ private fun externalCpListText(): String {
     return buildString {
         appendLine("[cyan]外部CP目录：[white]${dir.absolutePath}")
         appendLine("[cyan]可用CP：[white]${files.size} 个  [cyan]已加载：[white]${loadedExternalCps.size} 个")
+        appendLine("[cyan]本局DP策略：[white]${mapDpPolicyText()}")
         files.forEach { cp ->
             val loaded = loadedExternalCps[fileKey(cp.name)]
             val state = if (loaded != null) "[green]已加载" else "[gray]未加载"
@@ -1424,6 +1431,50 @@ private fun loadedExternalCpText(): String {
 
 /** 供 /cp 快捷入口复用，避免绕过外部CP系统的校验、互斥、回滚与串行重同步。 */
 fun serverCpFileListText(): String = externalCpListText()
+
+/** 地图标签策略：blockAll=true 禁止本局所有DP；allowedTargets=null 表示不限制，非空集合只允许匹配的DP。 */
+fun setMapDpPolicy(blockAll: Boolean, allowedTargets: Collection<String>?, source: String) {
+    mapDpBlockAll = blockAll
+    mapDpAllowedTargets = allowedTargets
+        ?.map { it.trim().lowercase() }
+        ?.filter { it.isNotEmpty() }
+        ?.toSet()
+    mapDpPolicySource = source
+    logger.info(
+        "地图DP策略已更新: " + mapDpPolicyText().replace(Regex("\\[[^\\]]*]"), "") + " source=$source"
+    )
+}
+
+fun clearMapDpPolicy() {
+    mapDpBlockAll = false
+    mapDpAllowedTargets = null
+    mapDpPolicySource = ""
+}
+
+fun mapDpPolicyText(): String = when {
+    mapDpBlockAll -> "[yellow]本局禁止所有DP（${mapDpPolicySource}）"
+    mapDpAllowedTargets != null -> "[cyan]本局只允许DP：${mapDpAllowedTargets!!.joinToString(", ")}（${mapDpPolicySource}）"
+    else -> "[gray]本局未限制DP"
+}
+
+/** 供地图标签脚本在 @nodp 时强制撤掉当前已加载的DP。 */
+fun unloadAllServerCpsForMapTag(operator: String): String = unloadAllExternalCps(operator).message
+
+private fun mapDpPolicyError(cp: ExternalCpFile): String? {
+    if (mapDpBlockAll) {
+        return "[yellow]当前地图标签禁止加载所有DP（${mapDpPolicySource}），已拒绝加载 ${cp.displayName}。"
+    }
+    val allowed = mapDpAllowedTargets ?: return null
+    if (allowed.isEmpty()) return null
+    val names = setOf(
+        cp.index.toString(),
+        cp.name.lowercase(),
+        cp.displayName.lowercase(),
+        stripSupportedExtension(cp.name).lowercase(),
+    )
+    if (names.any { it in allowed }) return null
+    return "[yellow]当前地图只允许加载DP：${allowed.joinToString(", ")}（${mapDpPolicySource}），已拒绝 ${cp.displayName}。"
+}
 
 fun loadServerCp(target: String, operator: String): String {
     val cp = resolveExternalCpFile(target)
