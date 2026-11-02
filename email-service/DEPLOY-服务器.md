@@ -27,6 +27,7 @@ E:\mdt-email-service\
 - `internalToken`：给绑定插件用的内部 token（当前已填，协作者需要同一个值）；
 - `aliyun.accessKeyId` / `accessKeySecret`：已填好（阿里云 RAM 子账号 `mdt-email-api`）；
 - `aliyun.senderAddress`：`noreply@dm.mdtdomindustry.cn`；
+- `aliyun.fromAlias`：发件人显示名，默认 `MDTDO服务器`；
 - `listen`：`127.0.0.1:40150`（**只本机**，不要改成公网）；
 - `mockSend=false`（真实发送）。
 

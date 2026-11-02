@@ -10,7 +10,7 @@
     "accessKeyId": "请填写 RAM 子账号 AccessKeyId",
     "accessKeySecret": "请填写 RAM 子账号 AccessKeySecret",
     "senderAddress": "noreply@dm.mdtdomindustry.cn",
-    "fromAlias": "MDT 服务器"
+    "fromAlias": "MDTDO服务器"
   },
   "allowDomains": ["qq.com", "foxmail.com"],
   "limits": {

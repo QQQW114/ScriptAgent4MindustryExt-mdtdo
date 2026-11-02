@@ -27,6 +27,7 @@ X-Internal-Token: <内部 token>
 - 域名：`mdtdomindustry.cn`（根域已有阿里企业邮箱，发信用子域避免冲突）
 - 发信域名：`dm.mdtdomindustry.cn`，SPF/DKIM/DMARC/MX 已验证通过
 - 发信地址：`noreply@dm.mdtdomindustry.cn`（触发类邮件）
+- 发件人显示名：`MDTDO服务器`（`email-service/config.json` → `aliyun.fromAlias`）；验证码邮件正文含「本邮件 N 分钟内有效」
 - 阿里云 DirectMail：已开通，免费额度 2000 封 / 每天 200 封
 - RAM 子账号：`mdt-email-api`，仅 DirectMail 权限
 

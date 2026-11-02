@@ -53,6 +53,8 @@ private suspend fun showBindPrompt(player: Player, accountId: Int) {
                 |[cyan]你的账号还没有绑定 QQ 邮箱。
                 |
                 |[gray]未绑定期间[white]信任等级最高 2 级[]（仍可正常游玩，[white]资历等级不受影响[]）。
+                |[gray]如果你有 QQ 账号，输入你的 QQ 号[white]@qq.com[] 即为你的 QQ 邮箱（如 [white]12345678@qq.com[]）。
+                |[gray]验证码发送后打开 QQ，在消息列表等待验证码邮件即可。
                 |[green]绑定后恢复原信任等级，并奖励 [gold]1000 MDC[]。
                 |[gray]也可以输入 [white]/bindemail[] 或查看 [white]/help[] 玩家指令。
             """.trimMargin()

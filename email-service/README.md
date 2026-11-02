@@ -27,6 +27,7 @@
    - `internalToken`：随机长字符串（调用方需要带同一个值）；
    - `aliyun.accessKeyId` / `accessKeySecret`：阿里云 RAM 子账号密钥（当前账号 `mdt-email-api`，已授权 DirectMail）；
    - `aliyun.senderAddress`：`noreply@dm.mdtdomindustry.cn`；
+   - `aliyun.fromAlias`：发件人显示名，默认 `MDTDO服务器`；
    - `mockSend=true` 可先做联调（不真实发信，不消耗额度）。
 3. 启动：
    - 调试：双击 `start-email-service.bat`；
@@ -160,7 +161,7 @@ val respText = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader(
 | `aliyun.endpoint` | `https://dm.aliyuncs.com/` | DirectMail 接入点 |
 | `aliyun.accessKeyId/Secret` | — | RAM 子账号密钥（只在本机 config.json） |
 | `aliyun.senderAddress` | `noreply@dm.mdtdomindustry.cn` | 已通过验证的发信地址 |
-| `aliyun.fromAlias` | `MDT 服务器` | 发件人显示名 |
+| `aliyun.fromAlias` | `MDTDO服务器` | 发件人显示名 |
 | `allowDomains` | `["qq.com","foxmail.com"]` | 允许收件的域名；空数组=任意 |
 | `limits.perEmailCooldownSeconds` | 60 | 同邮箱重发冷却 |
 | `limits.perEmailDailyLimit` | 5 | 同邮箱每日上限 |
@@ -172,9 +173,9 @@ val respText = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader(
 
 ## 6. 邮件内容
 
-- 发件人：`noreply@dm.mdtdomindustry.cn`（显示名 `MDT 服务器`）
+- 发件人：`noreply@dm.mdtdomindustry.cn`（显示名 `MDTDO服务器`）
 - 主题：`【MDT】邮箱绑定验证码`
-- 正文：验证码 + 有效期提示 + 防泄露提醒（纯文本，UTF-8）
+- 正文：验证码 + “本邮件 N 分钟内有效” + 防泄露提醒（纯文本，UTF-8）
 - 域名已配置 SPF / DKIM / DMARC / MX，阿里云侧验证通过，已实测可送达 QQ 邮箱。
 
 ---
@@ -192,3 +193,4 @@ val respText = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader(
 ## 8. 自测记录
 
 - 2026-11-01：本机启动 → `/health` 正常；`/send` 真实发往 QQ 邮箱（HTTP 200，`EnvId` 返回，收件箱已收到）；错误 token / 非 QQ 域名 / 非法验证码 / 超频均按契约返回。
+- 2026-11-02：发件人显示名改 `MDTDO服务器`（`aliyun.fromAlias`），验证码正文改「本邮件 N 分钟内有效」；停旧进程重启后 `/health` 正常（`ok:true`，mockSend=false），未再真实发信。

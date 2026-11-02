@@ -12,6 +12,7 @@
 package wayzer.user
 
 import coreMindustry.MenuBuilder
+import coreMindustry.MenuV3
 import coreLibrary.lib.event.RequestPermissionEvent
 import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
@@ -466,6 +467,28 @@ suspend fun openAccountMenu(player: Player) {
     }.sendTo(player, 60_000)
 }
 
+/** 注册成功后的欢迎页（仅注册流程显示；可随时关闭，不影响后续；登录/注册失败不显示）。 */
+private suspend fun showRegisterWelcome(player: Player) {
+    runCatching {
+        MenuV3(player) {
+            title = "欢迎来到 MDTDO"
+            onCancel = { close() }
+            msg = """
+                |[green]恭喜你已经完成账号注册！
+                |
+                |[gray]请尽快加入服务器交流群，群号可输入 [white]/wiki[] 查看。
+                |[gray]请常关注 [white]/wiki[] 和 [white]/post[]。
+                |[gray]双击你或他人的核心机，可以快速打开玩家面板。
+                |
+                |[gold]欢迎来到 MDTDO！
+            """.trimMargin()
+            option("[green]关闭") { close() }
+        }.send()
+    }.onFailure {
+        logger.warning("显示注册欢迎页失败 uuid=${player.uuid()}: ${it.message}")
+    }
+}
+
 suspend fun registerFlow(player: Player) {
     if (PlayerData[player].authed) {
         player.sendMessage("[yellow]你已经登录账号，无需注册")
@@ -494,7 +517,9 @@ suspend fun registerFlow(player: Player) {
         player.sendMessage("[red]注册失败：$bindError，请联系管理员清理 account:${account.id}")
         return
     }
-    finishLogin(player, account, "注册", migrateGuestMdcFromUid = guestUid)
+    if (finishLogin(player, account, "注册", migrateGuestMdcFromUid = guestUid)) {
+        showRegisterWelcome(player)
+    }
 }
 
 suspend fun loginFlow(player: Player) {

@@ -209,7 +209,7 @@ function Invoke-SendRequest {
     $textBody = @(
         "你的邮箱绑定验证码是：$code",
         "",
-        "$expireMinutes 分钟内有效。请勿把验证码告诉他人。",
+        "本邮件 $expireMinutes 分钟内有效。请勿把验证码告诉他人。",
         "如果这不是你本人的操作，请忽略本邮件。",
         "",
         "—— MDT 服务器"
