@@ -61,8 +61,8 @@
       "emailBind": {
         "emailServiceUrl": "http://127.0.0.1:40150/send",
         "emailServiceToken": "<email-service internalToken>",
-        "emailCodeTtlMinutes": 10,
-        "emailInputTimeoutSeconds": 180,
+        "emailCodeTtlMinutes": 20,
+        "emailInputTimeoutSeconds": 300,
         "ipDailyRegisterLimit": 3,
         "bindRewardOld": 1000,
         "bindRewardNew": 300,
@@ -81,6 +81,9 @@
 ```
 
 注册在线时长存在 MdtSettings：`serverFeatures.registrationOnlineRequirementHours`（0~72，默认 1；旧布尔开关自动迁移为 0/1）。
+
+> 2026-11-02 起为应对 QQ 邮箱/阿里云延迟投递，验证码有效期 **最低按 20 分钟**、输入框等待 **最低按 300 秒**执行：
+> 旧配置仍写 `10`/`180` 也会被下限抬高；管理员可配更高值，但不能低于该下限。
 
 ## 4. 邮件服务额度（2026-11-02 新口径）
 
@@ -120,7 +123,9 @@ serverFeatures.registrationOnlineRequirementHours  注册前在线小时数（0~
 
 ## 6. 可靠性/兜底设计
 
-- 验证码：6 位、10 分钟有效、最多 5 次尝试；邮箱/验证码输入超时 **180 秒**（密码输入也 180 秒）；
+- 验证码：6 位、**默认 20 分钟有效（最低 20 分钟）**、最多 5 次尝试；邮箱/验证码输入框 **默认 300 秒（最低 300 秒）**；
+- 邮件服务请求耗时：插件日志会打印 `[emailBind] 邮件服务发送成功/失败 purpose=... elapsedMs=...`，服务日志打印阿里云调用耗时；
+  区分“我们的服务/阿里云 API 慢”与“QQ 邮箱实际投递慢”（后者只能看 QQ 收件箱）；`/health` 返回 `uptimeSeconds`、`totalSends`、`lastSendLatencyMs`、`lastSendRequestId`；
 - 发送限流：服务端按收件邮箱 60s / 5 次每日 / 全局 **100** 每日；插件按账号/IP 60s + 每日 10 次；**账号/IP 各自另加滚动 1 小时成功发送上限：账号 3 次、IP 5 次**（未登录注册按客户端 UUID 充当账号身份），防切换邮箱滥发；**注册**另加全服全局滚动 1 小时 30 封成功发送上限；
 - 邮件服务请求的 `purpose` 按流程传 `register` / `bind`（原硬编码 `bind` 已修复），便于区分注册/绑定用途；
 - 邮件服务每日上限/错误均映射成玩家可读提示，不阻塞游玩/登录；
@@ -132,12 +137,15 @@ serverFeatures.registrationOnlineRequirementHours  注册前在线小时数（0~
 
 ## 7. 部署顺序（仅目标服）
 
-1. 部署 `email-service`（`limits.globalDailyLimit=100`），`/health` 正常；
-2. 同步本分支 `scripts/` 到该服 `config/scripts/`（保留 data/、external-cp/、cache/）；
+1. 部署 `email-service`（`limits.globalDailyLimit=100`），`/health` 正常；生产建议用管理员 PowerShell 执行
+   `email-service\install-scheduled-task.ps1` 安装为**开机自启 + 崩溃自动重启**的计划任务，而不是长期挂前台窗口；
+2. 同步本分支 `scripts/` 到该服 `config/scripts/`（保留 data/、external-cp/、cache/）；更新器 `update-mainserver`
+   在 email-service 阶段成功后会尝试自动重启该计划任务，使新的 `server.ps1` 生效（见 updater README 的
+   `emailServiceTaskName` / `restartEmailServiceAfterUpdate`）；
 3. `config.conf` 填 `emailServiceToken`；
 4. 清 `config/scripts/cache/` 冷启动，确认 banner `168 脚本 / 164 加载 / 159 启用 / 出错 0`、`scriptdiag` 失败 0、`sa listFailed` 空；
 5. 测试 `/register` 与 `/bindemail`、弹窗、`/registerrequirement 0|10`；
-6. 另一个服保持 `main`。
+6. 另一个服保持 `mdc-do`（分服分支）。
 
 ## 8. 验证记录（2026-11-02，开发服 B509）
 
@@ -157,6 +165,18 @@ serverFeatures.registrationOnlineRequirementHours  注册前在线小时数（0~
 - email-service：本地 `config.json` 发件人显示名改 `MDTDO服务器`（不入库）、正文改「本邮件 N 分钟内有效」；
   停旧进程重启后 `GET /health` 返回 `ok:true`（未真实发信）。
 - 未实机验证：欢迎页实际弹出/关闭、QQ 提示展示效果、30 封/小时限流触发（需实机玩家与真实邮件发送）。
+
+### 2026-11-02 傍晚追加（邮件延迟容忍度/可靠启动/更新同步）
+
+- 验证码有效期默认 **20 分钟**、输入框默认 **300 秒**，旧配置的 10/180 也会被下限抬高（代码层最低 20/300）；
+- 插件日志新增 `[emailBind] 邮件服务发送成功/失败 purpose=... elapsedMs=...`；email-service `/health` 新增
+  `uptimeSeconds/totalSends/lastSendAt/lastSendLatencyMs/lastSendRequestId`，发送日志记录阿里云 API 耗时；
+- email-service 新增 `install-scheduled-task.ps1` 的 `-Status/-Restart`、`restart-email-service.ps1/.bat`，
+  计划任务为 SYSTEM/开机启动/失败每分钟重启；`start-email-service.bat` 检测到计划任务时优先启动任务；
+- updater：email-service 阶段成功后自动重启计划任务（`-NoRestartEmailService` 可关闭；旧配置缺字段按默认开启）；
+- 本地验证：冷启动 **168 脚本 / 164 加载 / 159 启用 / 出错 0**，`emailBind` Enabled，KDoc 0 命中；
+  新 `/health` 字段与 mock `/send` 正常；PowerShell 解析与 `-Status` 只读检查通过；
+- 未验证：生产计划任务实际安装/崩溃自动重启、真实阿里云发信耗时、QQ 邮箱实际投递延迟。
 
 ## 9. 已知限制
 

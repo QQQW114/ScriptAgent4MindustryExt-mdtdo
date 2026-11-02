@@ -36,14 +36,25 @@ E:\mdt-email-service\
 在服务器上以管理员打开 PowerShell：
 
 ```powershell
-cd E:\mdt-email-service
+cd E:\email-service
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install-scheduled-task.ps1
 ```
 
-- 成功会创建任务「MDT Email Service」（SYSTEM、开机启动），并显示健康检查结果；
+- 成功会创建任务「MDT Email Service」（SYSTEM、开机启动、失败每分钟自动重试），并显示健康检查结果；
 - 若提示 HttpListener 拒绝访问，先执行一次：
-  `netsh http add urlacl url=http://127.0.0.1:40150/ user=Everyone`，再重跑安装脚本。
-- 也可手动双击 `start-email-service.bat` 前台运行（调试用）。
+  `netsh http add urlacl url=http://127.0.0.1:40150/ user=Everyone`，再重跑安装脚本（脚本也会尝试自动添加）；
+- 前台调试可双击 `start-email-service.bat`；若已安装计划任务，它会优先启动任务而不是再开一个前台实例；
+- 更新 `server.ps1` 后让新代码生效：
+  ```powershell
+  .\install-scheduled-task.ps1 -Restart
+  # 或
+  .\restart-email-service.bat
+  ```
+- 查看/卸载：
+  ```powershell
+  .\install-scheduled-task.ps1 -Status
+  .\install-scheduled-task.ps1 -Remove
+  ```
 
 ## 4. 验证
 

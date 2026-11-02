@@ -35,8 +35,12 @@ X-Internal-Token: <内部 token>
 
 1. 把 `email-service/` 目录（交接包内含已填好的 `config.json`）复制到服务器，如 `E:\mdt-email-service`；
 2. 若从模板重建配置：复制 `config.example.json` → `config.json`，填 `internalToken` 与阿里云 AccessKey（生产建议直接使用交接包里的 config，避免密钥在聊天传递）；
-3. **管理员** PowerShell 执行 `.\install-scheduled-task.ps1`，创建开机自启任务「MDT Email Service」（SYSTEM）并自动健康检查；
+3. **管理员** PowerShell 执行 `.\install-scheduled-task.ps1`：创建开机自启任务「MDT Email Service」（SYSTEM，
+   失败每分钟自动重试、无运行时长限制），并自动做 URLACL/健康检查；更新文件后用 `-Restart` 或
+   `restart-email-service.bat` 重启任务；
 4. 服务只监听 `127.0.0.1:40150`，**不要**在防火墙放行该端口；
+5. `/health` 会返回 `uptimeSeconds/totalSends/lastSendLatencyMs/lastSendRequestId`，日志中每次发送记录阿里云 API
+   耗时（`elapsedMs`）；玩家反馈邮件慢时先对照这个耗时判断是服务/API 慢还是 QQ 邮箱投递慢。
 
 ## 安全
 

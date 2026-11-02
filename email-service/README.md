@@ -15,8 +15,10 @@
 | `Send-Email.ps1` | 阿里云 DirectMail API 签名与发信封装 |
 | `config.example.json` | 配置模板；复制为 `config.json` 后填写 |
 | `config.json` | **本机实际配置（含 AccessKey，已被 .gitignore，禁止提交）** |
-| `start-email-service.bat` | 前台启动（调试用） |
-| `logs/` | 运行日志（每日一个文件，邮箱打码，不记录验证码/密钥） |
+| `start-email-service.bat` | 启动入口：已安装计划任务时优先启动任务；否则前台调试运行 |
+| `install-scheduled-task.ps1` | **生产推荐**：开机自启 + 崩溃自动重启（SYSTEM 计划任务），支持 -Status/-Restart/-Remove |
+| `restart-email-service.ps1/.bat` | 重启计划任务，让新 `server.ps1` 立即生效（更新器也会调用） |
+| `logs/` | 运行日志（每日一个文件，邮箱打码，不记录验证码/密钥；含阿里云调用耗时） |
 
 ---
 
@@ -30,10 +32,18 @@
    - `aliyun.fromAlias`：发件人显示名，默认 `MDTDO服务器`；
    - `mockSend=true` 可先做联调（不真实发信，不消耗额度）。
 3. 启动：
-   - 调试：双击 `start-email-service.bat`；
-   - 生产（推荐）：**管理员** PowerShell 执行 `.\install-scheduled-task.ps1` —— 自动创建开机自启任务「MDT Email Service」（SYSTEM），并做健康检查；
+   - 调试：双击 `start-email-service.bat`（未安装任务时前台运行并显示日志）；
+   - 生产（推荐）：**管理员** PowerShell 执行 `.\install-scheduled-task.ps1` —— 创建开机自启任务「MDT Email Service」（SYSTEM），
+     配置了失败每分钟自动重试、无运行时长限制，并自动做 URLACL/健康检查；
+   - 查看/重启/卸载任务：
+     ```powershell
+     .\install-scheduled-task.ps1 -Status
+     .\install-scheduled-task.ps1 -Restart
+     .\install-scheduled-task.ps1 -Remove
+     ```
+     更新 `server.ps1` 后执行 `-Restart`（或更新器自动重启）即可生效；
    - 也可手动用「任务计划程序」运行：
-     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "E:\mdt-email-service\server.ps1" -Config "E:\mdt-email-service\config.json"`，勾选「不管用户是否登录都运行」；
+     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "E:\email-service\server.ps1" -Config "E:\email-service\config.json"`，勾选「不管用户是否登录都运行」；
    - 服务器部署的完整步骤见同目录 [`DEPLOY-服务器.md`](DEPLOY-服务器.md)；
 4. 默认监听 `127.0.0.1:40150`（**只本机可访问**，不要对公网开放）；若需其他机器访问，改 `listen.host` 并自行加防火墙+只允许可信 IP；
 5. 首次若提示"拒绝访问"，用**管理员**执行一次：
@@ -50,8 +60,23 @@ GET http://127.0.0.1:40150/health
 ```
 
 ```json
-{ "ok": true, "service": "mdt-email-service", "version": "1.0.0", "time": "2026-11-01 21:30:00" }
+{
+  "ok": true,
+  "service": "mdt-email-service",
+  "version": "1.0.0",
+  "time": "2026-11-02 18:30:00",
+  "startedAt": "2026-11-02 09:00:00",
+  "uptimeSeconds": 34200,
+  "totalSends": 12,
+  "lastSendAt": "2026-11-02 18:29:50",
+  "lastSendLatencyMs": 320,
+  "lastSendRequestId": "01A1B2C3..."
+}
 ```
+
+> `lastSendLatencyMs` 是**调用阿里云 DirectMail API 的耗时**，不是 QQ 邮箱实际投递耗时；玩家反馈“邮件延迟高”时先看
+> `logs/email-service-*.log` 的 `发送成功 ... elapsedMs=`：若 API 很快但收件慢，延迟在阿里云/QQ 邮箱投递侧；若 elapsedMs 很大，
+> 再看网络/代理/阿里云 API。
 
 ### 3.2 发送验证码邮件
 

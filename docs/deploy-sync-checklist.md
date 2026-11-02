@@ -140,8 +140,9 @@ update-email-service.bat -Rollback      :: 邮件服务单独回滚
 3. **分服不要用 `main` 分支**：`update-subserver.bat` 默认 `mdc-do`，这才是不含账号系统的基线；
    `-Branch` 只用于临时演练/指定别的基线，长期指向 `main` 会把账号/邮箱系统带到分服。
 4. **email-service 生产配置绝不能覆盖**：`config.json`（密钥/发件配置）、`logs\`、`dist\` 默认受保护，
-   更新器默认**只新增/更新、不删除**本地文件；仓库里没有 `config.json`。更新完需**重启邮件服务进程**
-   （结束旧窗口/停止计划任务 → 重新运行 `email-service\start-email-service.bat`），输出会提示检测到的进程 PID。
+   更新器默认**只新增/更新、不删除**本地文件；仓库里没有 `config.json`。更新成功后更新器会尝试**自动重启计划任务**
+   `MDT Email Service`（`-NoRestartEmailService` 可关闭），未安装任务时只提示手动重启；建议先安装
+   `email-service\install-scheduled-task.ps1`（SYSTEM、开机自启、失败每分钟重启）。
    主服脚本还会在**改动任何文件前**预检 `emailServicePath`（未配置/目录不存在 → 退出码 2，插件阶段也不动）。
 5. **路径按服务器配置**：主服示例 `serverScriptsPath=E:\mdtserver\config\scripts`、
    `emailServicePath=E:\mdt-email-service`、`statsWebPath=E:\stats-web`、`backupPath=E:\mdt-updater-backup`；

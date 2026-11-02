@@ -30,8 +30,11 @@ private val textInput = contextScript<UtilTextInput>()
 
 private val emailServiceUrl by config.key("http://127.0.0.1:40150/send", "邮箱验证码服务地址")
 private val emailServiceToken by config.key("", "邮箱验证码服务 internalToken")
-private val emailCodeTtlMinutes by config.key(10, "验证码有效期（分钟）")
-private val emailInputTimeoutSeconds by config.key(180, "邮箱/验证码输入超时（秒）")
+private val emailCodeTtlMinutes by config.key(20, "验证码有效期（分钟，最低 20）")
+private val emailInputTimeoutSeconds by config.key(300, "邮箱/验证码输入超时（秒，最低 300）")
+// 邮件可能被 QQ 邮箱/阿里云延迟投递；旧配置里的 10 分钟/180 秒仍按最低容忍度生效。
+private val effectiveEmailCodeTtlMinutes = emailCodeTtlMinutes.coerceAtLeast(20)
+private val effectiveEmailInputTimeoutSeconds = emailInputTimeoutSeconds.coerceAtLeast(300)
 private val ipDailyRegisterLimit by config.key(3, "每 IP 每天成功注册上限")
 private val bindRewardOld by config.key(1000, "老账号补绑奖励 MDC")
 private val bindRewardNew by config.key(300, "新账号绑定奖励 MDC")
@@ -204,7 +207,7 @@ private suspend fun sendCode(email: String, code: String, purpose: String): Stri
             conn.readTimeout = 10000
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             conn.setRequestProperty("X-Internal-Token", emailServiceToken)
-            val body = """{"email":"$email","code":"$code","expireMinutes":$emailCodeTtlMinutes,"purpose":"$purpose"}"""
+            val body = """{"email":"$email","code":"$code","expireMinutes":$effectiveEmailCodeTtlMinutes,"purpose":"$purpose"}"""
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val status = conn.responseCode
             val text = (if (status == 200) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
@@ -221,7 +224,7 @@ private suspend fun askEmail(player: Player, title: String): String? {
             "请输入 QQ 邮箱（例如 123456@qq.com）。只允许数字@qq.com。\n" +
                     "如果你有 QQ 账号，输入你的 QQ 号@qq.com 即为你的 QQ 邮箱（如 12345678@qq.com）。\n" +
                     "验证码发送后打开 QQ，在消息列表等待验证码邮件即可。",
-            lengthLimit = 64, timeoutMillis = emailInputTimeoutSeconds * 1000
+            lengthLimit = 64, timeoutMillis = effectiveEmailInputTimeoutSeconds * 1000
         )
     } ?: run {
         player.sendMessage("[yellow]邮箱输入已取消或超时；可重新输入 /bindemail 或 /register 重试".with())
@@ -238,8 +241,8 @@ private suspend fun askEmail(player: Player, title: String): String? {
 private suspend fun askCode(player: Player): String? {
     val raw = with(textInput) {
         textInput(
-            player, "输入验证码", "请输入邮箱收到的 6 位验证码（可等待邮件到达，最多 ${emailInputTimeoutSeconds} 秒）。",
-            lengthLimit = 6, isNumeric = true, timeoutMillis = emailInputTimeoutSeconds * 1000
+            player, "输入验证码", "请输入邮箱收到的 6 位验证码（可等待邮件到达，最多 ${effectiveEmailInputTimeoutSeconds} 秒）。",
+            lengthLimit = 6, isNumeric = true, timeoutMillis = effectiveEmailInputTimeoutSeconds * 1000
         )
     } ?: run {
         player.sendMessage("[yellow]验证码输入已取消或超时；可重新发送验证码后重试".with())
@@ -341,11 +344,15 @@ private suspend fun verifyEmailCode(player: Player, email: String, purpose: Stri
         return false
     }
     val code = (100000..999999).random().toString()
+    val sendStartedAt = System.currentTimeMillis()
     val error = sendCode(email, code, purpose)
+    val sendElapsedMs = System.currentTimeMillis() - sendStartedAt
     if (error != null) {
+        Log.info("[emailBind] 邮件服务发送失败 purpose=$purpose elapsedMs=$sendElapsedMs error=$error")
         player.sendMessage("[red]$error".with())
         return false
     }
+    Log.info("[emailBind] 邮件服务发送成功 purpose=$purpose elapsedMs=$sendElapsedMs")
     if (purpose == "register") {
         runCatching { recordRegisterSend() }.onFailure {
             Log.err("[emailBind] 记录新注册验证码发送窗口失败: ${it.message}")
@@ -355,9 +362,9 @@ private suspend fun verifyEmailCode(player: Player, email: String, purpose: Stri
     runCatching { recordHourlySend(rateKeys) }.onFailure {
         Log.err("[emailBind] 记录账号/IP 每小时发送窗口失败: ${it.message}")
     }
-    val expiresAt = System.currentTimeMillis() + emailCodeTtlMinutes * 60_000L
+    val expiresAt = System.currentTimeMillis() + effectiveEmailCodeTtlMinutes * 60_000L
     pending[key] = PendingCode(email, sha256("$email|$code"), expiresAt)
-    player.sendMessage("[green]验证码已发送到 $email，请在 ${emailCodeTtlMinutes} 分钟内输入。".with())
+    player.sendMessage("[green]验证码已发送到 $email，请在 ${effectiveEmailCodeTtlMinutes} 分钟内输入。".with())
     player.sendMessage("[gray]请打开 QQ，在消息列表等待验证码邮件；收到后回到游戏输入验证码即可。".with())
     val input = askCode(player) ?: run {
         pending.remove(key)

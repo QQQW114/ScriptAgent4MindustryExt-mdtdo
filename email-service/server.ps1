@@ -48,6 +48,12 @@ if (-not [IO.Path]::IsPathRooted($script:LogDir)) { $script:LogDir = Join-Path $
 New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
 $script:LogFile = Join-Path $script:LogDir ('email-service-' + (Get-Date -Format 'yyyyMMdd') + '.log')
 $script:LogEncoding = New-Object System.Text.UTF8Encoding($false)
+# 观测字段：用于判断玩家反馈的“邮件延迟”是服务处理慢还是阿里云/QQ 投递慢。
+$script:StartedAt = Get-Date
+$script:TotalSends = 0
+$script:LastSendAt = $null
+$script:LastSendLatencyMs = $null
+$script:LastSendRequestId = ''
 
 . (Join-Path $script:Root 'Send-Email.ps1')
 
@@ -218,12 +224,18 @@ function Invoke-SendRequest {
     if ($script:MockSend) {
         Register-SendAttempt $email $true
         $mockId = 'mock-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
-        Write-SvcLog 'INFO' ("[mock] 已模拟发送 to={0} code=****** requestId={1}" -f $masked, $mockId)
+        $script:TotalSends++
+        $script:LastSendAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        $script:LastSendLatencyMs = 0
+        $script:LastSendRequestId = $mockId
+        Write-SvcLog 'INFO' ("[mock] 已模拟发送 to={0} code=****** requestId={1} elapsedMs=0" -f $masked, $mockId)
         Send-JsonResponse $Context 200 @{ ok = $true; mock = $true; requestId = $mockId; envId = $null; message = '模拟发送成功（mockSend=true）' }
         return
     }
 
+    $sendStartedAt = Get-Date
     $result = Invoke-DirectMailSend -AliyunConfig $aliyun -ToAddress $email -Subject $subject -TextBody $textBody
+    $sendLatencyMs = [int]((Get-Date) - $sendStartedAt).TotalMilliseconds
     Register-SendAttempt $email $false
 
     if ($result.Ok) {
@@ -235,8 +247,12 @@ function Invoke-SendRequest {
             $requestId = [string]$parsed.RequestId
             $envId = [string]$parsed.EnvId
         } catch { }
-        Write-SvcLog 'INFO' ("发送成功 to={0} requestId={1} envId={2}" -f $masked, $requestId, $envId)
-        Send-JsonResponse $Context 200 @{ ok = $true; requestId = $requestId; envId = $envId; message = '验证码邮件已发送' }
+        Write-SvcLog 'INFO' ("发送成功 to={0} requestId={1} envId={2} elapsedMs={3}" -f $masked, $requestId, $envId, $sendLatencyMs)
+        $script:TotalSends++
+        $script:LastSendAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        $script:LastSendLatencyMs = $sendLatencyMs
+        $script:LastSendRequestId = $requestId
+        Send-JsonResponse $Context 200 @{ ok = $true; requestId = $requestId; envId = $envId; elapsedMs = $sendLatencyMs; message = '验证码邮件已发送' }
         return
     }
 
@@ -262,7 +278,7 @@ function Invoke-SendRequest {
         'InvalidToAddress' { $mapped = 'INVALID_EMAIL'; $httpStatus = 400 }
     }
     $level = if ($mapped -eq 'EMAIL_SERVICE_CONFIG') { 'ERROR' } else { 'WARN' }
-    Write-SvcLog $level ("发送失败 to={0} aliyunCode={1} aliyunMessage={2} body={3}" -f $masked, $aliyunCode, $aliyunMessage, $result.Raw)
+    Write-SvcLog $level ("发送失败 to={0} aliyunCode={1} aliyunMessage={2} elapsedMs={3} body={4}" -f $masked, $aliyunCode, $aliyunMessage, $sendLatencyMs, $result.Raw)
     Send-JsonResponse $Context $httpStatus @{ ok = $false; error = $mapped; message = (Get-FailureMessage $mapped); aliyunCode = $aliyunCode }
 }
 
@@ -294,7 +310,19 @@ try {
             Write-SvcLog 'DEBUG' ("{0} {1} from {2}" -f $request.HttpMethod, $path, $request.RemoteEndPoint)
 
             if ($path -eq '/health' -and $request.HttpMethod -eq 'GET') {
-                Send-JsonResponse $context 200 @{ ok = $true; service = 'mdt-email-service'; version = $script:Version; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') }
+                $uptime = [int]((Get-Date) - $script:StartedAt).TotalSeconds
+                Send-JsonResponse $context 200 @{
+                    ok = $true
+                    service = 'mdt-email-service'
+                    version = $script:Version
+                    time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+                    startedAt = $script:StartedAt.ToString('yyyy-MM-dd HH:mm:ss')
+                    uptimeSeconds = $uptime
+                    totalSends = $script:TotalSends
+                    lastSendAt = $script:LastSendAt
+                    lastSendLatencyMs = $script:LastSendLatencyMs
+                    lastSendRequestId = $script:LastSendRequestId
+                }
             } elseif ($path -eq '/send' -and $request.HttpMethod -eq 'POST') {
                 Invoke-SendRequest $context
             } elseif ($path -eq '/send') {

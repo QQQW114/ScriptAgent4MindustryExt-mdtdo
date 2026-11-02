@@ -84,7 +84,8 @@ param(
     [string]$Branch = '',
     [string]$Repo = '',
     [string]$SourceZip = '',
-    [switch]$KeepTemp
+    [switch]$KeepTemp,
+    [switch]$NoRestartEmailService
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,4 +113,22 @@ $cli = @{
 }
 
 $exitCode = Invoke-MdtUpdater -Kind 'email' -UpdaterDir $UpdaterDir -Cli $cli
+if ($exitCode -eq 0 -and -not $DryRun -and -not $NoRestartEmailService) {
+    try {
+        $restartConfig = Get-EffectiveConfig -UpdaterDir $UpdaterDir -Cli $cli
+        $taskName = [string]$restartConfig.EmailServiceTaskName
+        if ([string]::IsNullOrWhiteSpace($taskName)) { $taskName = 'MDT Email Service' }
+        $restartEnabled = $restartConfig.RestartEmailServiceAfterUpdate
+        if ($null -eq $restartEnabled) { $restartEnabled = $true }
+        if ([bool]$restartEnabled) {
+            Write-Host ('重启邮箱服务计划任务：{0}' -f $taskName) -ForegroundColor Cyan
+            $restart = Restart-MdtEmailService -TaskName $taskName
+            Write-Host ('  ' + $restart.Message) -ForegroundColor $(if ($restart.Ok) { 'Green' } else { 'Yellow' })
+        } else {
+            Write-Host '配置 restartEmailServiceAfterUpdate=false，跳过重启；新文件将在下次服务重启后生效。' -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host ('重启邮箱服务时提示：{0}；新文件已落盘，请手动重启 email-service。' -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
 exit $exitCode
