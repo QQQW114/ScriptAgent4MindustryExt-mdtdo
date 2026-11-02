@@ -68,6 +68,8 @@
         "bindRewardNew": 300,
         "codeSendCooldownSeconds": 60,
         "codeSendDailyLimit": 10,
+        "ipHourlySendLimit": 5,
+        "accountHourlySendLimit": 3,
         "registerEmailHourlyLimit": 30
       },
       "emailOnboarding": {
@@ -105,8 +107,11 @@ qq.index.<qq>                   accountId
 email.reward.<accountId>        done（奖励只发一次）
 email.lock.<accountId>          原信任等级（旧 "信任|资历" 快照会在绑定时清理资历锁定）
 email.ip.<sha256(ip)>           日期|注册次数
-email.send.account:<id>         日期|发送次数|最后发送毫秒（账号限流）
-email.send.ip:<sha256(ip)>      同上（IP 限流）
+email.send.account:<id>         日期|发送次数|最后发送毫秒（账号日内限流）
+email.send.ip:<sha256(ip)>      同上（IP 日内限流）
+email.send.hour.account:<id>    最近 1 小时成功发送时间戳（滚动窗口，账号上限 3）
+email.send.hour.uuid:<uuid>     未登录注册流程按客户端 UUID 的 1 小时窗口（账号上限 3）
+email.send.hour.ip:<sha256(ip)> 最近 1 小时成功发送时间戳（滚动窗口，IP 上限 5）
 email.register.send.window      最近 1 小时新注册验证码成功发送时间戳（逗号分隔，滚动窗口）
 email.prompt.bind.dismissed.<accountId>   不再提示（绑定）
 email.prompt.register.dismissed.<uuid>    不再提示（注册）
@@ -116,7 +121,7 @@ serverFeatures.registrationOnlineRequirementHours  注册前在线小时数（0~
 ## 6. 可靠性/兜底设计
 
 - 验证码：6 位、10 分钟有效、最多 5 次尝试；邮箱/验证码输入超时 **180 秒**（密码输入也 180 秒）；
-- 发送限流：服务端按收件邮箱 60s / 5 次每日 / 全局 **100** 每日；插件按账号/IP 60s + 每日 10 次；**注册**另加全服全局滚动 1 小时 30 封成功发送上限；
+- 发送限流：服务端按收件邮箱 60s / 5 次每日 / 全局 **100** 每日；插件按账号/IP 60s + 每日 10 次；**账号/IP 各自另加滚动 1 小时成功发送上限：账号 3 次、IP 5 次**（未登录注册按客户端 UUID 充当账号身份），防切换邮箱滥发；**注册**另加全服全局滚动 1 小时 30 封成功发送上限；
 - 邮件服务请求的 `purpose` 按流程传 `register` / `bind`（原硬编码 `bind` 已修复），便于区分注册/绑定用途；
 - 邮件服务每日上限/错误均映射成玩家可读提示，不阻塞游玩/登录；
 - 入服弹窗检测 `MenuV3` / 旧式 `MenuBuilder` / `textInput`，有弹窗则不打扰；弹窗失败回退聊天提示；

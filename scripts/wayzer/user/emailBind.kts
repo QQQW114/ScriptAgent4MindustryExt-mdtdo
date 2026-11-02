@@ -37,11 +37,14 @@ private val bindRewardOld by config.key(1000, "老账号补绑奖励 MDC")
 private val bindRewardNew by config.key(300, "新账号绑定奖励 MDC")
 private val codeSendCooldownSeconds by config.key(60, "验证码发送冷却（秒，按账号/IP）")
 private val codeSendDailyLimit by config.key(10, "每身份每日验证码发送上限")
+private val ipHourlySendLimit by config.key(5, "每 IP 每小时验证码成功发送上限（滚动 1 小时，防换邮箱滥发）")
+private val accountHourlySendLimit by config.key(3, "每账号每小时验证码成功发送上限（滚动 1 小时，防换邮箱滥发）")
 private val registerEmailHourlyLimit by config.key(30, "新注册验证码每小时成功发送上限（滚动 1 小时，防刷注册邮件）")
 
 private val REGISTER_SEND_WINDOW_KEY = "email.register.send.window"
 private val HOUR_MILLIS = 60L * 60L * 1000L
 private val registerWindowLock = Any()
+private val sendHourWindowLock = Any()
 
 private data class PendingCode(
     val email: String,
@@ -250,7 +253,8 @@ private suspend fun askCode(player: Player): String? {
 
 private fun sendRateKeys(player: Player): List<String> {
     val keys = mutableListOf<String>()
-    accountIdOf(player)?.let { keys += "account:$it" }
+    // 已登录账号按 account 计；未登录（注册流程）按客户端 UUID 作为账号身份，避免换邮箱绕过。
+    keys += accountIdOf(player)?.let { "account:$it" } ?: "uuid:${player.uuid()}"
     keys += "ip:${sha256(playerIp(player))}"
     return keys
 }
@@ -282,10 +286,53 @@ private fun markSendAttempt(keys: List<String>) {
     }
 }
 
+private fun hourlySendLimitFor(key: String): Int =
+    if (key.startsWith("ip:")) ipHourlySendLimit else accountHourlySendLimit
+
+/** 每小时成功发送上限：IP=5、账号（未登录按客户端 UUID）=3，防止换收件邮箱绕过邮箱级限流。 */
+private fun checkHourlySendLimit(keys: List<String>): String? {
+    synchronized(sendHourWindowLock) {
+        val now = System.currentTimeMillis()
+        for (key in keys) {
+            val recent = (MdtStorage.getSetting("email.send.hour.$key") ?: "")
+                .split(',')
+                .mapNotNull { it.toLongOrNull() }
+                .filter { now - it < HOUR_MILLIS }
+            if (recent.size >= hourlySendLimitFor(key)) {
+                return if (key.startsWith("ip:")) {
+                    "当前 IP 每小时验证码发送次数已达上限，请稍后再试"
+                } else {
+                    "该账号每小时验证码发送次数已达上限，请稍后再试"
+                }
+            }
+        }
+    }
+    return null
+}
+
+private fun recordHourlySend(keys: List<String>) {
+    synchronized(sendHourWindowLock) {
+        val now = System.currentTimeMillis()
+        for (key in keys) {
+            val recent = (MdtStorage.getSetting("email.send.hour.$key") ?: "")
+                .split(',')
+                .mapNotNull { it.toLongOrNull() }
+                .filter { now - it < HOUR_MILLIS }
+                .toMutableList()
+            recent += now
+            MdtStorage.setSetting("email.send.hour.$key", recent.joinToString(","))
+        }
+    }
+}
+
 private suspend fun verifyEmailCode(player: Player, email: String, purpose: String): Boolean {
     val key = player.uuid()
     val rateKeys = sendRateKeys(player)
     checkSendRateLimit(rateKeys)?.let {
+        player.sendMessage("[red]$it".with())
+        return false
+    }
+    checkHourlySendLimit(rateKeys)?.let {
         player.sendMessage("[red]$it".with())
         return false
     }
@@ -305,6 +352,9 @@ private suspend fun verifyEmailCode(player: Player, email: String, purpose: Stri
         }
     }
     markSendAttempt(rateKeys)
+    runCatching { recordHourlySend(rateKeys) }.onFailure {
+        Log.err("[emailBind] 记录账号/IP 每小时发送窗口失败: ${it.message}")
+    }
     val expiresAt = System.currentTimeMillis() + emailCodeTtlMinutes * 60_000L
     pending[key] = PendingCode(email, sha256("$email|$code"), expiresAt)
     player.sendMessage("[green]验证码已发送到 $email，请在 ${emailCodeTtlMinutes} 分钟内输入。".with())
