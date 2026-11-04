@@ -34,6 +34,19 @@ private val guestMonitorSeconds by config.key(120, "游客进服后的监控秒�
 private val level1MonitorSeconds by config.key(60, "1级玩家进服后的监控秒数")
 private val level2MonitorSeconds by config.key(60, "2级玩家进服后的监控秒数")
 
+// ── 重连接续（2026-11-04）────────────────────────────────────────────────────
+// 背景：/sync、/vote rollback、MapManager 换图等「客户端重新同步世界」都会让服务端
+// 先收到 PlayerLeave、再收到 PlayerJoin。旧实现每次 Join 都 initMonitor，
+// 监控窗口从头计时，等于把所有人重新纳入监控（回档之后尤其明显）。
+//
+// 做法：离开时只记时间戳（不建计时器，避免协程泄漏与调度乱序），
+// 重连时若间隔在窗口内且旧监控还在，则只 refreshMonitor（保留 joinedAt/deadline）。
+//
+// 代码级回退：把下面这个开关改成 false，即恢复旧行为（离开立刻丢弃监控状态）。
+private val reconnectResumeEnabled = true
+private val reconnectGraceSeconds by config.key(30, "断线重连接续窗口（秒）：窗口内重连不重新开始监控")
+
+
 // 批量选中拆除的真实建筑物数量阈值（超过才触发）
 private val guestBatchThreshold by config.key(50, "游客批量选中真实建筑物数量上限")
 private val level1BatchThreshold by config.key(100, "1级批量选中真实建筑物数量上限")
@@ -75,6 +88,39 @@ private var loopJob: kotlinx.coroutines.Job? = null
 private val monitors = ConcurrentHashMap<String, Monitor>()
 private val obRecords = ConcurrentHashMap<String, ObRecord>()
 private val incomingBatches = ConcurrentLinkedQueue<Batch>()
+
+/** uuid -> 离开时刻（毫秒）。只用于「重连接续」判定，不需要每个玩家一个计时器。 */
+private val leftAt = ConcurrentHashMap<String, Long>()
+
+/** 上一次清理 leftAt 的时间，靠主循环节流（每 5 秒扫一次）。 */
+private var lastGraceSweep = 0L
+
+/**
+ * 用「离开时刻 + 当前时间」判断这次 Join 是不是窗口内的重连。
+ * 返回 true 表示应当接续原监控（不重置 joinedAt/deadline）。
+ */
+private fun tryResumeMonitor(player: Player): Boolean {
+    val uuid = player.uuid()
+    val left = leftAt.remove(uuid) ?: return false
+    if (!reconnectResumeEnabled) return false
+    val elapsed = System.currentTimeMillis() - left
+    if (elapsed > reconnectGraceSeconds * 1000L) return false
+    if (!monitors.containsKey(uuid)) return false
+    Log.info("[IDLEGUARD] resume monitor uuid=$uuid after ${elapsed}ms")
+    return true
+}
+
+/** 清理过期的离开记录与已到期的监控（都在主循环里调用，节流 5 秒）。 */
+private fun sweepGrace(now: Long) {
+    if (now - lastGraceSweep < 5_000L) return
+    lastGraceSweep = now
+    if (reconnectResumeEnabled) {
+        val window = reconnectGraceSeconds * 1000L
+        leftAt.entries.removeIf { now - it.value > window }
+    }
+    // 旧实现靠 PlayerLeave 顺手删 monitor；现在要留着重连接续，所以这里负责回收过期条目
+    monitors.entries.removeIf { now > it.value.deadline }
+}
 
 private fun levelOf(player: Player): Int =
     with(trustLevel) { getTrustLevel(player) }.coerceIn(0, 4)
@@ -193,7 +239,14 @@ private fun trigger(player: Player, monitor: Monitor) {
     val count = monitor.selected.size
     if (debugLog) Log.info("[IDLEGUARD] trigger uuid=" + player.uuid() + " count=" + count)
     val reason = "疑似乱拆（批量选中拆除 $count 个建筑物）"
-    with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
+    // 兜底到期时间：观察窗口 + 可能延长的一次，交给 voteOb 的到期清扫。
+    // 没有它时，玩家若在解除检查前离线（obRecords 被删），限制会永久留在 voteOb 的 uid 表里。
+    // 代码级回退：把 safetyExpireEnabled 改成 false 即回到旧行为（不设到期）。
+    val safetyExpireEnabled = true
+    val safetyExpireAt = if (safetyExpireEnabled)
+        System.currentTimeMillis() + (observerSeconds + keepObserverExtraSeconds) * 1000L
+    else null
+    with(voteOb) { forceObPlayer(player, reason, null, null, "system", safetyExpireAt) }
     obRecords[player.uuid()] = ObRecord(
         uuid = player.uuid(),
         guest = monitor.level <= 0,
@@ -211,6 +264,12 @@ private fun releaseObserver(player: Player, reason: String) {
 
 private fun keepObserver(player: Player, rec: ObRecord, reason: String) {
     rec.until = System.currentTimeMillis() + keepObserverExtraSeconds * 1000L
+    // 同步把 voteOb 的兜底到期时间往后推，否则延长后的观察期会被兜底提前解除。
+    // 与 trigger() 同口径：从当前时刻重新计「观察窗口 + 一次延长」。
+    runCatching {
+        val safety = System.currentTimeMillis() + (observerSeconds + keepObserverExtraSeconds) * 1000L
+        with(voteOb) { extendForceObExpire(player, safety) }
+    }.onFailure { Log.err("[IDLEGUARD] failed to extend forceOb expiry.", it) }
     player.sendMessage("[red][监控] $reason，观战限制延长。".with())
     broadcast("[yellow][监控] [white]${player.name}[yellow] 的观战解除检查发现异常（$reason），已延长观战。".with())
 }
@@ -309,8 +368,13 @@ listen<EventType.BlockBuildBeginEvent> { event ->
 }
 
 listen<EventType.PlayerJoin> { event ->
-    initMonitor(event.player)
     val player = event.player
+    // 窗口内重连（/sync、回档、换图重握手）→ 接续原监控，不重置窗口
+    if (tryResumeMonitor(player)) {
+        refreshMonitor(player)
+    } else {
+        initMonitor(player)
+    }
     launch(Dispatchers.game) {
         delay(1_500L)
         refreshMonitor(player)
@@ -320,8 +384,13 @@ listen<EventType.PlayerJoin> { event ->
 }
 
 listen<EventType.PlayerLeave> { event ->
-    monitors.remove(event.player.uuid())
-    obRecords.remove(event.player.uuid())
+    val uuid = event.player.uuid()
+    // 不建计时器：只记时间戳，重连时由 tryResumeMonitor 判定窗口
+    leftAt[uuid] = System.currentTimeMillis()
+    if (!reconnectResumeEnabled) {
+        monitors.remove(uuid)
+    }
+    obRecords.remove(uuid)
 }
 
 onEnable {
@@ -330,12 +399,15 @@ onEnable {
             delay(100L)
             drainBatches()
             tickRelease()
+            sweepGrace(System.currentTimeMillis())
         }
     }
 }
 
 onDisable {
     loopJob?.cancel()
+    leftAt.clear()
+    monitors.clear()
 }
 
 fun debugFeed(player: Player, positions: IntArray) {
