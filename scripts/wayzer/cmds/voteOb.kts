@@ -76,11 +76,6 @@ fun forceObPlayer(
     operator: Player? = null,
     directOwnerUid: String? = null,
     sourceOverride: String? = null,
-    // 可选：显式到期时刻（毫秒）。系统类限制（如 idleBreakGuard）没有 operator，
-    // 原先会走 forceObExpireAt.remove → 永不到期，玩家在解除检查前离线就会卡在观战。
-    // 传了这个值后由 releaseExpiredForceOb / AssignTeamEvent 负责到期自动解除。
-    // 代码级回退：把 applyScheduledExpire 改成 false，即忽略本参数、回到旧行为。
-    expireAtMillis: Long? = null,
 ) {
     val source = sourceOverride ?: when {
         directOwnerUid != null -> "direct"
@@ -104,15 +99,11 @@ fun forceObPlayer(
     }
 
     // 非管理员层级施加的强制观战没有时长参数 → 按“带时间惩罚”补 24h 到期（用户口径 Q3）。
+    // 经维护者决定，这算是刻意的撤回：系统类限制（无 operator）不设兜底到期时间，
+    // 曾尝试的「过期自动解除 + 离线清理」已移除，不要再加回来。
     val cappedMinutes = with(playerMute) { nonAdminMaxPunishMinutesValue() }
     val nonAdminApplied = operator != null && !with(playerMute) { isAdminTierLevel(operatorLevel) }
-    val byOperator = if (nonAdminApplied) System.currentTimeMillis() + cappedMinutes * 60_000L else null
-
-    // 代码级回退开关：改为 false 即完全忽略 expireAtMillis，恢复「系统类限制永不到期」的旧行为。
-    val applyScheduledExpire = true
-    val scheduled = if (applyScheduledExpire) expireAtMillis else null
-    // 显式到期时间优先；它只影响「到期自动解除」，不影响限制本身。
-    val untilMillis = scheduled ?: byOperator
+    val untilMillis = if (nonAdminApplied) System.currentTimeMillis() + cappedMinutes * 60_000L else null
 
     applyForceObRecord(target, reason, source, operatorUid, untilMillis)
     teams.changeTeam(target, teams.spectateTeam)
@@ -227,57 +218,6 @@ private fun releaseExpiredForceOb() {
             )
         }
     }
-}
-
-/**
- * 到期清理：玩家**不在线**时直接删除 uid 记录，避免死记录长期留在内存与持久化文件里。
- *
- * 只清 `forceObExpireAt` 里有的 uid —— 管理员手动施加的限制没有到期时间，
- * 不在该表中，必须原样保留（由人工/检举解除）。
- *
- * 代码级回退：把 offlineExpireCleanupEnabled 改成 false 即关闭本清理。
- */
-private fun releaseExpiredOfflineForceOb() {
-    val offlineExpireCleanupEnabled = true
-    if (!offlineExpireCleanupEnabled) return
-    if (forceObExpireAt.isEmpty()) return
-    val now = System.currentTimeMillis()
-    val expired = forceObExpireAt.filterValues { it <= now }.keys
-    if (expired.isEmpty()) return
-
-    // 在线玩家的所有 profile id 都要排除（同一玩家可能有多条记录）
-    val onlineIds = HashSet<String>()
-    Groups.player.forEach { player ->
-        val data = PlayerData[player]
-        onlineIds.add(data.id)
-        onlineIds.add(data.uuid)
-        onlineIds.addAll(data.ids)
-    }
-
-    var removed = 0
-    expired.filter { it !in onlineIds }.forEach { uid ->
-        val had = limitPlayers.remove(uid) != null
-        forceObSources.remove(uid)
-        forceObOperatorUids.remove(uid)
-        forceObExpireAt.remove(uid)
-        if (had) removed++
-    }
-    if (removed > 0) {
-        logger.info("[强制观战] 清理 $removed 条已到期且玩家离线的记录")
-    }
-}
-
-/**
- * 延长某玩家的到期时刻（只延长已经设有到期时间的记录；管理员限制没有到期时间，不受影响）。
- * 供 idleBreakGuard 在「解除检查判定可疑、延长观战」时调用，避免兜底到期时间短于实际观察期。
- */
-fun extendForceObExpire(target: Player, expireAtMillis: Long) {
-    val now = System.currentTimeMillis()
-    PlayerData[target].ids.forEach { uid ->
-        val old = forceObExpireAt[uid] ?: return@forEach
-        if (expireAtMillis > old) forceObExpireAt[uid] = expireAtMillis
-    }
-    if (forceObExpireAt.isEmpty()) return
 }
 
 listenTo<PunishmentLiftedEvent> {
@@ -409,7 +349,6 @@ onEnable {
             delay(30_000L)
             runCatching {
                 releaseExpiredForceOb()
-                releaseExpiredOfflineForceOb()
             }.onFailure { logger.warning("清理到期强制观战失败: ${it.message}") }
         }
     }

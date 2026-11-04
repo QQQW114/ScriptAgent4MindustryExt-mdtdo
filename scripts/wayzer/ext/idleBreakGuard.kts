@@ -239,14 +239,9 @@ private fun trigger(player: Player, monitor: Monitor) {
     val count = monitor.selected.size
     if (debugLog) Log.info("[IDLEGUARD] trigger uuid=" + player.uuid() + " count=" + count)
     val reason = "疑似乱拆（批量选中拆除 $count 个建筑物）"
-    // 兜底到期时间：观察窗口 + 可能延长的一次，交给 voteOb 的到期清扫。
-    // 没有它时，玩家若在解除检查前离线（obRecords 被删），限制会永久留在 voteOb 的 uid 表里。
-    // 代码级回退：把 safetyExpireEnabled 改成 false 即回到旧行为（不设到期）。
-    val safetyExpireEnabled = true
-    val safetyExpireAt = if (safetyExpireEnabled)
-        System.currentTimeMillis() + (observerSeconds + keepObserverExtraSeconds) * 1000L
-    else null
-    with(voteOb) { forceObPlayer(player, reason, null, null, "system", safetyExpireAt) }
+    // 经维护者决定，这算是刻意的撤回：这里不给 voteOb 传兜底到期时间，
+    // 系统类强制观战依赖 obRecords 的 tickRelease 解除（离线场景由 /vote quitOb 或管理员处理）。
+    with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
     obRecords[player.uuid()] = ObRecord(
         uuid = player.uuid(),
         guest = monitor.level <= 0,
@@ -264,12 +259,7 @@ private fun releaseObserver(player: Player, reason: String) {
 
 private fun keepObserver(player: Player, rec: ObRecord, reason: String) {
     rec.until = System.currentTimeMillis() + keepObserverExtraSeconds * 1000L
-    // 同步把 voteOb 的兜底到期时间往后推，否则延长后的观察期会被兜底提前解除。
-    // 与 trigger() 同口径：从当前时刻重新计「观察窗口 + 一次延长」。
-    runCatching {
-        val safety = System.currentTimeMillis() + (observerSeconds + keepObserverExtraSeconds) * 1000L
-        with(voteOb) { extendForceObExpire(player, safety) }
-    }.onFailure { Log.err("[IDLEGUARD] failed to extend forceOb expiry.", it) }
+
     player.sendMessage("[red][监控] $reason，观战限制延长。".with())
     broadcast("[yellow][监控] [white]${player.name}[yellow] 的观战解除检查发现异常（$reason），已延长观战。".with())
 }
