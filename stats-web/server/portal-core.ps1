@@ -7,7 +7,7 @@
 $script:PortalDefaultConfigJson = @'
 {
   "_comment": "MDT DO 服务器门户配置。相对路径以 stats-web 目录为基准；修改后重启 start-web.ps1 生效。",
-  "_securityWarning": "默认管理员账号/密码与 session.secret 仅供首次启动！对外提供服务前必须修改 admin.password（或 admin.passwordHash）与 session.secret。",
+  "_securityWarning": "默认管理员账号/密码仅供首次启动！对外提供服务前必须改用 admin.passwordHash（不要保留明文 admin.password）。",
   "bind": "127.0.0.1",
   "port": 8090,
   "statsJson": "../mdtserver/config/stats/server-status.json",
@@ -18,9 +18,6 @@ $script:PortalDefaultConfigJson = @'
     "password": "ChangeMe_123456",
     "passwordHash": "",
     "sessionHours": 12
-  },
-  "session": {
-    "secret": "CHANGE_ME_portal_session_secret_please_edit"
   },
   "upload": {
     "maxFileBytes": 10485760,
@@ -37,6 +34,13 @@ $script:PortalDefaultConfigJson = @'
   "rateLimit": {
     "loginFailuresPerWindow": 5,
     "loginWindowMinutes": 5,
+    "loginBackoffBaseSeconds": 1,
+    "loginBackoffMaxSeconds": 300,
+    "loginBackoffResetMinutes": 30,
+    "globalFailuresPerHour": 40,
+    "globalSlowModeRetrySeconds": 5,
+    "loginMinIntervalMs": 120,
+    "ipHardLockFailures": 0,
     "uploadsPerWindow": 5,
     "uploadWindowMinutes": 10
   },
@@ -82,18 +86,38 @@ $script:PortalDefaultConfigJson = @'
   },
   "security": {
     "trustProxyHeaders": false,
-    "maxPendingConsoleCommands": 8
+    "trustedProxies": [],
+    "maxPendingConsoleCommands": 8,
+    "requestReadTimeoutSeconds": 30,
+    "minReadBytesPerSecond": 2048,
+    "readStallTimeoutMs": 200,
+    "readStallBudgetMs": 400,
+    "readStallWindowMs": 1000,
+    "maxConcurrentUploads": 1,
+    "maxConcurrentLogins": 1
   }
 }
 '@
 
 $script:PortalDefaultAdminPassword = "ChangeMe_123456"
-$script:PortalDefaultSessionSecret = "CHANGE_ME_portal_session_secret_please_edit"
 $script:PortalSessions = New-Object 'System.Collections.Hashtable'
 $script:PortalLoginFailures = New-Object 'System.Collections.Hashtable'
 $script:PortalUploadRates = New-Object 'System.Collections.Hashtable'
 $script:PortalLogRates = New-Object 'System.Collections.Hashtable'
 $script:PortalHistoryRates = New-Object 'System.Collections.Hashtable'
+# H-1 强化：单线程串行下「并发计数器」没有意义（同一时刻只有一个 handler 在跑），
+# 真正需要的是「全局停滞预算」：把每秒允许花在「等对端发数据」上的时间封顶，
+# 这样 4 个慢速连接也无法把后续请求拖过 ~400ms（见 Read-PortalRequestBody）。
+$script:PortalReadStallUsedMs = 0
+$script:PortalReadWindowStart = 0
+
+# ---- 第 2 轮登录节流：全部内存态、无阻塞、无定时器（设计：蓝队-第2轮设计-登录节流.md）----
+# per-account 指数退避：key=用户名小写截断 128 -> @{ fails; nextAllowedAt; lastFailAt }
+$script:PortalLoginBackoff = New-Object 'System.Collections.Hashtable'
+# 全局失败预算：只存最近 globalFailuresPerHour+1 条失败时间戳（ms，升序）
+$script:PortalLoginGlobalFailures = New-Object System.Collections.ArrayList
+# 全局慢速令牌桶的下次放行时刻（ms）
+$script:PortalLoginGlobalGateAt = 0L
 # 下载是「先发响应头、后分块输出」的延迟完成模式；该标记表示当前请求的响应已由分块泵接管，
 # 请求异常处理时不要再去写 JSON 错误体（否则会破坏已开始的流）。
 $script:PortalResponseDeferred = $false
@@ -342,10 +366,14 @@ function Get-PortalSafeLeafName {
     $leaf = $leaf.Trim()
     if ([string]::IsNullOrWhiteSpace($leaf)) { return "" }
     if ($leaf -eq "." -or $leaf -eq "..") { return "" }
+    # 拒绝会改变路径/流语义或无法在 Windows 上正常落盘的字符（fail-closed，返回空串由调用方回 400）。
+    # `:` 在 NTFS 上是备用数据流（ADS）分隔符；`"` `<` `>` `|` `?` `*` 是 Windows 非法文件名字符。
     $sb = New-Object System.Text.StringBuilder
     foreach ($ch in $leaf.ToCharArray()) {
         $code = [int][char]$ch
         if ($code -lt 32 -or $code -eq 127) { continue }
+        if ($ch -eq '"' -or $ch -eq '|' -or $ch -eq '<' -or $ch -eq '>' -or
+            $ch -eq '?' -or $ch -eq '*' -or $ch -eq ':') { return "" }
         [void]$sb.Append($ch)
     }
     $leaf = $sb.ToString().Trim().TrimEnd('.').Trim()
@@ -359,7 +387,22 @@ function Get-PortalSafeLeafName {
         if ($base.Length -gt $keep) { $base = $base.Substring(0, $keep) }
         $leaf = $base + $ext
     }
+    if (Test-PortalReservedFileName -FileName $leaf) { return "" }
     return $leaf
+}
+
+function Test-PortalReservedFileName {
+    # Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9（含带扩展名与尾部空格/点的写法）。
+    param([string]$FileName)
+    $n = ([string]$FileName).Trim().TrimEnd('.').Trim()
+    if ($n -eq "") { return $false }
+    $base = $n
+    $dot = $base.IndexOf('.')
+    if ($dot -ge 0) { $base = $base.Substring(0, $dot) }
+    $base = $base.Trim().ToUpperInvariant()
+    if ($base -eq "CON" -or $base -eq "PRN" -or $base -eq "AUX" -or $base -eq "NUL") { return $true }
+    if ($base -match '^COM[1-9]$' -or $base -match '^LPT[1-9]$') { return $true }
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -441,6 +484,24 @@ function Test-PortalAdminPassword {
 # 会话（内存态；允许同一账号多 IP 多会话）
 # ---------------------------------------------------------------------------
 
+function Get-PortalAdminCredentialFingerprint {
+    # 当前管理员凭据的指纹。会话里存一份，校验时比对：
+    # 密码哈希/明文一旦变化（改密、改配置后重载），旧会话立刻失效（B-08）。
+    param([System.Collections.IDictionary]$Config)
+    $material = ""
+    try {
+        if ($null -ne $Config -and $null -ne $Config.admin) {
+            $hash = Get-PortalString $Config.admin.passwordHash ""
+            if ($hash -ne "") { $material = "hash:" + $hash }
+            else { $material = "plain:" + (Get-PortalString $Config.admin.password "") }
+        }
+    } catch { $material = "" }
+    if ($material -eq "") { return "" }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash((Get-PortalUtf8NoBom).GetBytes($material)) } finally { $sha.Dispose() }
+    return ((($bytes | ForEach-Object { $_.ToString("x2") }) -join "").Substring(0, 32))
+}
+
 function New-PortalSession {
     param([System.Collections.IDictionary]$Config, [string]$Username, [string]$ClientIp)
     $now = Get-PortalNowMillis
@@ -452,6 +513,7 @@ function New-PortalSession {
         createdAt = $now
         expiresAt = $now + ([long]$hours * 3600000L)
         createdIp = $ClientIp
+        credFp    = (Get-PortalAdminCredentialFingerprint -Config $Config)
     }
     # 顺手清理过期会话，避免长期运行内存增长。
     $expired = @()
@@ -474,6 +536,13 @@ function Get-PortalSession {
         $script:PortalSessions.Remove($Token)
         return $null
     }
+    # 凭据指纹不匹配 = 管理员改过密码/哈希 → 旧会话立即作废（B-08）。
+    $currentFp = Get-PortalAdminCredentialFingerprint -Config $Config
+    $sessionFp = Get-PortalString $session.credFp ""
+    if ($currentFp -ne "" -and $sessionFp -ne "" -and $currentFp -ne $sessionFp) {
+        $script:PortalSessions.Remove($Token)
+        return $null
+    }
     return $session
 }
 
@@ -486,12 +555,94 @@ function Remove-PortalSession {
     return $false
 }
 
+function Remove-PortalSessionsAll {
+    # 登出全部 / 改密后强制下线。
+    param([string]$ExceptToken = "")
+    $removed = 0
+    foreach ($k in @($script:PortalSessions.Keys)) {
+        if ($ExceptToken -ne "" -and $k -eq $ExceptToken) { continue }
+        $script:PortalSessions.Remove($k)
+        $removed++
+    }
+    return $removed
+}
+
 # ---------------------------------------------------------------------------
-# 限频（内存态：登录失败按 IP、上传按 IP）
+# 客户端 IP 与限频键（L-2/B-02：IPv6 归一 /64；XFF 只采信受信代理，见 portal-http.ps1）
 # ---------------------------------------------------------------------------
+
+function Get-PortalIpBytes {
+    param($Address)
+    if ($null -eq $Address) { return $null }
+    try {
+        if ($Address.IsIPv4MappedToIPv6) { $Address = $Address.MapToIPv4() }
+        return $Address.GetAddressBytes()
+    } catch { return $null }
+}
+
+function Test-PortalIpInCidr {
+    # 支持精确 IP 或 "ip/prefix"（IPv4 / IPv6）。解析失败一律不匹配（fail-closed）。
+    param([string]$Ip, [string]$Rule)
+    $r = ([string]$Rule).Trim()
+    if ($r -eq "" -or [string]::IsNullOrWhiteSpace($Ip)) { return $false }
+    $ipAddr = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse(([string]$Ip).Trim(), [ref]$ipAddr)) { return $false }
+    $slash = $r.IndexOf('/')
+    $netText = if ($slash -ge 0) { $r.Substring(0, $slash) } else { $r }
+    $netAddr = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($netText.Trim(), [ref]$netAddr)) { return $false }
+    $ipBytes = Get-PortalIpBytes $ipAddr
+    $netBytes = Get-PortalIpBytes $netAddr
+    if ($null -eq $ipBytes -or $null -eq $netBytes) { return $false }
+    if ($ipBytes.Length -ne $netBytes.Length) { return $false }
+    $bits = $ipBytes.Length * 8
+    $prefix = $bits
+    if ($slash -ge 0) {
+        $p = 0
+        if (-not [int]::TryParse($r.Substring($slash + 1).Trim(), [ref]$p)) { return $false }
+        if ($p -lt 0 -or $p -gt $bits) { return $false }
+        $prefix = $p
+    }
+    $full = [int][Math]::Floor($prefix / 8)
+    for ($i = 0; $i -lt $full; $i++) {
+        if ($ipBytes[$i] -ne $netBytes[$i]) { return $false }
+    }
+    $rem = $prefix % 8
+    if ($rem -gt 0) {
+        $mask = (0xFF -shl (8 - $rem)) -band 0xFF
+        if (($ipBytes[$full] -band $mask) -ne ($netBytes[$full] -band $mask)) { return $false }
+    }
+    return $true
+}
+
+function Get-PortalRateKeyForIp {
+    # IPv6 归一到 /64：单个 /64 内有 2^64 个地址，逐地址计数等于没有计数。
+    param([string]$Ip)
+    $text = ([string]$Ip).Trim()
+    if ($text -eq "") { return "" }
+    $addr = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($text, [ref]$addr)) { return $text }
+    if ($addr.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6 -and -not $addr.IsIPv4MappedToIPv6) {
+        $b = $addr.GetAddressBytes()
+        for ($i = 8; $i -lt 16; $i++) { $b[$i] = 0 }
+        return ([System.Net.IPAddress]::new($b)).ToString() + "/64"
+    }
+    return $text
+}
+
+# ---------------------------------------------------------------------------
+# 限频（内存态：登录失败按 IP + 按用户名、上传按 IP）
+# ---------------------------------------------------------------------------
+
+function Limit-PortalRateTable {
+    # 限频表 key 只增不减，加硬上限防内存放大（伪造来源 IP 时尤其重要）。
+    param([System.Collections.Hashtable]$Table, [int]$MaxKeys = 5000)
+    try { if ($Table.Count -gt $MaxKeys) { $Table.Clear() } } catch { }
+}
 
 function Get-PortalRatePruned {
     param([System.Collections.Hashtable]$Table, [string]$Key, [int]$WindowMinutes)
+    Limit-PortalRateTable -Table $Table
     $cutoff = (Get-PortalNowMillis) - ([long][Math]::Max(1, $WindowMinutes) * 60000L)
     $list = $null
     if ($Table.ContainsKey($Key)) { $list = $Table[$Key] }
@@ -505,42 +656,187 @@ function Get-PortalRatePruned {
     return ,$kept
 }
 
+function Get-PortalLoginBackoffKey {
+    # 单账号部署：键只按用户名（不含 IP）。若加 (user,IP) 子键，等于给攻击者「换 IP 即清零」的开关。
+    param([string]$UserName)
+    $key = ([string]$UserName).Trim().ToLowerInvariant()
+    if ($key -eq "") { return "" }
+    if ($key.Length -gt 128) { $key = $key.Substring(0, 128) }
+    return $key
+}
+
+function Get-PortalLoginBackoffEntry {
+    param([System.Collections.IDictionary]$Config, [string]$Key, [long]$Now)
+    if ($Key -eq "") { return $null }
+    $resetMin = Get-PortalInt $Config.rateLimit.loginBackoffResetMinutes 30 1 1440
+    $entry = $null
+    if ($script:PortalLoginBackoff.ContainsKey($Key)) { $entry = $script:PortalLoginBackoff[$Key] }
+    if ($null -eq $entry) { $entry = @{ fails = 0; nextAllowedAt = 0L; lastFailAt = 0L } }
+    # 陈旧清理：很久没有新失败 → 忘记历史（自然「解锁」，不需要任何后台任务）
+    if ([long]$entry.lastFailAt -gt 0 -and ($Now - [long]$entry.lastFailAt) -gt ([long]$resetMin * 60000L)) {
+        $entry = @{ fails = 0; nextAllowedAt = 0L; lastFailAt = 0L }
+    }
+    return $entry
+}
+
+function Limit-PortalBackoffTable {
+    # 退避表基数控制：随机用户名洪水不能把内存撑爆。
+    param([System.Collections.Hashtable]$Table, [int]$MaxKeys = 512)
+    try {
+        if ($Table.Count -le $MaxKeys) { return }
+        $cutoff = (Get-PortalNowMillis) - 86400000L
+        $dead = @()
+        foreach ($k in @($Table.Keys)) {
+            $e = $Table[$k]
+            if ($null -eq $e -or [long]$e.lastFailAt -lt $cutoff) { $dead += $k }
+        }
+        foreach ($k in $dead) { $Table.Remove($k) }
+        if ($Table.Count -gt $MaxKeys) { $Table.Clear() }
+    } catch { }
+}
+
+function Test-PortalLoginBackoff {
+    # 无阻塞：只比较时间戳，返回 @{ blocked; retryAfter; fails }。
+    param([System.Collections.IDictionary]$Config, [string]$UserName, [long]$Now = 0)
+    if ($Now -le 0) { $Now = Get-PortalNowMillis }
+    $key = Get-PortalLoginBackoffKey -UserName $UserName
+    $entry = Get-PortalLoginBackoffEntry -Config $Config -Key $key -Now $Now
+    if ($null -eq $entry -or [int]$entry.fails -le 0 -or [long]$entry.nextAllowedAt -le 0) {
+        return @{ blocked = $false; retryAfter = 0; fails = 0 }
+    }
+    if ($Now -ge [long]$entry.nextAllowedAt) {
+        return @{ blocked = $false; retryAfter = 0; fails = [int]$entry.fails }
+    }
+    $wait = [int][Math]::Ceiling(([long]$entry.nextAllowedAt - $Now) / 1000.0)
+    if ($wait -lt 1) { $wait = 1 }
+    return @{ blocked = $true; retryAfter = $wait; fails = [int]$entry.fails }
+}
+
+function Add-PortalLoginBackoff {
+    # 失败 +1 并按指数设置下一次放行时刻；第 1 次失败不延迟（delay(n)=min(base*2^(n-1), max)，n>=2）。
+    param([System.Collections.IDictionary]$Config, [string]$UserName, [long]$Now = 0)
+    if ($Now -le 0) { $Now = Get-PortalNowMillis }
+    $key = Get-PortalLoginBackoffKey -UserName $UserName
+    if ($key -eq "") { return }
+    $entry = Get-PortalLoginBackoffEntry -Config $Config -Key $key -Now $Now
+    $entry.fails = [int]$entry.fails + 1
+    $entry.lastFailAt = $Now
+    if ([int]$entry.fails -ge 2) {
+        $base = Get-PortalInt $Config.rateLimit.loginBackoffBaseSeconds 1 1 60
+        $max = Get-PortalInt $Config.rateLimit.loginBackoffMaxSeconds 300 1 86400
+        $pow = [Math]::Min([int]$entry.fails - 1, 20)   # 防 2^1000 溢出
+        $delay = [double]$base * [Math]::Pow(2, $pow)
+        if ($delay -gt [double]$max) { $delay = [double]$max }
+        $entry.nextAllowedAt = $Now + [long]([Math]::Round($delay * 1000.0))
+    }
+    $script:PortalLoginBackoff[$key] = $entry
+    Limit-PortalBackoffTable -Table $script:PortalLoginBackoff
+}
+
+function Reset-PortalLoginBackoff {
+    param([string]$UserName)
+    $key = Get-PortalLoginBackoffKey -UserName $UserName
+    if ($key -ne "" -and $script:PortalLoginBackoff.ContainsKey($key)) { $script:PortalLoginBackoff.Remove($key) }
+}
+
+function Prune-PortalGlobalLoginFailures {
+    param([long]$Now, [long]$WindowMs = 3600000L)
+    $cutoff = $Now - $WindowMs
+    while ($script:PortalLoginGlobalFailures.Count -gt 0 -and [long]$script:PortalLoginGlobalFailures[0] -le $cutoff) {
+        $script:PortalLoginGlobalFailures.RemoveAt(0)
+    }
+}
+
+function Get-PortalGlobalLoginGate {
+    # 全局登录节奏闸门（无阻塞）。两种速率：
+    #   - 常态：每次尝试最少间隔 loginMinIntervalMs（默认 120ms）。R2-2 改成「先验密码」后
+    #     PBKDF2 每次尝试都要跑，这个下限把 CPU 放大压到约 8 次/秒；
+    #   - 慢速：全局失败 ≥ 阈值后，间隔放大到 globalSlowModeRetrySeconds（默认 5s）。
+    # 返回 @{ slow; throttled; retryAfter }；retryAfter>0 表示本次必须 429。
+    param([System.Collections.IDictionary]$Config, [long]$Now = 0)
+    if ($Now -le 0) { $Now = Get-PortalNowMillis }
+    $limit = Get-PortalInt $Config.rateLimit.globalFailuresPerHour 40 5 100000
+    Prune-PortalGlobalLoginFailures -Now $Now -WindowMs 3600000L
+    $slow = ($script:PortalLoginGlobalFailures.Count -ge $limit)
+    $intervalMs = [long](Get-PortalInt $Config.rateLimit.loginMinIntervalMs 120 0 60000)
+    if ($slow) {
+        $retrySec = [Math]::Max(1, (Get-PortalInt $Config.rateLimit.globalSlowModeRetrySeconds 5 1 120))
+        $intervalMs = [long]$retrySec * 1000L
+    }
+    $gateAt = [long]$script:PortalLoginGlobalGateAt
+    if ($intervalMs -gt 0 -and $Now -lt $gateAt) {
+        $wait = [int][Math]::Ceiling(($gateAt - $Now) / 1000.0)
+        if ($wait -lt 1) { $wait = 1 }
+        return @{ slow = $slow; throttled = $true; retryAfter = $wait }
+    }
+    if ($intervalMs -gt 0) { $script:PortalLoginGlobalGateAt = $Now + $intervalMs }
+    return @{ slow = $slow; throttled = $false; retryAfter = 0 }
+}
+
+function Add-PortalGlobalLoginFailure {
+    param([System.Collections.IDictionary]$Config, [long]$Now = 0)
+    if ($Now -le 0) { $Now = Get-PortalNowMillis }
+    $limit = Get-PortalInt $Config.rateLimit.globalFailuresPerHour 40 5 100000
+    # 只保留 limit+1 条：够判断「是否 ≥ 阈值」，多存无意义（内存上界固定）。
+    if ($script:PortalLoginGlobalFailures.Count -le $limit) {
+        [void]$script:PortalLoginGlobalFailures.Add($Now)
+    }
+}
+
 function Test-PortalLoginBlocked {
+    # per-IP 硬锁：第 2 轮起默认关闭（rateLimit.ipHardLockFailures=0），
+    # 避免「攻击者与管理员同 NAT 时，5 次失败就能锁死管理员出口 IP 5 分钟」这个 DoS 面。
     param([System.Collections.IDictionary]$Config, [string]$ClientIp)
-    $limit = Get-PortalInt $Config.rateLimit.loginFailuresPerWindow 5 1 1000
+    $limit = Get-PortalInt $Config.rateLimit.ipHardLockFailures 0 0 10000
+    if ($limit -le 0) { return $false }
     $window = Get-PortalInt $Config.rateLimit.loginWindowMinutes 5 1 1440
-    $list = Get-PortalRatePruned -Table $script:PortalLoginFailures -Key $ClientIp -WindowMinutes $window
+    $key = Get-PortalRateKeyForIp $ClientIp
+    $list = Get-PortalRatePruned -Table $script:PortalLoginFailures -Key $key -WindowMinutes $window
     return ($list.Count -ge $limit)
 }
 
 function Add-PortalLoginFailure {
     param([System.Collections.IDictionary]$Config, [string]$ClientIp)
     $window = Get-PortalInt $Config.rateLimit.loginWindowMinutes 5 1 1440
-    $list = Get-PortalRatePruned -Table $script:PortalLoginFailures -Key $ClientIp -WindowMinutes $window
+    $key = Get-PortalRateKeyForIp $ClientIp
+    $list = Get-PortalRatePruned -Table $script:PortalLoginFailures -Key $key -WindowMinutes $window
     [void]$list.Add((Get-PortalNowMillis))
-    $script:PortalLoginFailures[$ClientIp] = $list
+    $script:PortalLoginFailures[$key] = $list
 }
 
 function Reset-PortalLoginFailures {
     param([string]$ClientIp)
-    if ($script:PortalLoginFailures.ContainsKey($ClientIp)) { $script:PortalLoginFailures.Remove($ClientIp) }
+    $key = Get-PortalRateKeyForIp $ClientIp
+    if ($script:PortalLoginFailures.ContainsKey($key)) { $script:PortalLoginFailures.Remove($key) }
+}
+
+function Add-PortalRateHit {
+    # 真正的「记一次」入口（R2-6）：只有成功进入业务并完成的请求才调用它。
+    param([System.Collections.Hashtable]$Table, [string]$Key, [int]$WindowMinutes)
+    $windowSafe = [Math]::Max(1, $WindowMinutes)
+    $list = Get-PortalRatePruned -Table $Table -Key $Key -WindowMinutes $windowSafe
+    [void]$list.Add((Get-PortalNowMillis))
+    $Table[$Key] = $list
 }
 
 function Test-PortalUploadAllowed {
+    # R2-6：只做检查、不消耗配额；真正计数在业务成功之后调用 Add-PortalUploadHit。
     param([System.Collections.IDictionary]$Config, [string]$ClientIp)
     $limit = Get-PortalInt $Config.rateLimit.uploadsPerWindow 5 1 1000
     $window = Get-PortalInt $Config.rateLimit.uploadWindowMinutes 10 1 1440
-    $list = Get-PortalRatePruned -Table $script:PortalUploadRates -Key $ClientIp -WindowMinutes $window
-    if ($list.Count -ge $limit) { return $false }
-    [void]$list.Add((Get-PortalNowMillis))
-    $script:PortalUploadRates[$ClientIp] = $list
-    return $true
+    $r = Test-PortalRateAllowed -Table $script:PortalUploadRates -Key (Get-PortalRateKeyForIp $ClientIp) -Limit $limit -WindowMinutes $window -CheckOnly
+    return [bool]$r.allowed
+}
+
+function Add-PortalUploadHit {
+    param([System.Collections.IDictionary]$Config, [string]$ClientIp)
+    Add-PortalRateHit -Table $script:PortalUploadRates -Key (Get-PortalRateKeyForIp $ClientIp) `
+        -WindowMinutes (Get-PortalInt $Config.rateLimit.uploadWindowMinutes 10 1 1440)
 }
 
 function Test-PortalRateAllowed {
-    # 通用「每 IP N 次 / M 分钟」限频：允许时记一次并返回 true；超限返回 false（不记录）。
-    # 返回 @{ allowed; used; limit; retryAfterSeconds }，便于调用方设置 Retry-After。
-    param([System.Collections.Hashtable]$Table, [string]$Key, [int]$Limit, [int]$WindowMinutes)
+    # 通用「每 IP N 次 / M 分钟」限频。默认「检查即计数」；-CheckOnly 只检查不计数（R2-6）。
+    param([System.Collections.Hashtable]$Table, [string]$Key, [int]$Limit, [int]$WindowMinutes, [switch]$CheckOnly)
     $limitSafe = [Math]::Max(1, $Limit)
     $windowSafe = [Math]::Max(1, $WindowMinutes)
     $list = Get-PortalRatePruned -Table $Table -Key $Key -WindowMinutes $windowSafe
@@ -549,6 +845,9 @@ function Test-PortalRateAllowed {
         $retryAfter = [int][Math]::Ceiling((($oldest + ([long]$windowSafe * 60000L)) - (Get-PortalNowMillis)) / 1000.0)
         if ($retryAfter -lt 1) { $retryAfter = 1 }
         return @{ allowed = $false; used = $list.Count; limit = $limitSafe; retryAfterSeconds = $retryAfter }
+    }
+    if ($CheckOnly) {
+        return @{ allowed = $true; used = ($list.Count + 1); limit = $limitSafe; retryAfterSeconds = 0 }
     }
     [void]$list.Add((Get-PortalNowMillis))
     $Table[$Key] = $list
@@ -559,13 +858,24 @@ function Test-PortalLogAccessAllowed {
     param([System.Collections.IDictionary]$Config, [string]$ClientIp)
     $limit = Get-PortalInt $Config.logs.rateLimitPerWindow 5 1 10000
     $window = Get-PortalInt $Config.logs.rateWindowMinutes 5 1 1440
-    return (Test-PortalRateAllowed -Table $script:PortalLogRates -Key $ClientIp -Limit $limit -WindowMinutes $window)
+    return (Test-PortalRateAllowed -Table $script:PortalLogRates -Key (Get-PortalRateKeyForIp $ClientIp) -Limit $limit -WindowMinutes $window -CheckOnly)
+}
+
+function Add-PortalLogHit {
+    param([System.Collections.IDictionary]$Config, [string]$ClientIp)
+    Add-PortalRateHit -Table $script:PortalLogRates -Key (Get-PortalRateKeyForIp $ClientIp) `
+        -WindowMinutes (Get-PortalInt $Config.logs.rateWindowMinutes 5 1 1440)
 }
 
 function Test-PortalHistoryAllowed {
     param([System.Collections.IDictionary]$Config, [string]$ClientIp)
     $limit = Get-PortalInt $Config.events.historyRateLimitPerMinute 60 1 100000
-    return (Test-PortalRateAllowed -Table $script:PortalHistoryRates -Key $ClientIp -Limit $limit -WindowMinutes 1)
+    return (Test-PortalRateAllowed -Table $script:PortalHistoryRates -Key (Get-PortalRateKeyForIp $ClientIp) -Limit $limit -WindowMinutes 1 -CheckOnly)
+}
+
+function Add-PortalHistoryHit {
+    param([System.Collections.IDictionary]$Config, [string]$ClientIp)
+    Add-PortalRateHit -Table $script:PortalHistoryRates -Key (Get-PortalRateKeyForIp $ClientIp) -WindowMinutes 1
 }
 
 # ---------------------------------------------------------------------------
@@ -683,6 +993,16 @@ function Initialize-PortalConfig {
     if ($null -eq $Config.rateLimit) { $Config.rateLimit = [ordered]@{} }
     $Config.rateLimit.loginFailuresPerWindow = Get-PortalInt $Config.rateLimit.loginFailuresPerWindow 5 1 1000
     $Config.rateLimit.loginWindowMinutes = Get-PortalInt $Config.rateLimit.loginWindowMinutes 5 1 1440
+    # ---- 第 2 轮登录节流（无阻塞：退避 + 全局预算 + 令牌桶）----
+    $Config.rateLimit.loginBackoffBaseSeconds = Get-PortalInt $Config.rateLimit.loginBackoffBaseSeconds 1 1 60
+    $Config.rateLimit.loginBackoffMaxSeconds = Get-PortalInt $Config.rateLimit.loginBackoffMaxSeconds 300 1 86400
+    $Config.rateLimit.loginBackoffResetMinutes = Get-PortalInt $Config.rateLimit.loginBackoffResetMinutes 30 1 1440
+    $Config.rateLimit.globalFailuresPerHour = Get-PortalInt $Config.rateLimit.globalFailuresPerHour 40 5 100000
+    $Config.rateLimit.globalSlowModeRetrySeconds = Get-PortalInt $Config.rateLimit.globalSlowModeRetrySeconds 5 1 120
+    # 常态登录最小间隔（R2-2 改成「先验密码」后，用它把 PBKDF2 的 CPU 放大压到 ~8 次/秒）
+    $Config.rateLimit.loginMinIntervalMs = Get-PortalInt $Config.rateLimit.loginMinIntervalMs 120 0 60000
+    # 0 = 关闭 per-IP 硬锁（默认；只保留计数用于观测）
+    $Config.rateLimit.ipHardLockFailures = Get-PortalInt $Config.rateLimit.ipHardLockFailures 0 0 10000
     $Config.rateLimit.uploadsPerWindow = Get-PortalInt $Config.rateLimit.uploadsPerWindow 5 1 1000
     $Config.rateLimit.uploadWindowMinutes = Get-PortalInt $Config.rateLimit.uploadWindowMinutes 10 1 1440
 
@@ -728,9 +1048,18 @@ function Initialize-PortalConfig {
 
     if ($null -eq $Config.security) { $Config.security = [ordered]@{} }
     $Config.security.maxPendingConsoleCommands = Get-PortalInt $Config.security.maxPendingConsoleCommands 8 1 64
-
-    if ($null -eq $Config.session) { $Config.session = [ordered]@{} }
-    $Config.session.secret = Get-PortalString $Config.session.secret $script:PortalDefaultSessionSecret
+    # 受信反代白名单：只有 RemoteEndPoint 命中这里才采信 X-Forwarded-For（L-2/B-02）。
+    $Config.security.trustedProxies = Get-PortalStringList $Config.security.trustedProxies @()
+    # 请求体读取总超时与最低速率（H-1：「声明 Content-Length 却不发数据」必须能被掐断）。
+    $Config.security.requestReadTimeoutSeconds = Get-PortalInt $Config.security.requestReadTimeoutSeconds 30 5 300
+    $Config.security.minReadBytesPerSecond = Get-PortalInt $Config.security.minReadBytesPerSecond 2048 256 1048576
+    # 单次读停滞上限与「每秒停滞预算」（R1-A：4 并发慢连接不能把后续请求拖过 ~400ms）
+    $Config.security.readStallTimeoutMs = Get-PortalInt $Config.security.readStallTimeoutMs 200 50 5000
+    $Config.security.readStallBudgetMs = Get-PortalInt $Config.security.readStallBudgetMs 400 0 60000
+    $Config.security.readStallWindowMs = Get-PortalInt $Config.security.readStallWindowMs 1000 100 60000
+    # 重活并发闸门（单线程主循环下，同时在途的上传/登录各限 1）。
+    $Config.security.maxConcurrentUploads = Get-PortalInt $Config.security.maxConcurrentUploads 1 1 8
+    $Config.security.maxConcurrentLogins = Get-PortalInt $Config.security.maxConcurrentLogins 1 1 8
 
     $Config.bind = Get-PortalString $Config.bind "127.0.0.1"
     $Config.port = Get-PortalInt $Config.port 8090 1 65535
@@ -860,7 +1189,7 @@ function Invoke-PortalLegacyConfigMigration {
         "_comment"         = "本文件由旧版 web-config.ps1 自动迁移生成。相对路径以 stats-web 目录为基准；修改后重启 start-web.ps1 生效。"
         "_migratedFrom"    = "web-config.ps1"
         "_migratedAt"      = Get-PortalNowText
-        "_securityWarning" = "自动迁移生成：管理员账号/密码仍是默认值（admin / ChangeMe_123456），请立即修改 admin.password（或改用 admin.passwordHash），并修改 session.secret 后再对外提供服务。"
+        "_securityWarning" = "自动迁移生成：管理员账号/密码仍是默认值（admin / ChangeMe_123456），请立即改用 admin.passwordHash 后再对外提供服务。"
         "bind"             = [string]$values.bind
         "port"             = [int]$values.port
     }

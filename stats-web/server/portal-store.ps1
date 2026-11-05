@@ -102,16 +102,47 @@ function New-PortalSubmissionId {
 
 function Save-PortalUploadedPayload {
     # 把上传字节写入隔离暂存目录 web-data/uploads/<id>/<安全文件名>；返回相对 dataDir 的路径。
-    param([System.Collections.IDictionary]$Config, [string]$Id, [string]$FileName, [byte[]]$Bytes)
+    # M-4：接受 (Body, Offset, Count) 引用，分块流式写入 + 增量哈希，不再复制整份文件字节。
+    param(
+        [System.Collections.IDictionary]$Config,
+        [string]$Id,
+        [string]$FileName,
+        [byte[]]$Body,
+        [int]$Offset = 0,
+        [int]$Count = -1
+    )
     $leaf = Get-PortalSafeLeafName -RawName $FileName
-    if ($leaf -eq "") { throw "非法文件名" }
+    if ($leaf -eq "") { throw "BAD_FILENAME" }
+    if ($null -eq $Body) { throw "EMPTY_BODY" }
+    if ($Count -lt 0) { $Count = $Body.Length - $Offset }
+    if ($Count -le 0 -or $Offset -lt 0 -or ($Offset + $Count) -gt $Body.Length) { throw "EMPTY_BODY" }
     $dir = Join-Path $Config.uploadsDirPath $Id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $full = Join-Path $dir $leaf
-    if (-not (Test-PortalPathInside -ChildPath $full -ParentDir $Config.uploadsDirPath)) { throw "非法上传路径" }
-    [System.IO.File]::WriteAllBytes($full, $Bytes)
+    if (-not (Test-PortalPathInside -ChildPath $full -ParentDir $Config.uploadsDirPath)) { throw "BAD_PATH" }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $null
+    try {
+        $fs = New-Object System.IO.FileStream($full, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $chunk = 65536
+            $pos = $Offset
+            $left = $Count
+            while ($left -gt 0) {
+                $n = [Math]::Min($chunk, $left)
+                $fs.Write($Body, $pos, $n)
+                [void]$sha.TransformBlock($Body, $pos, $n, $null, 0)
+                $pos += $n
+                $left -= $n
+            }
+            $fs.Flush()
+        } finally { $fs.Dispose() }
+        [void]$sha.TransformFinalBlock($Body, 0, 0)
+        $hash = $sha.Hash
+    } finally { $sha.Dispose() }
+    $hashHex = (($hash | ForEach-Object { $_.ToString("x2") }) -join "")
     $rel = "uploads/" + $Id + "/" + $leaf
-    return @{ relPath = $rel; fullPath = $full; sha256 = (Get-PortalSha256Hex -Bytes $Bytes); size = $Bytes.Length }
+    return @{ relPath = $rel; fullPath = $full; sha256 = $hashHex; size = $Count }
 }
 
 function Add-PortalSubmission {
@@ -446,7 +477,7 @@ function Approve-PortalSubmission {
     if ($wantReload) {
         $cmd = ""
         if ($kind -eq "dp") {
-            $cmd = 'externalcp load "' + $finalName + '"'
+            $cmd = 'externalcp load "' + ([string]$finalName).Replace('"', '') + '"'
         } else {
             $cmd = "maps"
         }
@@ -560,7 +591,7 @@ function Remove-PortalItem {
     if ($Kind -eq "dp") {
         $wantUnload = $Unload -or (Get-PortalBool $Config.reload.unloadOnRemove $false)
         if ($wantUnload) {
-            $cmd = 'externalcp unload "' + $existing.Name + '"'
+            $cmd = 'externalcp unload "' + ([string]$existing.Name).Replace('"', '') + '"'
             $dispatch = Invoke-PortalConsoleCommand -Config $Config -Command $cmd
             $reload = @{ dispatched = [bool]$dispatch.dispatched; requested = $true; command = $cmd; note = [string]$dispatch.reason }
             if (-not $dispatch.dispatched) {
