@@ -56,7 +56,8 @@ function Resolve-PortalLogFile {
 
 function Get-PortalLogList {
     param([System.Collections.IDictionary]$Config, [int]$Limit = 100)
-    $result = [ordered]@{ available = $false; dir = (Get-PortalString $Config.logsDirPath ""); items = @(); count = 0 }
+    # R2-4 同类：列表接口也不回绝对路径，只给目录名。
+    $result = [ordered]@{ available = $false; dir = [System.IO.Path]::GetFileName(([string]$Config.logsDirPath).TrimEnd('\', '/')); items = @(); count = 0 }
     if (-not (Get-PortalBool $Config.logs.enabled $true)) { return $result }
     $dir = Get-PortalString $Config.logsDirPath ""
     if ($dir -eq "" -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return $result }

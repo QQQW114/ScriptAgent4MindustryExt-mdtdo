@@ -31,7 +31,7 @@ function Get-PortalEventHistoryFiles {
     if ($baseName.EndsWith(".jsonl", [System.StringComparison]::OrdinalIgnoreCase)) {
         $baseName = $baseName.Substring(0, $baseName.Length - 6)
     }
-    $maxFiles = Get-PortalInt $Config.events.historyMaxFiles 13 1 100
+    $maxFiles = Get-PortalInt $Config.events.historyMaxFiles 3 1 100
     $files = New-Object System.Collections.ArrayList
     if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
         [void]$files.Add(@{ path = $currentPath; name = $currentName; isCurrent = $true })

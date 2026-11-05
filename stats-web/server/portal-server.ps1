@@ -35,7 +35,6 @@ function Show-PortalBanner {
     param([System.Collections.IDictionary]$Config, [string]$Prefix)
     $isDefaultPassword = ((Get-PortalString $Config.admin.passwordHash "") -eq "" -and
         (Test-PortalStringEquals -A (Get-PortalString $Config.admin.password "") -B $script:PortalDefaultAdminPassword))
-    $isDefaultSecret = (Get-PortalString $Config.session.secret $script:PortalDefaultSessionSecret) -eq $script:PortalDefaultSessionSecret
 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor DarkCyan
@@ -77,9 +76,6 @@ function Show-PortalBanner {
         Write-Host "  [安全警告] 正在使用默认管理员密码！请立即修改 web-config.json 的 admin.password" -ForegroundColor Red
         Write-Host "            （或改用 admin.passwordHash，用 start-web.ps1 -GenPasswordHash 生成）。" -ForegroundColor Red
     }
-    if ($isDefaultSecret) {
-        Write-Host "  [安全警告] 正在使用默认 session.secret，建议立即改为随机字符串。" -ForegroundColor Yellow
-    }
     Write-Host ""
     Write-Host "按 Ctrl+C 停止服务。" -ForegroundColor Green
 }
@@ -95,7 +91,8 @@ function Handle-PortalRequest {
     if ($path -eq "") { $path = "/" }
 
     if ($method -eq "OPTIONS") {
-        Send-PortalResponseBytes -Context $Context -StatusCode 204 -ContentType "text/plain; charset=utf-8" -Body (New-Object byte[] 0) -Headers @{ "Allow" = "GET, POST, DELETE, OPTIONS" }
+        # L-4：本服务不提供跨域 API（同源前端），不需要预检支持 → 直接 405。
+        Send-PortalApiError -Context $Context -StatusCode 405 -Code "METHOD_NOT_ALLOWED" -Message "不支持 OPTIONS（同源服务，无 CORS 预检）"
         return
     }
 
@@ -107,7 +104,8 @@ function Handle-PortalRequest {
         }
         $statsPath = Get-PortalString $Config.statsJsonPath ""
         if ($statsPath -eq "" -or -not (Test-Path -LiteralPath $statsPath)) {
-            Send-PortalJson -Context $Context -StatusCode 404 -Object ([ordered]@{ error = "stats file not found"; path = $statsPath })
+            # M-1：404 不再回显服务器绝对路径。
+            Send-PortalJson -Context $Context -StatusCode 404 -Object ([ordered]@{ error = "stats file not found" })
             return
         }
         try {

@@ -80,9 +80,27 @@ function Handle-PortalApiStatus {
     $serverInfo = $null
     if ($available) { $serverInfo = Get-PortalProp $stats "serverInfo" $null }
     $onlineByRank = Get-PortalProp $serverInfo "onlineByRank" $null
+    # R1-D：带宽的「网卡名 + 30 点序列」属于主机指纹（interface=WLAN 能推断机器形态、
+    # 序列能看出活跃时段），未认证只返回聚合值；完整快照只在认证分支返回。
+    $netAuthed = $false
+    try {
+        $netTok = Get-PortalBearerToken -Context $Context
+        if (-not [string]::IsNullOrWhiteSpace($netTok)) {
+            if ($null -ne (Get-PortalSession -Config $Config -Token $netTok)) { $netAuthed = $true }
+        }
+    } catch { $netAuthed = $false }
     $netSnapshot = $null
     try { $netSnapshot = Get-PortalBandwidthSnapshot -Config $Config -IncludeSeries $true } catch {
         $netSnapshot = [ordered]@{ available = $false; avgUpBps = $null; windowMinutes = 0; sampledAt = $null; series = @(); error = $_.Exception.Message }
+    }
+    if (-not $netAuthed -and $null -ne $netSnapshot) {
+        $publicNet = [ordered]@{}
+        foreach ($k in @("available", "unit", "avgUpBps", "avgUpBytesPerSec", "windowMinutes", "sampledAt", "sampledAtText", "error")) {
+            $v = $null
+            try { $v = $netSnapshot.$k } catch { $v = $null }
+            if ($null -ne $v) { $publicNet[$k] = $v }
+        }
+        $netSnapshot = $publicNet
     }
     $data = [ordered]@{
         available     = $available
@@ -245,6 +263,8 @@ function Handle-PortalApiEventsHistory {
     }
     $result = Get-PortalEventHistory -Config $Config -FromTs ([long]$fromTs) -ToTs ([long]$toTs) -Type $type `
         -Keyword $keyword -Limit $limit -Cursor ([long]$cursor)
+    # R2-6：走到这里说明请求真的进入了业务（参数校验已过），才消耗每 IP 配额。
+    Add-PortalHistoryHit -Config $Config -ClientIp $ClientIp
     Send-PortalStoreResult -Context $Context -Result $result
 }
 
@@ -259,7 +279,27 @@ function Handle-PortalApiCatalog {
 }
 
 function Handle-PortalApiHealth {
+    # M-1：未认证只返回最小信息（ok / serverTime / version）；
+    # 绝对路径、管理员用户名、控制台 host:port、网卡名、会话数/队列数等
+    # 一律只在**已认证**分支返回，避免给未授权访问者做资产测绘。
     param($Context, [System.Collections.IDictionary]$Config)
+    $authed = $false
+    try {
+        $tok = Get-PortalBearerToken -Context $Context
+        if (-not [string]::IsNullOrWhiteSpace($tok)) {
+            if ($null -ne (Get-PortalSession -Config $Config -Token $tok)) { $authed = $true }
+        }
+    } catch { $authed = $false }
+
+    if (-not $authed) {
+        Send-PortalApiOk -Context $Context -Data ([ordered]@{
+            ok         = $true
+            serverTime = Get-PortalNowText
+            version    = "portal-1.1.0"
+        })
+        return
+    }
+
     $statsAvailable = $false
     if ($Config.statsJsonPath -and (Test-Path -LiteralPath $Config.statsJsonPath)) { $statsAvailable = $true }
     $eventsAvailable = $false
@@ -274,13 +314,15 @@ function Handle-PortalApiHealth {
     $historyFiles = Get-PortalEventHistoryFiles -Config $Config
     $data = [ordered]@{
         serverTime       = Get-PortalNowText
-        webRoot          = Get-PortalString $Config.webRoot ""
-        dataDir          = Get-PortalString $Config.dataDirPath ""
+        # R2-4：认证后也不再回绝对路径（盘符/部署结构），只给目录名，便于区分环境。
+        webRoot          = [System.IO.Path]::GetFileName(([string]$Config.webRoot).TrimEnd('\', '/'))
+        dataDir          = [System.IO.Path]::GetFileName(([string]$Config.dataDirPath).TrimEnd('\', '/'))
+        pathsRedacted    = $true
         statsAvailable   = $statsAvailable
         eventsAvailable  = $eventsAvailable
         eventHistoryFiles = $historyFiles.files.Count
-        dpDir            = Get-PortalString $Config.dpDirPath ""
-        mapsDir          = Get-PortalString $Config.mapsDirPath ""
+        dpDir            = [System.IO.Path]::GetFileName(([string]$Config.dpDirPath).TrimEnd('\', '/'))
+        mapsDir          = [System.IO.Path]::GetFileName(([string]$Config.mapsDirPath).TrimEnd('\', '/'))
         dpCount          = $dpCount
         mapCount         = $mapCount
         pendingDp        = (Get-PortalPendingCount -Store $store -Kind "dp")
@@ -292,7 +334,7 @@ function Handle-PortalApiHealth {
         logsEnabled      = (Get-PortalBool $Config.logs.enabled $true)
         logsAvailable    = $logsAvailable
         logsRequireLogin = (Get-PortalBool $Config.logs.requireLogin $true)
-        logsDir          = (Get-PortalString $Config.logsDirPath "")
+        logsDir          = [System.IO.Path]::GetFileName(([string]$Config.logsDirPath).TrimEnd('\', '/'))
         activeDownloads  = $script:PortalDownloadActive.Count
         maxConcurrentDownloads = (Get-PortalInt $Config.logs.maxConcurrentDownloads 2 1 16)
         bandwidthAvailable = [bool]$script:PortalBandwidth.available
@@ -382,7 +424,9 @@ function Handle-PortalApiLogsDownload {
             -RetryAfterSeconds $rate.retryAfterSeconds
         return
     }
-    [void](Start-PortalLogDownload -Context $Context -Config $Config -Name $name -ClientIp $ClientIp -Actor $access.actor)
+    $started = [bool](Start-PortalLogDownload -Context $Context -Config $Config -Name $name -ClientIp $ClientIp -Actor $access.actor)
+    # R2-6：只有真正开始下发才消耗配额；404/413 之类的失败不计数。
+    if ($started) { Add-PortalLogHit -Config $Config -ClientIp $ClientIp }
 }
 
 function Handle-PortalApiLogsTail {
@@ -421,6 +465,8 @@ function Handle-PortalApiLogsTail {
         Send-PortalApiError -Context $Context -StatusCode 500 -Code "READ_FAILED" -Message ("读取日志尾部失败：" + $tail.message)
         return
     }
+    # R2-6：成功读到日志内容才计数。
+    Add-PortalLogHit -Config $Config -ClientIp $ClientIp
     $data = [ordered]@{
         name      = [string]$file.name
         kind      = [string]$file.kind
@@ -438,32 +484,72 @@ function Handle-PortalApiLogsTail {
 
 function Handle-PortalApiLogin {
     param($Context, [System.Collections.IDictionary]$Config, [string]$ClientIp)
-    if (Test-PortalLoginBlocked -Config $Config -ClientIp $ClientIp) {
-        Send-PortalApiError -Context $Context -StatusCode 429 -Code "RATE_LIMITED" -Message "登录失败次数过多，请稍后再试"
+    $now = Get-PortalNowMillis
+    # R2-3：429 一律用同一句文案，不再通过 message/reason 暴露内部状态
+    # （是全局慢速、账号退避还是 IP 锁定，攻击者都不该知道）。
+    # 时间信息只放在 Retry-After 头 + body 的 retryAfter 字段里（前端需要它做倒计时）。
+    $throttleMessage = "登录尝试过于频繁，请稍后重试"
+    # 1) 全局节奏闸门（常态 120ms/次、慢速 5s/次；无阻塞，只比较时间戳）。
+    $gate = Get-PortalGlobalLoginGate -Config $Config -Now $now
+    if ([int]$gate.retryAfter -gt 0) {
+        Send-PortalApiErrorRetry -Context $Context -StatusCode 429 -Code "RATE_LIMITED" `
+            -Message $throttleMessage -RetryAfterSeconds ([int]$gate.retryAfter) `
+            -Extra ([ordered]@{ retryAfter = [int]$gate.retryAfter })
         return
     }
-    $body = Read-PortalRequestJson -Context $Context -MaxBytes 65536
+    # 2) per-IP 硬锁（默认关闭：rateLimit.ipHardLockFailures=0，避免同 NAT 下攻击者锁死管理员）。
+    if (Test-PortalLoginBlocked -Config $Config -ClientIp $ClientIp) {
+        $ra = [Math]::Max(1, (Get-PortalInt $Config.rateLimit.loginWindowMinutes 5 1 1440) * 60)
+        Send-PortalApiErrorRetry -Context $Context -StatusCode 429 -Code "RATE_LIMITED" `
+            -Message $throttleMessage -RetryAfterSeconds $ra `
+            -Extra ([ordered]@{ retryAfter = $ra })
+        return
+    }
+    $body = Read-PortalRequestJson -Context $Context -MaxBytes 65536 -Config $Config
     if (-not $body.ok) {
+        if ([bool]$body.timeout) {
+            Send-PortalApiError -Context $Context -StatusCode 408 -Code "REQUEST_TIMEOUT" -Message "请求读取超时"
+            return
+        }
         Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_REQUEST" -Message "请求体格式错误"
         return
     }
     $username = Get-PortalString (Get-PortalProp $body.data "username" "") ""
     $password = Get-PortalString (Get-PortalProp $body.data "password" "") ""
+    if ($username.Length -gt 128) { $username = $username.Substring(0, 128) }
+    # 缺字段的 400 不计入任何失败计数（否则 `{}` 空请求可零成本打满全局预算）。
     if ($username -eq "" -or $password -eq "") {
-        Add-PortalLoginFailure -Config $Config -ClientIp $ClientIp
         Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_REQUEST" -Message "请输入账号与密码"
         return
     }
     $adminUser = Get-PortalString $Config.admin.username "admin"
     $userOk = Test-PortalStringEquals -A $adminUser -B $username
     $passOk = Test-PortalAdminPassword -Config $Config -Password $password
-    if (-not ($userOk -and $passOk)) {
-        Add-PortalLoginFailure -Config $Config -ClientIp $ClientIp
-        Write-PortalLog -Config $Config -Level "WARN" -Message "管理员登录失败：user=$username ip=$ClientIp"
+    $valid = ($userOk -and $passOk)
+    # R2-2：**先验密码，再决定是否退避** —— 正确密码永远放行，退避只作用于"错密码"这条路径。
+    # 否则攻击者只要持续错登，就能把 nextAllowedAt 永久推到未来，管理员自己也进不来。
+    # PBKDF2 的 CPU 成本由上面的全局节奏闸门（120ms/次）兜底，而不是靠牺牲可登录性。
+    if (-not $valid) {
+        $backoff = Test-PortalLoginBackoff -Config $Config -UserName $username -Now $now
+        if ([bool]$backoff.blocked) {
+            # 退避中：不累加失败次数（否则延迟会被无限维持），只告诉客户端还要等多久。
+            Send-PortalApiErrorRetry -Context $Context -StatusCode 429 -Code "RATE_LIMITED" `
+                -Message $throttleMessage -RetryAfterSeconds ([int]$backoff.retryAfter) `
+                -Extra ([ordered]@{ retryAfter = [int]$backoff.retryAfter })
+            return
+        }
+        Add-PortalLoginBackoff -Config $Config -UserName $username -Now $now
+        Add-PortalGlobalLoginFailure -Config $Config -Now $now
+        Add-PortalLoginFailure -Config $Config -ClientIp $ClientIp   # per-IP 仅计数（默认不拦截）
+        # 日志注入防护：去掉控制字符并截断，避免伪造日志行。
+        $safeUser = ($username -replace '[\r\n\t]', ' ')
+        if ($safeUser.Length -gt 64) { $safeUser = $safeUser.Substring(0, 64) }
+        Write-PortalLog -Config $Config -Level "WARN" -Message "管理员登录失败：user=$safeUser ip=$ClientIp fails=$([int]$backoff.fails + 1)"
         Send-PortalApiError -Context $Context -StatusCode 401 -Code "BAD_CREDENTIALS" -Message "账号或密码错误"
         return
     }
     Reset-PortalLoginFailures -ClientIp $ClientIp
+    Reset-PortalLoginBackoff -UserName $adminUser
     $session = New-PortalSession -Config $Config -Username $adminUser -ClientIp $ClientIp
     Write-PortalAudit -Config $Config -Action "login" -Actor $adminUser -ClientIp $ClientIp -Detail ([ordered]@{ tokenTail = ([string]$session.token).Substring([Math]::Max(0, ([string]$session.token).Length - 8)) })
     $data = [ordered]@{
@@ -569,8 +655,21 @@ function Handle-PortalApiUpload {
         Send-PortalApiError -Context $Context -StatusCode 429 -Code "RATE_LIMITED" -Message "上传过于频繁，请稍后再试"
         return
     }
-    $multipart = Read-PortalMultipart -Context $Context -MaxRequestBytes ([long]$Config.upload.maxRequestBytes) -MaxFileBytes ([long]$Config.upload.maxFileBytes)
+    $multipart = Read-PortalMultipart -Context $Context -MaxRequestBytes ([long]$Config.upload.maxRequestBytes) -MaxFileBytes ([long]$Config.upload.maxFileBytes) -Config $Config
     if (-not $multipart.ok) {
+        if ($multipart.error -eq "BUSY") {
+            # R2-1：大 body 的停滞预算已被其它慢连接耗尽 —— 回 503 而不是 408，
+            # 让客户端按 Retry-After 退让，而不是立刻重发撞同一堵墙。
+            Send-PortalApiErrorRetry -Context $Context -StatusCode 503 -Code "SERVER_BUSY" `
+                -Message "服务端暂时繁忙（正在处理其它上传），请稍后重试" -RetryAfterSeconds 1
+            return
+        }
+        if ($multipart.error -eq "TIMEOUT") {
+            # H-1：读超时（慢速/停滞连接）→ 408 并放弃该连接，不拖住后续请求。
+            Send-PortalApiError -Context $Context -StatusCode 408 -Code "REQUEST_TIMEOUT" -Message "上传请求读取超时（连接过慢或已停滞）"
+            try { $Context.Response.Abort() } catch { }
+            return
+        }
         if ($multipart.error -eq "FILE_TOO_LARGE" -or $multipart.error -eq "TOO_LARGE") {
             Send-PortalApiError -Context $Context -StatusCode 413 -Code "FILE_TOO_LARGE" -Message ("文件超过大小上限（{0} 字节）" -f $Config.upload.maxFileBytes)
         } else {
@@ -600,7 +699,7 @@ function Handle-PortalApiUpload {
     }
     $leaf = Get-PortalSafeLeafName -RawName $file.fileName
     if ($leaf -eq "") {
-        Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "文件名非法"
+        Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_FILENAME" -Message "文件名非法（含路径分隔符、控制字符或 Windows 保留名）"
         return
     }
     $allowed = Get-PortalKindAllowedExtensions -Config $Config -Kind $kind
@@ -608,23 +707,32 @@ function Handle-PortalApiUpload {
         Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message ("不支持的文件类型（允许：{0}）" -f ($allowed -join " / "))
         return
     }
+    # M-4：文件内容以 (offset,count) 引用 body 缓冲区，不复制。
+    $body = $multipart.body
+    $fileOffset = [int]$file.offset
+    $fileCount = [int]$file.count
     $ext = Get-PortalFileExtension -FileName $leaf
-    $bytes = [byte[]]$file.bytes
     if ($kind -eq "dp") {
         if ($ext -eq ".zip") {
-            if (-not (Test-PortalZipMagic -Bytes $bytes)) {
-                Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "ZIP 文件头无效"
+            if (-not (Test-PortalZipMagic -Bytes $body -Offset $fileOffset -Count $fileCount)) {
+                Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "不是有效的 ZIP 包（缺少本地文件头或目录结束记录）"
+                return
+            }
+        } elseif ($ext -eq ".json") {
+            # M-2：.json 必须真的能解析；.hjson/.json5 不是合法 JSON，只能弱校验。
+            if (-not (Test-PortalJsonStrict -Bytes $body -Offset $fileOffset -Count $fileCount)) {
+                Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "JSON 解析失败（不是合法的 JSON 对象/数组）"
                 return
             }
         } else {
-            if (-not (Test-PortalJsonLikeMagic -Bytes $bytes)) {
-                Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "JSON/HJSON 文件内容看起来不是对象/数组"
+            if (-not (Test-PortalJsonLikeMagic -Bytes $body -Offset $fileOffset -Count $fileCount)) {
+                Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "HJSON/JSON5 文件内容看起来不是对象/数组"
                 return
             }
         }
     } elseif ($kind -eq "map") {
-        if (-not (Test-PortalMsavMagic -Bytes $bytes)) {
-            Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "不是有效的 Mindustry 地图文件（.msav）"
+        if (-not (Test-PortalMsavMagic -Bytes $body -Offset $fileOffset -Count $fileCount)) {
+            Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_TYPE" -Message "不是有效的 Mindustry 地图文件（.msav 解压后缺少 MSAV 头或版本号异常）"
             return
         }
     }
@@ -684,9 +792,11 @@ function Handle-PortalApiUpload {
     $id = New-PortalSubmissionId -Kind $kind
     $payload = $null
     try {
-        $payload = Save-PortalUploadedPayload -Config $Config -Id $id -FileName $leaf -Bytes $bytes
+        $payload = Save-PortalUploadedPayload -Config $Config -Id $id -FileName $leaf -Body $body -Offset $fileOffset -Count $fileCount
     } catch {
-        Send-PortalApiError -Context $Context -StatusCode 500 -Code "UPLOAD_SAVE_FAILED" -Message ("保存上传文件失败：" + $_.Exception.Message)
+        # 不把 .NET 异常消息回显给客户端（可能含方法名/路径）；细节只进服务端日志。
+        Write-PortalLog -Config $Config -Level "ERROR" -Message ("保存上传文件失败 id=$id file=$leaf：" + $_.Exception.Message)
+        Send-PortalApiError -Context $Context -StatusCode 500 -Code "UPLOAD_SAVE_FAILED" -Message "保存上传文件失败（服务器内部错误）"
         return
     }
     $payload.fileName = $leaf
@@ -695,10 +805,13 @@ function Handle-PortalApiUpload {
         $item = Add-PortalSubmission -Config $Config -Kind $kind -Fields $fieldsForStore -Payload $payload -ClientIp $ClientIp
     } catch {
         try { Remove-Item -LiteralPath ([System.IO.Path]::GetDirectoryName($payload.fullPath)) -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-        Send-PortalApiError -Context $Context -StatusCode 500 -Code "UPLOAD_SAVE_FAILED" -Message ("保存提交记录失败：" + $_.Exception.Message)
+        Write-PortalLog -Config $Config -Level "ERROR" -Message ("保存提交记录失败 id=$id：" + $_.Exception.Message)
+        Send-PortalApiError -Context $Context -StatusCode 500 -Code "UPLOAD_SAVE_FAILED" -Message "保存提交记录失败（服务器内部错误）"
         return
     }
     $newQueue = Get-PortalQueueState -Config $Config -Kind $kind
+    # R2-6：只有真正受理（业务成功）才消耗每 IP 上传配额。
+    Add-PortalUploadHit -Config $Config -ClientIp $ClientIp
     $data = [ordered]@{
         id     = [string]$item.id
         kind   = $kind
@@ -720,6 +833,12 @@ function Handle-PortalApiUpload {
 
 function Handle-PortalApiRequest {
     param($Context, [System.Collections.IDictionary]$Config, [string]$Method, [string]$PathLower, [string]$ClientIp)
+    # R1-F：API 不支持 HEAD。旧行为是照常 200 并写 body，HttpListener 会因 HEAD 不能有 body
+    # 抛异常 → 每 60 秒一条 ERROR 日志。这里统一为 405，语义明确且不产生噪声。
+    if ($Method -eq "HEAD") {
+        Send-PortalApiError -Context $Context -StatusCode 405 -Code "METHOD_NOT_ALLOWED" -Message "API 不支持 HEAD，请使用 GET"
+        return
+    }
     switch ($PathLower) {
         "/api/status" {
             if ($Method -ne "GET" -and $Method -ne "HEAD") { Send-PortalApiError -Context $Context -StatusCode 405 -Code "METHOD_NOT_ALLOWED" -Message "只支持 GET"; return }
