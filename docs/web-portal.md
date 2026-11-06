@@ -4,8 +4,10 @@
 > **2026-10-18 第二期**：服务器日志列表/下载/尾部预览（并发+限频+审计+Range+浏览器直链 token）、跨旋转文件的历史事件查询、
 > 状态接口新增宿主机上行带宽采样（`data.net`）、`liveEventFeed` 多份轮转（默认保留 12 份）与玩家名上限提升（默认 256 字符）、
 > 客户端断开写响应异常降噪、游戏控制台桥改为「可选增强」语义（不可达不影响审核，返回中性 `reloadHint`）。
-> **2026-11-01**：玩家名详情弹窗不再展示玩家 base64 UUID（`playerId`），仅保留显示名/原始记录/长度/截断说明
-> （数据契约仍保留 `playerId` 供历史检索，仅前端不显示；静态资源版本号更新为 `20261101a` 触发缓存刷新）。
+> **2026-11-01**：玩家名详情弹窗不再展示玩家 base64 UUID（`playerId`），仅保留显示名/原始记录/长度/截断说明。
+> **2026-11-06**：公开事件流进一步脱敏：`liveEventFeed` 不再写 `playerId`；Web API 对旧事件文件里带
+> `playerId` 的记录整条过滤，并隐藏 `/login`、`/register` 等指令聊天；`keyword` 只检索公开字段。
+> 静态资源版本号更新为 `20261101a` 触发缓存刷新。
 > 后端实现：`stats-web/server/**` + `stats-web/start-web.ps1`；前端实现：`stats-web/index.html`、`upload.html`、`admin.html`、`assets/**`；
 > 游戏侧事件流：`wayzer/ext/liveEventFeed.kts`（输出 `config/stats/live-events.jsonl`）；
 > 状态统计仍由 `wayzer/ext/serverStats.kts` 输出 `config/stats/server-status.json`（口径见 [server-status-stats.md](server-status-stats.md)）。
@@ -252,7 +254,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `GET /api/logs` | 服务器日志列表（白名单，按修改时间倒序）：见 §4.4 |
 | `GET /api/logs/download` | 下载日志文件（流式分块/支持 Range/浏览器直链 token）：见 §4.4 |
 | `GET /api/logs/tail` | 日志尾部预览（最后 N 行）：见 §4.4 |
-| `GET /api/events?afterTs=<epochMillis>&limit=<1..300>` | 实时事件（增量）：`{events:[{ts,type,text,player,playerId?}],lastTs,available,total,mainFileAvailable,historyAvailable,hint}`。`afterTs` 语义为**严格大于**；不传 `afterTs` 时返回最近 `limit` 条（默认 100）；坏行/半行/文件缺失均容错；主事件文件因轮转暂缺时会返回 `available:false + historyAvailable:true + hint`（中性提示，历史仍可查 `/api/events/history`） |
+| `GET /api/events?afterTs=<epochMillis>&limit=<1..300>` | 实时事件（增量）：`{events:[{ts,type,text,player}],lastTs,available,total,mainFileAvailable,historyAvailable,hint}`。`afterTs` 语义为**严格大于**；不传 `afterTs` 时返回最近 `limit` 条（默认 100）；坏行/半行/文件缺失均容错；含旧 `playerId` 的记录和指令聊天会被过滤，不返回；主事件文件因轮转暂缺时会返回 `available:false + historyAvailable:true + hint`（中性提示，历史仍可查 `/api/events/history`） |
 | `GET /api/catalog` | 现有列表：`{dp:[{name,file,size,updatedAt,author,desc,title}],maps:[...]}`；`name`=不含扩展名显示名，`file`=真实文件名；历史文件无审核元数据时 `author/desc/title` 为 `null` |
 | `GET /api/health` | 运维自检：数据/事件/目录可用性、`dpCount/mapCount`、`pendingDp/pendingMap/queueLimit`、会话数、待收尾控制台命令数、`logsEnabled/logsAvailable/logsRequireLogin/logsDir`、`activeDownloads/maxConcurrentDownloads`、`bandwidthAvailable/bandwidthInterface`、`clientDisconnects`、`console{enabled,reachable,optional,status,host,port,lastError,checkedAt,lastOkAt,hint}`、`eventHistoryFiles`、版本 |
 | `GET /server-status.json` | **旧入口兼容**：直接回传 `server-status.json` 原文（旧页面/脚本可继续使用） |
@@ -338,13 +340,13 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | --- | --- |
 | `fromTs` / `toTs` | epoch 毫秒，**闭区间**（`fromTs <= ts <= toTs`）；0/省略表示不限 |
 | `type` | 事件类型（`chat/join/leave/vote_start/vote_pass/vote_fail/map_change/system`），空 = 全部；非法返回 400 |
-| `keyword` | 关键字，**匹配原始 JSON 行**（因此会命中 `text` / `player` / `playerId` 等字段），大小写不敏感、支持中文（请用 percent-encoding 传参），最大 `events.historyMaxKeywordChars` |
+| `keyword` | 关键字，只匹配公开字段 `type` / `text` / `player`（大小写不敏感、支持中文）；**不能**匹配 `playerId` 或已隐藏的指令聊天；最大 `events.historyMaxKeywordChars` |
 | `limit` | 每页条数，默认 100，**最大 200**（超出被钳制） |
 | `cursor` | 分页游标 = **上一页最后一条的 `ts`（epoch 毫秒）**；语义为「只返回 `ts < cursor` 的记录」 |
 
 ```json
 { "ok": true, "data": {
-  "available": true, "items": [ {"ts":1792300000000,"type":"chat","text":"[red]…","player":"…","playerId":"…"} ],
+  "available": true, "items": [ {"ts":1792300000000,"type":"chat","text":"[red]…","player":"…"} ],
   "hasMore": true, "nextCursor": 1792299990000, "limit": 100,
   "fromTs": 0, "toTs": 0, "type": "", "keyword": "", "cursor": 0,
   "files": ["live-events.jsonl","live-events.1.jsonl"], "scannedFiles": 2, "scannedLines": 640
@@ -473,7 +475,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 ### 7.1 数据契约（游戏侧写入 → Web 只读）
 
 - 文件：`mdtserver/config/stats/live-events.jsonl`（UTF-8，append-only，每行一个 JSON 对象，无 BOM）；
-- 字段：`{"ts":<epochMillis>,"type":"chat|join|leave|vote_start|vote_pass|vote_fail|map_change|system","text":"<Mindustry 原始颜色标记文本>","player":"<显示名>","playerId":"<可选 uuid>"}`；
+- 字段：`{"ts":<epochMillis>,"type":"chat|join|leave|vote_start|vote_pass|vote_fail|map_change|system","text":"<Mindustry 原始颜色标记文本>","player":"<显示名>"}`；新版不再写 `playerId`；旧文件中的 `playerId` 记录由 Web API 过滤。
 - `ts` **严格递增**（同毫秒自动 +1），Web 端 `afterTs` 为「严格大于」，保证增量拉取不丢事件；
 - `text` 保留 `[red]` / `[#RRGGBB]` / `[]` 等颜色标记原文，脚本只做 JSON 转义；渲染与 HTML 转义在前端完成；
 - 单文件约 2MB 轮转到旋转历史（`.1` 最新、默认保留 12 份，见 §7.4）；每行 `text` 截断 500 字符；`player` 默认上限 256 字符（最低 128，见 §7.5）。
@@ -490,7 +492,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | type | 来源 | 说明 |
 | --- | --- | --- |
 | `chat` | `EventType.PlayerChatEvent` | `text` 为原始颜色标记聊天内容，`player` 发言人 |
-| `join` / `leave` | `EventType.PlayerJoin` / `PlayerLeave` | 含 `playerId` |
+| `join` / `leave` | `EventType.PlayerJoin` / `PlayerLeave` | 新版不含 `playerId`；旧记录由 Web API 过滤 |
 | `vote_start` / `vote_pass` / `vote_fail` | `VoteEvent` 状态轮询（内存读取） | 不改 `vote.lib.kt` |
 | `map_change` | 地图加载完成事件（`MapLoadFinishedEvent`） | 地图名/模式 |
 | `system` | 脚本启停等 | 如「实时事件流已启动」 |

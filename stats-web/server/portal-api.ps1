@@ -165,14 +165,13 @@ function Get-PortalLiveEvents {
         $eventType = Get-PortalString (Get-PortalProp $obj "type" "system") "system"
         $eventText = Get-PortalString (Get-PortalProp $obj "text" "") ""
         $player = Get-PortalString (Get-PortalProp $obj "player" "") ""
+        if (Test-PortalPublicEventHidden -Type $eventType -Text $eventText -Object $obj) { continue }
         $item = [ordered]@{
             ts    = $ts
             type  = $eventType
             text  = $eventText
             player = $player
         }
-        $playerId = Get-PortalProp $obj "playerId" $null
-        if ($null -ne $playerId -and [string]$playerId -ne "") { $item.playerId = [string]$playerId }
         [void]$events.Add($item)
     }
     $result.total = $events.Count

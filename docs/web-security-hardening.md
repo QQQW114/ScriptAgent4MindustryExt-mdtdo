@@ -66,18 +66,21 @@
 | 文件名 | 拒绝路径分隔符、控制字符、`" \| < > ? * :`、Windows 保留名 → `400 BAD_FILENAME` |
 | 非法路径异常 | `GetFullPath` 抛异常时返回 **404**，不再 500 + 堆栈 |
 
-### 2.5 公开事件流去 UUID
+### 2.5 公开事件流脱敏（UUID + 指令聊天 + 旧文件）
 
 `/api/events` 与 `/api/events/history` **无需登录**（首页实时流与历史抽屉的数据源），
-而事件 JSON 里的 `playerId` 就是玩家 UUID（16 字节 base64）。
+而旧事件 JSON 里的 `playerId` 就是玩家 UUID（16 字节 base64）。
 
 | 项 | 改前 | 改后 |
 |---|---|---|
-| `playerId` | 每条 join/leave/chat 事件都带 | **不再输出**（`liveEventFeed.kts` 的 `playerUuid()` 返回 null） |
+| `playerId` | 每条 join/leave/chat 事件都带 | 新事件由 `liveEventFeed.kts` 不再生成；**旧事件文件里带 `playerId` 的整条记录由 Web API 过滤，不返回**（不依赖服务器侧删除日志） |
+| 指令聊天 | `/login`、`/register`、`/bindemail` 等原文公开 | Web API 去颜色标记后以 `/` 或 `／` 开头的事件整条过滤（实时流和历史查询一致） |
+| `keyword` 检索 | 匹配原始 JSON 行（可命中 playerId） | 只匹配公开字段 `type/text/player`，不能探测 UUID/隐藏聊天 |
 | 可拉取历史 | 当前文件 + 12 份旋转文件（`historyMaxFiles=13`） | 默认 **3** 份 |
-| 昵称与聊天 | 公开 | **保持公开**（设计如此，前端只渲染这两个字段） |
+| 昵称与普通聊天 | 公开 | **保持公开**（设计如此，前端只渲染这两个字段） |
 
 改动理由：UUID 是玩家的**稳定身份标识**，可跨会话关联；而本接口匿名可访问、可翻页批量拉取。
+旧 `live-events*.jsonl` 即使保留在服务器上也不会再向匿名 Web 返回带 UUID 的记录；仍建议按需轮转历史文件。
 
 > 管理侧不受影响：游戏日志 `config/logs/*.log` 仍含 UUID 与 IP，且下载需要登录。
 
@@ -117,11 +120,13 @@
 2. 更新 `scripts/wayzer/ext/liveEventFeed.kts`；
 3. **确认 `web-config.json` 的 `admin.passwordHash` 已设置且 `admin.password` 为空**（部署时必须换掉默认密码）；
 4. 若显式配置过 `events.historyMaxFiles`，改为 3（或按需要）；
-5. **停服 → 删除/轮转 `config/stats/live-events*.jsonl` → 起服**（否则旧数据里的 UUID 仍可被匿名拉取）；
+5. 旧 `config/stats/live-events*.jsonl` **不再要求停服删除**：新版 Web API 会跳过带 `playerId` 的旧记录；
+   如仍希望缩小磁盘/检索范围，可自行轮转，但不依赖它来防止 UUID 泄漏；
 6. 重启门户；
 7. 复验：
    - 未登录 `/api/health` 只回 3 字段；
-   - `/api/events/history?limit=5` 无 `playerId`；
+   - `/api/events`、`/api/events/history?limit=5` 无 `playerId`；
+   - 含 `/register` 等指令的聊天不出现在公开事件流/历史；
    - 旧密码登录应失败、新密码可登录。
 
 ## 6. 未覆盖 / 后续
