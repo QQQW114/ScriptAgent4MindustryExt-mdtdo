@@ -118,6 +118,27 @@ $script:PortalLoginBackoff = New-Object 'System.Collections.Hashtable'
 $script:PortalLoginGlobalFailures = New-Object System.Collections.ArrayList
 # 全局慢速令牌桶的下次放行时刻（ms）
 $script:PortalLoginGlobalGateAt = 0L
+# 公开事件流脱敏：旧事件文件里可能带 playerId（玩家 UUID）或玩家指令聊天；
+# 不能依赖服务器侧删除/轮转文件，API 读取时统一过滤（2026-11-06 用户要求）。
+$script:PortalEventColorTagRegex = [regex]'\[[^\]]*]'
+function Test-PortalPublicEventHidden {
+    param(
+        [AllowNull()][string]$Type,
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $true)]$Object
+    )
+    # 旧版本 liveEventFeed 写入的 playerId：整条不公开，避免旧文件继续泄漏 UUID。
+    $playerId = Get-PortalProp $Object "playerId" $null
+    if ($null -ne $playerId -and ([string]$playerId).Trim() -ne "") { return $true }
+    # 玩家输入的指令聊天（/login、/register、/bindemail 等）不公开；先去掉 Mindustry 颜色标记。
+    if ([string]::Equals([string]$Type, "chat", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $plain = ""
+        try { $plain = $script:PortalEventColorTagRegex.Replace([string]$Text, "").Trim() } catch { $plain = [string]$Text }
+        if ($plain -match '^[/／]') { return $true }
+    }
+    return $false
+}
+
 # 下载是「先发响应头、后分块输出」的延迟完成模式；该标记表示当前请求的响应已由分块泵接管，
 # 请求异常处理时不要再去写 JSON 错误体（否则会破坏已开始的流）。
 $script:PortalResponseDeferred = $false

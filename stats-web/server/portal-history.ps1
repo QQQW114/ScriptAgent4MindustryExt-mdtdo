@@ -142,17 +142,23 @@ function Get-PortalEventHistory {
                 break
             }
             if ($typeNeedle -ne "" -and $line.IndexOf($typeNeedle, [System.StringComparison]::Ordinal) -lt 0) { continue }
-            if ($Keyword -ne "" -and $line.IndexOf($Keyword, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
             try { $obj = ConvertFrom-Json -InputObject $line -ErrorAction Stop } catch { continue }
             if ($null -eq $obj) { continue }
+            $eventType = Get-PortalString (Get-PortalProp $obj "type" "system") "system"
+            $eventText = Get-PortalString (Get-PortalProp $obj "text" "") ""
+            $eventPlayer = Get-PortalString (Get-PortalProp $obj "player" "") ""
+            if (Test-PortalPublicEventHidden -Type $eventType -Text $eventText -Object $obj) { continue }
+            if ($Keyword -ne "") {
+                # keyword 只匹配公开字段；不能通过 keyword 探测 playerId 或已隐藏的指令聊天。
+                $hay = $eventType + "`n" + $eventText + "`n" + $eventPlayer
+                if ($hay.IndexOf($Keyword, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            }
             $item = [ordered]@{
                 ts     = $ts
-                type   = Get-PortalString (Get-PortalProp $obj "type" "system") "system"
-                text   = Get-PortalString (Get-PortalProp $obj "text" "") ""
-                player = Get-PortalString (Get-PortalProp $obj "player" "") ""
+                type   = $eventType
+                text   = $eventText
+                player = $eventPlayer
             }
-            $playerId = Get-PortalProp $obj "playerId" $null
-            if ($null -ne $playerId -and [string]$playerId -ne "") { $item.playerId = [string]$playerId }
             [void]$items.Add($item)
             if ($items.Count -gt $safeLimit) {
                 # 多取 1 条用于判断 hasMore；去掉这条不进响应

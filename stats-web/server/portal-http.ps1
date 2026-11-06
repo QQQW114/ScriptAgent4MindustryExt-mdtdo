@@ -14,7 +14,7 @@ function Add-PortalSecurityHeaders {
     # 样式有大量 element.style 与内联 style 属性，所以 style-src 需要 'unsafe-inline'。
     try {
         $headers.Add("Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://v1.hitokoto.cn; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
     } catch { }
     try { $headers.Add("X-Permitted-Cross-Domain-Policies", "none") } catch { }
 }
