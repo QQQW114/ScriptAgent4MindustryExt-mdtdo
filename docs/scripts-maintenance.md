@@ -22,6 +22,81 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-07（第三十七批）：idleBreakGuard 接收台黑名单 + V0.1.5 版本标注
+
+类型：脚本功能 + 版本标注（`scripts/wayzer/ext/idleBreakGuard.kts`，`docs/idleBreakGuard.md`）。
+
+### 1. 需求
+
+用户 2026-11-07：「添加一个建筑物黑名单：接收台」。接收台是服务器不可制造、地图开局自带的重要建筑，
+要求游客/1 级在监控窗口期内：
+
+- 开始拆接收台 → 立刻处罚（理由“试图拆除接收台”）；
+- 批量选中但未到阈值就开始拆 → **拆到接收台这一格时**才立刻处罚（“疑似将要拆除接收台”，
+  2026-11-07 用户修订：未拆到接收台不触发）；
+- 批量选中超过阈值就开始拆 → 正常处罚（与现有“疑似乱拆”一致）。
+
+同批要求：插件标注版本 **V0.1.5**，注释写明维护者“八色 和他的 dsh”。
+（用户 2026-11-07 后续决定：**不实现“还原接收台”**，A/B 只处罚。）
+
+### 2. 改动
+
+- 新增配置 `receiverBlocks`（默认 `landing-pad`）：接收台内部名称列表。
+- `Monitor` 增加 `receiverTiles`：记录批次里出现的接收台坐标，用于 B 的“是否批量选中含接收台”判定。
+- `BlockBuildBeginEvent` 增加 A/B/C 三条判定（详见 `docs/idleBreakGuard.md` §2.3）：
+  - A：`ConstructBuild.previous` 是接收台且不属于批量选中 → 处罚“试图拆除接收台”；
+  - B：拆到接收台时，接收台在本次选中集合里且未超阈值 → 处罚“疑似将要拆除接收台”；
+  - C：超过阈值 → 走原 `trigger()` 正常处罚。
+- 处罚收敛为 `punish(player, monitor, reason)`，`trigger()` 复用；同一监控窗口只处罚一次。
+- 插件头注释与 `onEnable` 日志标注 `V0.1.5` 与维护者。
+- **不做还原**：曾实现并验证过 `restoreReceiver()`（`ConstructBuild.prevBuild` 快照 +
+  `tile.setNet` + `LandingPadBuild.config`/物品/液体/血量复制），按用户 2026-11-07 决定整体移除。
+
+### 3. 验证
+
+本地测试服（B509 / SA 3.4.0 / 完整脚本树）：
+
+- 热重载 `sa load wayzer/ext/idleBreakGuard`：编译成功、Enabled；日志
+  `[IDLEGUARD] idleBreakGuard V0.1.5 已启用（当前版本维护者：八色 和他的 dsh）`；
+- `sa config get wayzer.ext.idleBreakGuard.receiverBlocks` = `landing-pad`；
+- 冷启动：`共找到169脚本,加载成功165,启用成功160,出错0`；`scriptdiag count` 失败 0；`sa listFailed` 空。
+
+### 4. 未验证
+
+- A/B/C 三条判定的真实客户端行为（广播文案、观战观感、“拆到接收台才触发 B”的包时序）需实机；
+- B 的 100ms 批次合并时序：选完立刻开拆时可能退化为 A 的理由（处罚照常）；
+- 2 级及以上不覆盖（按需求口径）。
+
+## 2026-11-07（第三十六批）：idleBreakGuard 建筑物豁免（21 种）
+
+类型：脚本功能（`scripts/wayzer/ext/idleBreakGuard.kts`，`docs/idleBreakGuard.md`）。
+
+### 1. 需求
+
+用户 2026-11-07：添加建筑物豁免——合金传送带、物品管道、铜墙/大型铜墙、废墙/大型废墙/巨型废墙/
+超巨型废墙、铍墙/大型铍墙、钨墙/大型钨墙、双管、机械钻头、气动钻头、微型处理器、
+逻辑显示屏/大型逻辑显示屏/逻辑显示单元、画布/大型画布。
+
+### 2. 改动
+
+- 新增配置 `buildingWhitelist`：上述 21 种方块的 `block.name`，与 `conveyorWhitelist` 取并集后
+  在 `isRealBuildingBlock()` 里跳过，沿用“豁免方块单个也不计数”的既有语义。
+- 中文名→内部名对照取自服务器 jar 的 `bundle_zh_CN.properties`：`surge-conveyor`、`duct`、
+  `copper-wall(-large)`、`scrap-wall/-large/-huge/-gigantic`、`beryllium-wall(-large)`、
+  `tungsten-wall(-large)`、`duo`、`mechanical-drill`、`pneumatic-drill`、`micro-processor`、
+  `logic-display`、`large-logic-display`、`tile-logic-display`、`canvas`、`large-canvas`。
+
+### 3. 验证
+
+- 热重载编译成功、Enabled；
+- `sa config get wayzer.ext.idleBreakGuard.buildingWhitelist` 返回 21 项默认值；
+- 运行时 `Vars.content.blocks()` 校验：21/21 名称全部注册（无拼写错误）；
+- B509 `bundle.properties` 中 21 个 `block.<name>.name` 键全部存在。
+
+### 4. 未验证
+
+- 真实客户端混选时的计数行为需实机（豁免方块永不计入，混选只统计非豁免方块）。
+
 ## 2026-11-01（第三十五批）：雷达技能跨图污染修复（贡献者 Sh_Zxy 直推 main）
 
 类型：脚本修复（`scripts/wayzer/user/skillShop.kts`，插件仓库提交 `eeb2f47`，贡献者 Sh_Zxy）。

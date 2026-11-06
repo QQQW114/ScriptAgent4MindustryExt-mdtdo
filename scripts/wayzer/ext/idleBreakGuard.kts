@@ -3,6 +3,10 @@
 @file:Depends("wayzer/cmds/voteOb", "强制观战")
 @file:Depends("wayzer/user/accountIpGuard", "风险IP/疑似小号线索")
 
+// ── 插件版本 ────────────────────────────────────────────────────────────────
+// idleBreakGuard 版本：V0.1.5
+// 当前版本维护者：八色 和他的 dsh
+
 package wayzer.ext
 
 import arc.math.geom.Point2
@@ -27,6 +31,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+
+private val pluginVersion = "V0.1.5"
+private val pluginMaintainers = "八色 和他的 dsh"
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
 private val voteOb = contextScript<wayzer.cmds.VoteOb>()
@@ -67,12 +74,32 @@ private val conveyorWhitelist by config.key(
     "只拆除这些传送带时豁免（逗号分隔，不含路由器/溢流门/传送带桥等）"
 )
 
+// 建筑物豁免（2026-11-07）：名单内的方块在批量框选拆除时一律不计入。
+// 用 block 内部名称（block.name），与 conveyorWhitelist 取并集；两处都可单独配置。
+private val buildingWhitelist by config.key(
+    "surge-conveyor,duct,copper-wall,copper-wall-large,scrap-wall,scrap-wall-large," +
+        "scrap-wall-huge,scrap-wall-gigantic,beryllium-wall,beryllium-wall-large," +
+        "tungsten-wall,tungsten-wall-large,duo,mechanical-drill,pneumatic-drill," +
+        "micro-processor,logic-display,large-logic-display,tile-logic-display,canvas,large-canvas",
+    "额外豁免的建筑物（block 内部名称，逗号分隔；与 conveyorWhitelist 取并集，选中不计入批量拆除）"
+)
+
+// 接收台黑名单（2026-11-07）：游客/1级在监控窗口内拆除或拆到批量选中里的接收台即立刻处罚。
+// （用户 2026-11-07 决定：只处罚，不做“还原接收台”。）
+// 默认 landing-pad（中文名“接收台”，地图开局自带、服务器科技里不可制造）。
+private val receiverBlocks by config.key(
+    "landing-pad",
+    "接收台类方块的内部名称（逗号分隔）：监控对象选中并拆到即立即处罚"
+)
+
 private class Monitor(
     val uuid: String,
     val joinedAt: Long,
     var level: Int,
     var deadline: Long,
     val selected: MutableSet<Long> = mutableSetOf(),
+    /** 选中集合里的接收台坐标（tile.pos），用于「疑似将要拆除接收台」判定。 */
+    val receiverTiles: MutableSet<Int> = mutableSetOf(),
     var batchSeen: Boolean = false,
     var started: Boolean = false,
     var triggered: Boolean = false,
@@ -148,9 +175,21 @@ private fun thresholdFor(level: Int): Int = when {
     else -> level2BatchThreshold
 }
 
-private val conveyorNames by lazy {
-    conveyorWhitelist.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+/** 豁免名单：传送带白名单与建筑物白名单的并集（block.name）。 */
+private val exemptBlockNames by lazy {
+    (conveyorWhitelist.split(',') + buildingWhitelist.split(','))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .toSet()
 }
+
+/** 接收台名单（block.name）。 */
+private val receiverBlockNames by lazy {
+    receiverBlocks.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+}
+
+private fun isReceiverBlock(block: mindustry.world.Block?): Boolean =
+    block != null && block.name in receiverBlockNames
 
 /** 每日首次判定用全局锁：单次 DB 操作很短；不用「每 uid 一个锁」避免锁对象永久堆积。 */
 private val dailyFirstLock = Any()
@@ -250,7 +289,7 @@ private fun refreshMonitor(player: Player) {
 
 private fun isRealBuildingBlock(block: mindustry.world.Block): Boolean {
     if (ignoreBoulders && block.name.contains("boulder")) return false
-    if (block.name in conveyorNames) return false
+    if (block.name in exemptBlockNames) return false
     return true
 }
 
@@ -288,6 +327,7 @@ private fun handleBatch(batch: Batch) {
             if (build.wasConstructing) continue
             monitor.started = true
             val previous = build.previous ?: continue
+            if (isReceiverBlock(previous)) monitor.receiverTiles.add(build.tile.pos())
             if (!isRealBuildingBlock(previous)) continue
             val key = build.tile.pos().toLong()
             if (monitor.selected.add(key)) {
@@ -295,6 +335,7 @@ private fun handleBatch(batch: Batch) {
             }
             continue
         }
+        if (isReceiverBlock(build.block)) monitor.receiverTiles.add(build.tile.pos())
         if (!isRealBuildingBlock(build.block)) continue
         val key = build.tile.pos().toLong()
         if (monitor.selected.add(key)) {
@@ -311,16 +352,21 @@ private fun handleBatch(batch: Batch) {
     if (monitor.started && !monitor.triggered &&
         monitor.selected.size > thresholdFor(monitor.level)
     ) {
+        // C. 超过阈值：正常处罚（接收台专项判定见 BlockBuildBeginEvent）。
         trigger(player, monitor)
     }
 }
 
-private fun trigger(player: Player, monitor: Monitor) {
+/**
+ * 统一处罚入口：强制观战 + 记录解除检查。同一监控窗口只处罚一次。
+ * [reason] 会写进广播理由和玩家提示。
+ */
+private fun punish(player: Player, monitor: Monitor, reason: String) {
     if (monitor.triggered) return
     monitor.triggered = true
-    val count = monitor.selected.size
-    if (debugLog) Log.info("[IDLEGUARD] trigger uuid=" + player.uuid() + " count=" + count)
-    val reason = "疑似乱拆（批量选中拆除 $count 个建筑物）"
+    if (debugLog) {
+        Log.info("[IDLEGUARD] punish uuid=" + player.uuid() + " reason=" + reason + " selected=" + monitor.selected.size)
+    }
     // 经维护者决定，这算是刻意的撤回：这里不给 voteOb 传兜底到期时间，
     // 系统类强制观战依赖 obRecords 的 tickRelease 解除（离线场景由 /vote quitOb 或管理员处理）。
     with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
@@ -328,9 +374,13 @@ private fun trigger(player: Player, monitor: Monitor) {
         uuid = player.uuid(),
         guest = monitor.level <= 0,
         until = System.currentTimeMillis() + observerSeconds * 1000L,
-        selectedCount = count,
+        selectedCount = monitor.selected.size,
     )
-    player.sendMessage("[red][监控] 检测到批量选中拆除 $count 个建筑物，已被强制观战 ${observerSeconds / 60} 分钟。".with())
+    player.sendMessage("[red][监控] $reason，已被强制观战 ${observerSeconds / 60} 分钟。".with())
+}
+
+private fun trigger(player: Player, monitor: Monitor) {
+    punish(player, monitor, "疑似乱拆（批量选中拆除 ${monitor.selected.size} 个建筑物）")
 }
 
 private fun releaseObserver(player: Player, reason: String) {
@@ -427,14 +477,38 @@ listen<EventType.BlockBuildBeginEvent> { event ->
     val monitor = monitors[player.uuid()] ?: return@listen
     val now = System.currentTimeMillis()
     if (now > monitor.deadline) return@listen
-    // 只有开始拆“选中集合里的 tile”才算这次框选开始拆除；
+
+    // A/B/C 的接收台判定：玩家开始拆接收台本身（游客/1级、窗口期内）。
+    // ConstructBuild.previous 是原方块。
+    // 2026-11-07 用户决定：只处罚，不实现“还原接收台”。
+    val construct = event.tile.build as? ConstructBlock.ConstructBuild
+    if (construct != null && isReceiverBlock(construct.previous) && monitor.level <= 1) {
+        val pos = event.tile.pos()
+        val count = monitor.selected.size
+        val overThreshold = count > thresholdFor(monitor.level)
+        // B：批量选中里含接收台且未到阈值 → 「拆到接收台时」才处罚“疑似将要拆除接收台”；
+        // 其余情况算直接拆接收台（A）。超阈值（C）走正常处罚理由。
+        val reason = when {
+            overThreshold -> null
+            pos in monitor.receiverTiles && count > 1 -> "疑似将要拆除接收台"
+            else -> "试图拆除接收台"
+        }
+        Log.info(
+            "[IDLEGUARD] receiver break uuid=" + player.uuid() + " pos=" + event.tile.x + "," + event.tile.y +
+                " reason=" + (reason ?: "normal")
+        )
+        if (reason == null) trigger(player, monitor) else punish(player, monitor, reason)
+        return@listen
+    }
+
+    // 只有开始拆「选中集合里的 tile」才算这次框选开始拆除；
     // 否则选中一批建筑后去拆别的建筑也会被误判为触发。
     if (event.tile.pos().toLong() !in monitor.selected) return@listen
     monitor.started = true
     if (debugLog) Log.info("[IDLEGUARD] begin uuid=" + player.uuid() + " selected=" + monitor.selected.size)
-    if (!monitor.triggered &&
-        monitor.selected.size > thresholdFor(monitor.level)
-    ) {
+    if (monitor.triggered) return@listen
+    if (monitor.selected.size > thresholdFor(monitor.level)) {
+        // C. 超过阈值：正常处罚（选中里含接收台也一样）。
         trigger(player, monitor)
     }
 }
@@ -466,6 +540,7 @@ listen<EventType.PlayerLeave> { event ->
 }
 
 onEnable {
+    Log.info("[IDLEGUARD] idleBreakGuard $pluginVersion 已启用（当前版本维护者：$pluginMaintainers）")
     loopJob = launch(Dispatchers.game) {
         while (true) {
             delay(100L)
