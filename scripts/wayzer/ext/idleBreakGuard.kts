@@ -24,6 +24,9 @@ import wayzer.lib.MdtStorage
 import wayzer.lib.PlayerData
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
 private val voteOb = contextScript<wayzer.cmds.VoteOb>()
@@ -33,6 +36,7 @@ private val ipGuard by lazy { contextScript<wayzer.user.AccountIpGuard>() }
 private val guestMonitorSeconds by config.key(120, "游客进服后的监控秒数")
 private val level1MonitorSeconds by config.key(60, "1级玩家进服后的监控秒数")
 private val level2MonitorSeconds by config.key(60, "2级玩家进服后的监控秒数")
+private val dailyResetHour by config.key(4, "每日首次重置小时（0-23，默认凌晨4点）")
 
 // ── 重连接续（2026-11-04）────────────────────────────────────────────────────
 // 背景：/sync、/vote rollback、MapManager 换图等「客户端重新同步世界」都会让服务端
@@ -72,6 +76,7 @@ private class Monitor(
     var batchSeen: Boolean = false,
     var started: Boolean = false,
     var triggered: Boolean = false,
+    var dailyUid: String? = null,
 )
 
 private class ObRecord(
@@ -105,7 +110,12 @@ private fun tryResumeMonitor(player: Player): Boolean {
     if (!reconnectResumeEnabled) return false
     val elapsed = System.currentTimeMillis() - left
     if (elapsed > reconnectGraceSeconds * 1000L) return false
-    if (!monitors.containsKey(uuid)) return false
+    val monitor = monitors[uuid] ?: return false
+    // 过期的旧窗口不能“续命”：游客应重新建窗，非游客按每日首次规则跳过。
+    if (System.currentTimeMillis() > monitor.deadline) {
+        monitors.remove(uuid)
+        return false
+    }
     Log.info("[IDLEGUARD] resume monitor uuid=$uuid after ${elapsed}ms")
     return true
 }
@@ -142,26 +152,98 @@ private val conveyorNames by lazy {
     conveyorWhitelist.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 }
 
+/** 每日首次判定用全局锁：单次 DB 操作很短；不用「每 uid 一个锁」避免锁对象永久堆积。 */
+private val dailyFirstLock = Any()
+
+/** 每日周期日期：凌晨 4 点前算前一天，4 点整切换到新周期。 */
+private fun dailyCycleDate(now: LocalDateTime = LocalDateTime.now()): LocalDate {
+    val hour = dailyResetHour.coerceIn(0, 23)
+    return if (now.toLocalTime() < LocalTime.of(hour, 0)) {
+        now.toLocalDate().minusDays(1)
+    } else {
+        now.toLocalDate()
+    }
+}
+
+/** 每个账号主体只保留一个 key，值是当前周期日期；避免每天新增一行、长期膨胀。 */
+private fun dailyFirstKey(uid: String): String =
+    "idleBreakGuard.firstJoin." + uid
+
+/**
+ * 非游客每天首次进服才监控：
+ * 返回 true 表示今天第一次见到这个主体；false 表示今天已经进过，不再监控。
+ * 数据库异常时按“首次”处理，避免漏掉监控。
+ */
+private fun tryMarkDailyFirstJoin(uid: String): Boolean {
+    val key = dailyFirstKey(uid)
+    val cycle = dailyCycleDate().toString()
+    return runCatching {
+        synchronized(dailyFirstLock) {
+            if (MdtStorage.getSetting(key) == cycle) {
+                false
+            } else {
+                MdtStorage.setSetting(key, cycle)
+                true
+            }
+        }
+    }.onFailure {
+        Log.warn("[IDLEGUARD] daily-first check failed uid=$uid: ${it.message}")
+    }.getOrDefault(true)
+}
 private fun initMonitor(player: Player) {
     val uuid = player.uuid()
+    val data = PlayerData[player]
     val level = levelOf(player)
     val seconds = windowSecondsFor(level)
+    // 3 级以上豁免：先判断豁免，避免白白消耗当天的首次进服 key。
     if (seconds <= 0) {
         monitors.remove(uuid)
         return
     }
-    monitors[uuid] = Monitor(uuid, System.currentTimeMillis(), level, System.currentTimeMillis() + seconds * 1000L)
+
+    // 游客始终监控；非游客每天首次进服才监控。
+    var dailyUid: String? = null
+    if (data.authed) {
+        if (!tryMarkDailyFirstJoin(data.id)) {
+            monitors.remove(uuid)
+            Log.info("[IDLEGUARD] skip monitor: daily first join already used uid=${data.id}")
+            return
+        }
+        dailyUid = data.id
+    }
+
+    val now = System.currentTimeMillis()
+    monitors[uuid] = Monitor(
+        uuid = uuid,
+        joinedAt = now,
+        level = level,
+        deadline = now + seconds * 1000L,
+        dailyUid = dailyUid,
+    )
 }
 
 private fun refreshMonitor(player: Player) {
     val uuid = player.uuid()
     val monitor = monitors[uuid] ?: return
+    val data = PlayerData[player]
     val level = levelOf(player)
     val seconds = windowSecondsFor(level)
+    // 等级升到 3 级以上：直接撤销监控，不消耗每日首次 key。
     if (seconds <= 0) {
         monitors.remove(uuid)
         return
     }
+
+    // 游客在本次会话中登录账号：按新账号补做“每日首次”判定。
+    if (data.authed && monitor.dailyUid != data.id) {
+        if (!tryMarkDailyFirstJoin(data.id)) {
+            monitors.remove(uuid)
+            Log.info("[IDLEGUARD] skip monitor after login: daily first join already used uid=${data.id}")
+            return
+        }
+        monitor.dailyUid = data.id
+    }
+
     monitor.level = level
     monitor.deadline = monitor.joinedAt + seconds * 1000L
 }
