@@ -111,10 +111,10 @@ private fun playerDisplayName(player: Player?): String =
     runCatching { player?.name }.getOrNull() ?: ""
 
 // 门户契约的 playerId 是 Mindustry UUID；本地假玩家/未连接时 uuid() 返回 "[LOCAL]"，不写入。
-private fun playerUuid(player: Player?): String? = runCatching { player?.uuid() }
-    .getOrNull()
-    ?.trim()
-    ?.takeIf { it.isNotEmpty() && it != "[LOCAL]" }
+// [安全 2026-11-05] 公开事件流不再输出玩家 UUID：/api/events 与 /api/events/history 无需登录，
+// 泄漏 playerId 等于公开全体玩家的稳定身份标识（可跨会话关联）。要恢复旧行为，把下面函数的返回值改回
+// runCatching { player?.uuid() } 即可。
+private fun playerUuid(player: Player?): String? = null
 
 private fun enqueue(type: String, text: String, player: String = "", playerId: String? = null) {
     if (!feedDefaultEnabled) return

@@ -38,7 +38,8 @@ cd mdtdo\stats-web
   然后**立即修改默认管理员密码**即可（详见 [`../docs/web-portal.md`](../docs/web-portal.md) §3.4）。
 - **默认管理员：`admin / ChangeMe_123456` —— 部署后第一件事就是修改它！** 启动横幅会持续红色警告；
   推荐改用 `admin.passwordHash`（见上面的 `-GenPasswordHash`）。
-- `session.secret` 是占位串，也建议改成随机字符串。
+- `admin.passwordHash` 优先于明文 `admin.password`；**部署后请把 `admin.password` 置空**，只保留哈希。
+  早期版本还有一个 `session.secret` 配置项，现已删除（它从未参与任何签名，留着只会让人误以为有保护）。
 - 默认只监听 `127.0.0.1`，避免无意暴露；公网访问注意先改密码，必要时用反代 HTTPS。
 - `web-data/` 是运行数据（提交记录/暂存文件/审计与运行日志），**已在 `.gitignore` 中忽略、分发时不要打包**。
 

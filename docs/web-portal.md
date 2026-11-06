@@ -4,8 +4,10 @@
 > **2026-10-18 第二期**：服务器日志列表/下载/尾部预览（并发+限频+审计+Range+浏览器直链 token）、跨旋转文件的历史事件查询、
 > 状态接口新增宿主机上行带宽采样（`data.net`）、`liveEventFeed` 多份轮转（默认保留 12 份）与玩家名上限提升（默认 256 字符）、
 > 客户端断开写响应异常降噪、游戏控制台桥改为「可选增强」语义（不可达不影响审核，返回中性 `reloadHint`）。
-> **2026-11-01**：玩家名详情弹窗不再展示玩家 base64 UUID（`playerId`），仅保留显示名/原始记录/长度/截断说明
-> （数据契约仍保留 `playerId` 供历史检索，仅前端不显示；静态资源版本号更新为 `20261101a` 触发缓存刷新）。
+> **2026-11-01**：玩家名详情弹窗不再展示玩家 base64 UUID（`playerId`），仅保留显示名/原始记录/长度/截断说明。
+> **2026-11-06**：公开事件流进一步脱敏：`liveEventFeed` 不再写 `playerId`；Web API 对旧事件文件里带
+> `playerId` 的记录整条过滤，并隐藏 `/login`、`/register` 等指令聊天；`keyword` 只检索公开字段。
+> 静态资源版本号更新为 `20261101a` 触发缓存刷新。
 > 后端实现：`stats-web/server/**` + `stats-web/start-web.ps1`；前端实现：`stats-web/index.html`、`upload.html`、`admin.html`、`assets/**`；
 > 游戏侧事件流：`wayzer/ext/liveEventFeed.kts`（输出 `config/stats/live-events.jsonl`）；
 > 状态统计仍由 `wayzer/ext/serverStats.kts` 输出 `config/stats/server-status.json`（口径见 [server-status-stats.md](server-status-stats.md)）。
@@ -87,7 +89,7 @@ cd mdtdo\stats-web
 ```
 
 - 启动横幅会打印实际监听地址、配置路径、数据/统计/事件/DP/地图目录、管理员账号、上传限制；
-  使用默认密码或默认 `session.secret` 时会打印**安全警告**；
+  使用默认密码时会打印**安全警告**；
 - 停止：运行窗口 `Ctrl+C`（或在后台任务中结束该 powershell 进程）；
 - `start-web.bat` 只做参数透传与出错暂停，保持 ASCII，避免 cmd 代码页问题。
 
@@ -103,7 +105,18 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 ```
 
 最后在 Windows 防火墙 / 云安全组放行端口。**默认只监听 `127.0.0.1`，不要在不改默认密码的情况下直接暴露公网。**
-若前面有 Nginx/反代，建议保持门户监听 127.0.0.1，由反代提供 HTTPS（反代场景可设 `security.trustProxyHeaders=true` 以取 `X-Forwarded-For` 作为限频维度）。
+若前面有 Nginx/反代，建议保持门户监听 127.0.0.1，由反代提供 HTTPS。
+
+> **反代下的客户端 IP 必须显式声明，否则限频会失效。** `security.trustProxyHeaders=true` **单独开启是危险的**：
+> 只有当直连对端命中 `security.trustedProxies`（IP 或 CIDR 列表）时，才会采信 `X-Forwarded-For`，
+> 且取的是**最右侧的非受信段**（不是最左段 —— 最左段完全由客户端伪造）。
+> 正确配置示例（反代与门户同机）：
+>
+> ```json
+> "security": { "trustProxyHeaders": true, "trustedProxies": ["127.0.0.1"] }
+> ```
+>
+> 未配置 `trustedProxies` 时，`X-Forwarded-For` **一律被忽略**，限频一律按套接字地址计算。
 
 ### 3.3 配置文件（`web-config.json`，主配置）
 
@@ -119,7 +132,6 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `admin.password` | `ChangeMe_123456` | 明文管理员密码（**必须立即修改**） |
 | `admin.passwordHash` | `""` | 非空时**优先于** `admin.password`；用 `start-web.ps1 -GenPasswordHash "新密码"` 生成（PBKDF2） |
 | `admin.sessionHours` | `12` | 登录会话有效期（小时） |
-| `session.secret` | 占位串 | 会话/未来扩展用密钥，**建议改随机串** |
 | `upload.maxFileBytes` | `10485760` | 单文件上限（10MB） |
 | `upload.maxRequestBytes` | `12582912` | 整个请求体上限（10MB + multipart 开销），超限 413 |
 | `upload.queueLimitPerKind` | `10` | **每种类型**（DP/地图各自）待审队列上限，满 → `QUEUE_FULL` |
@@ -128,7 +140,14 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `upload.allowedMapExtensions` | `.msav` | 地图允许扩展名（另做 zlib/gzip 头校验） |
 | `upload.titleMaxChars`/`authorMaxChars`/`descMaxChars` | `200/100/4000` | 表单字段长度上限 |
 | `upload.deleteRejectedPayloads` | `true` | 拒绝时删除暂存文件 |
-| `rateLimit.loginFailuresPerWindow`/`loginWindowMinutes` | `5` / `5` | 同 IP 登录失败次数窗口，超限 429 |
+| `rateLimit.loginFailuresPerWindow`/`loginWindowMinutes` | `5` / `5` | per-IP 登录失败**计数**窗口（第 2 轮起默认**不拦截**，仅观测；见 `ipHardLockFailures`） |
+| `rateLimit.loginBackoffBaseSeconds` | `1` | per-account 指数退避基数：第 2 次失败 `2s`、第 3 次 `4s`、第 4 次 `8s`…（`base×2^(n-1)`，第 1 次不延迟） |
+| `rateLimit.loginBackoffMaxSeconds` | `300` | 单次退避上限（5 分钟封顶） |
+| `rateLimit.loginBackoffResetMinutes` | `30` | 多久没有新失败就忘记该账号的退避记录 |
+| `rateLimit.globalFailuresPerHour` | `40` | 全局失败预算（60 分钟滑动窗口）；达到后进入**全局慢速模式** |
+| `rateLimit.globalSlowModeRetrySeconds` | `5` | 慢速模式下的全局放行间隔（令牌桶：每 5 秒放行 1 次，**不是封禁**） |
+| `rateLimit.loginMinIntervalMs` | `120` | 常态登录最小间隔（毫秒）。第 3 轮改为「先验密码」后，用它把 PBKDF2 的 CPU 放大压到约 8 次/秒 |
+| `rateLimit.ipHardLockFailures` | `0` | per-IP 固定锁阈值；**0 = 关闭**（避免同 NAT 下攻击者锁死管理员出口 IP） |
 | `rateLimit.uploadsPerWindow`/`uploadWindowMinutes` | `5` / `10` | 同 IP 上传频率限制 |
 | `dirs.dp` | `../mdtserver/config/scripts/external-cp` | DP 目录 |
 | `dirs.maps` | `../mdtserver/config/maps` | 地图目录 |
@@ -138,7 +157,10 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `reload.mapListOnApprove` | `true` | 审核通过地图后默认是否执行控制台 `maps`（触发 `maps.reload()`，安全） |
 | `reload.mapListOnRemove` | `true` | 删除地图文件后是否刷新服务器地图列表 |
 | `reload.unloadOnRemove` | `false` | 删除 DP 文件后是否尝试游戏侧 `externalcp unload` |
-| `security.trustProxyHeaders` | `false` | 是否信任 `X-Forwarded-For`（仅反代后开启） |
+| `security.trustProxyHeaders` | `false` | 是否采信 `X-Forwarded-For`；**只有在 `trustedProxies` 非空时才真正生效**（见 §3.2） |
+| `security.trustedProxies` | `[]` | 受信反代地址列表（IP 或 CIDR）。直连对端命中其中一项时，才按 XFF 推导客户端 IP（取最右侧非受信段）。**不填 = 完全忽略 XFF** |
+| `security.requestReadTimeoutSeconds` | `30` | 请求体读取总超时（秒）；超时返回 408 并关闭连接 |
+| `security.minReadBytesPerSecond` | `2048` | 请求体读取的平均最低速率（B/s）；低于此速率按慢速攻击中止（408） |
 | `security.maxPendingConsoleCommands` | `8` | 同时排队等待回显的控制台命令上限（防堆积） |
 | `logs.enabled` | `true` | 是否启用服务器日志列表/下载/尾部预览 |
 | `logs.requireLogin` | `true` | 日志接口是否需要管理员登录（日志含玩家 IP/聊天等敏感信息；改 false 即公开，风险自负） |
@@ -197,7 +219,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 4. 确认启动日志出现 `[升级] 已把旧配置迁移到…` 且监听地址/端口与旧站一致，访问 `/`、`/server-status.json` 正常；
    迁移动作还会写入 `web-data/audit.log`（`config_migrated`），可事后追溯；
 5. **立即修改默认管理员密码**（`web-config.json` 的 `admin.password`，或 `-GenPasswordHash` 后用 `admin.passwordHash`），
-   并建议修改 `session.secret`；之后按 §3.2 确认公网访问/URL 保留仍正常；
+   并确认 `admin.password` 已置空；之后按 §3.2 确认公网访问/URL 保留仍正常；
 6. 确认无误后可删除 `web-config.ps1.bak-*` 备份（建议保留一段时间）。
 
 > ⚠ **重要**：若升级时把新版目录里的**默认 `web-config.json`** 也复制到旧部署，门户会优先使用该默认配置
@@ -232,7 +254,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `GET /api/logs` | 服务器日志列表（白名单，按修改时间倒序）：见 §4.4 |
 | `GET /api/logs/download` | 下载日志文件（流式分块/支持 Range/浏览器直链 token）：见 §4.4 |
 | `GET /api/logs/tail` | 日志尾部预览（最后 N 行）：见 §4.4 |
-| `GET /api/events?afterTs=<epochMillis>&limit=<1..300>` | 实时事件（增量）：`{events:[{ts,type,text,player,playerId?}],lastTs,available,total,mainFileAvailable,historyAvailable,hint}`。`afterTs` 语义为**严格大于**；不传 `afterTs` 时返回最近 `limit` 条（默认 100）；坏行/半行/文件缺失均容错；主事件文件因轮转暂缺时会返回 `available:false + historyAvailable:true + hint`（中性提示，历史仍可查 `/api/events/history`） |
+| `GET /api/events?afterTs=<epochMillis>&limit=<1..300>` | 实时事件（增量）：`{events:[{ts,type,text,player}],lastTs,available,total,mainFileAvailable,historyAvailable,hint}`。`afterTs` 语义为**严格大于**；不传 `afterTs` 时返回最近 `limit` 条（默认 100）；坏行/半行/文件缺失均容错；含旧 `playerId` 的记录和指令聊天会被过滤，不返回；主事件文件因轮转暂缺时会返回 `available:false + historyAvailable:true + hint`（中性提示，历史仍可查 `/api/events/history`） |
 | `GET /api/catalog` | 现有列表：`{dp:[{name,file,size,updatedAt,author,desc,title}],maps:[...]}`；`name`=不含扩展名显示名，`file`=真实文件名；历史文件无审核元数据时 `author/desc/title` 为 `null` |
 | `GET /api/health` | 运维自检：数据/事件/目录可用性、`dpCount/mapCount`、`pendingDp/pendingMap/queueLimit`、会话数、待收尾控制台命令数、`logsEnabled/logsAvailable/logsRequireLogin/logsDir`、`activeDownloads/maxConcurrentDownloads`、`bandwidthAvailable/bandwidthInterface`、`clientDisconnects`、`console{enabled,reachable,optional,status,host,port,lastError,checkedAt,lastOkAt,hint}`、`eventHistoryFiles`、版本 |
 | `GET /server-status.json` | **旧入口兼容**：直接回传 `server-status.json` 原文（旧页面/脚本可继续使用） |
@@ -318,13 +340,13 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | --- | --- |
 | `fromTs` / `toTs` | epoch 毫秒，**闭区间**（`fromTs <= ts <= toTs`）；0/省略表示不限 |
 | `type` | 事件类型（`chat/join/leave/vote_start/vote_pass/vote_fail/map_change/system`），空 = 全部；非法返回 400 |
-| `keyword` | 关键字，**匹配原始 JSON 行**（因此会命中 `text` / `player` / `playerId` 等字段），大小写不敏感、支持中文（请用 percent-encoding 传参），最大 `events.historyMaxKeywordChars` |
+| `keyword` | 关键字，只匹配公开字段 `type` / `text` / `player`（大小写不敏感、支持中文）；**不能**匹配 `playerId` 或已隐藏的指令聊天；最大 `events.historyMaxKeywordChars` |
 | `limit` | 每页条数，默认 100，**最大 200**（超出被钳制） |
 | `cursor` | 分页游标 = **上一页最后一条的 `ts`（epoch 毫秒）**；语义为「只返回 `ts < cursor` 的记录」 |
 
 ```json
 { "ok": true, "data": {
-  "available": true, "items": [ {"ts":1792300000000,"type":"chat","text":"[red]…","player":"…","playerId":"…"} ],
+  "available": true, "items": [ {"ts":1792300000000,"type":"chat","text":"[red]…","player":"…"} ],
   "hasMore": true, "nextCursor": 1792299990000, "limit": 100,
   "fromTs": 0, "toTs": 0, "type": "", "keyword": "", "cursor": 0,
   "files": ["live-events.jsonl","live-events.1.jsonl"], "scannedFiles": 2, "scannedLines": 640
@@ -359,12 +381,15 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 
 | 风险 | 措施 |
 | --- | --- |
-| 默认口令 | 配置文件内置默认账号+密码用于首次启动；启动横幅**红色警告**要求立即修改；支持改用 PBKDF2 `passwordHash` |
-| 会话 | 内存会话表 + 32 字节随机 token；`expiresAt` 过期即失效；多 IP/多会话允许（需求如此）；日志记录登录来源 IP |
-| 暴力破解 | 同 IP 登录失败限频（默认 5 次/5 分钟 → 429）；成功登录清零 |
+| 默认口令 | 配置文件内置默认账号+密码用于首次启动；启动横幅**红色警告**要求立即修改；支持改用 PBKDF2 `passwordHash`（哈希优先于明文）。**注意：目前只是警告、不阻断启动**（见 §11 已知限制） |
+| 会话 | 内存会话表 + 32 字节 CSPRNG token（64 hex）；`expiresAt` 绝对过期；多 IP/多会话允许（需求如此）；会话记录**管理员凭据指纹**，改密/换哈希后旧会话立即失效 |
+| 暴力破解 | **无阻塞节流**（第 3 轮：先验密码）：每次尝试**先校验密码**，正确即放行 —— 指数退避（`0/2/4/8/…/300s`，键=用户名、与 IP 无关）**只作用于错密码**，所以攻击者无法用「持续错登」把管理员永久挡在门外。全局失败预算（60 分钟 ≥40 次 → 慢速）与 `loginMinIntervalMs`（常态 120ms/次）负责压 PBKDF2 的 CPU 成本。所有 429 用**同一句文案**（不再暴露 `reason`），时间信息只在 `Retry-After` 头与 `retryAfter` 字段。只统计 `BAD_CREDENTIALS`（空字段 400/408 不计入）。per-IP 固定锁默认关闭（`ipHardLockFailures=0`），且 per-IP 计数仅用于观测 |
+| 客户端 IP 采信 | 未配置 `security.trustedProxies` 时**完全忽略** `X-Forwarded-For`；配置后仅当直连对端命中白名单才采信，且取**最右侧非受信段**（最左段可被客户端任意伪造） |
 | CSRF | 不使用 Cookie，管理 API 只认 `Authorization: Bearer`，跨站表单无法伪造 |
-| 上传体积 | `Content-Length` 预检 + 流式读取二次上限（`maxRequestBytes`），超限 413；单文件再校验 10MB |
-| 类型伪造 | 扩展名白名单 + **文件头校验**：`.zip` 必须 `PK` 头；`.json/.hjson/.json5` 必须是 UTF-8 对象/数组（允许 BOM）；`.msav` 必须 zlib（CMF/FLG 校验）或 gzip 头 |
+| 上传体积 | `Content-Length` 超 `maxRequestBytes` **立即 413（不进读取循环）**；读取带「总超时 30s + 单次读停滞 **200ms** + 最低速率 2KB/s」三重兜底，慢速/停滞连接返回 **408** 并断开；另有**全局停滞预算**（每 1 秒最多花 400ms 在「等对端发数据」上，只对未收满 64KB 的早期阶段计费）——4 个慢连接并发时后续正常请求仍能在 **~400ms** 内得到响应（改前约 3.3s） |
+| 上传内存 | 按 `Content-Length` 一次分配精确缓冲区（不再 MemoryStream+ToArray 双份）；multipart 按字节扫描 boundary（`Array.IndexOf` 原生定位），**先算分片预算再切片**（上限 40），文件内容以 `(offset,count)` 引用缓冲区零复制，落盘时分块流式写入 + 增量 SHA-256（10MB 上传实测峰值增量 ~19MB，旧版 ~84MB 且不回落） |
+| 类型伪造 | 扩展名白名单 + **结构级校验**：`.zip` 必须 `PK\x03\x04`/`PK\x05\x06` 开头**且**尾部 64KB 内存在 EOCD 记录；`.json` **必须真正能被解析**；`.hjson/.json5` 弱校验（首个非空白字符为 `{`/`[`）；`.msav` **必须能解压**且明文以 `MSAV` + 版本号(1..1000) 开头（zlib/gzip 均可） |
+| 文件名安全 | 拒绝路径分隔符、控制字符、`" \| < > ? * :`（`:` 是 NTFS ADS 分隔符）与 Windows 保留名（`CON/PRN/AUX/NUL/COM1-9/LPT1-9`），失败返回 `400 BAD_FILENAME`；控制台命令里的文件名额外剔除 `"` |
 | 路径穿越 | 上传文件名只取末段并清洗控制字符；落盘路径做「必须位于目标目录内」校验；静态文件按 URL 段拒绝 `..`、`.`、隐藏段与白名单扩展名，并再次校验绝对路径在 web 根内 |
 | 敏感文件泄漏 | 静态路由屏蔽 `server/`、`web-data/`、`web-config.json`、`web-config.ps1`、`start-web.*`；仅服务白名单扩展名（html/css/js/svg/png/jpg/ico/字体/音视频等） |
 | 暂存隔离 | 上传先写 `web-data/uploads/<提交id>/<安全文件名>`，审核通过才复制到服务器目录；拒绝即删除 |
@@ -450,7 +475,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 ### 7.1 数据契约（游戏侧写入 → Web 只读）
 
 - 文件：`mdtserver/config/stats/live-events.jsonl`（UTF-8，append-only，每行一个 JSON 对象，无 BOM）；
-- 字段：`{"ts":<epochMillis>,"type":"chat|join|leave|vote_start|vote_pass|vote_fail|map_change|system","text":"<Mindustry 原始颜色标记文本>","player":"<显示名>","playerId":"<可选 uuid>"}`；
+- 字段：`{"ts":<epochMillis>,"type":"chat|join|leave|vote_start|vote_pass|vote_fail|map_change|system","text":"<Mindustry 原始颜色标记文本>","player":"<显示名>"}`；新版不再写 `playerId`；旧文件中的 `playerId` 记录由 Web API 过滤。
 - `ts` **严格递增**（同毫秒自动 +1），Web 端 `afterTs` 为「严格大于」，保证增量拉取不丢事件；
 - `text` 保留 `[red]` / `[#RRGGBB]` / `[]` 等颜色标记原文，脚本只做 JSON 转义；渲染与 HTML 转义在前端完成；
 - 单文件约 2MB 轮转到旋转历史（`.1` 最新、默认保留 12 份，见 §7.4）；每行 `text` 截断 500 字符；`player` 默认上限 256 字符（最低 128，见 §7.5）。
@@ -467,7 +492,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | type | 来源 | 说明 |
 | --- | --- | --- |
 | `chat` | `EventType.PlayerChatEvent` | `text` 为原始颜色标记聊天内容，`player` 发言人 |
-| `join` / `leave` | `EventType.PlayerJoin` / `PlayerLeave` | 含 `playerId` |
+| `join` / `leave` | `EventType.PlayerJoin` / `PlayerLeave` | 新版不含 `playerId`；旧记录由 Web API 过滤 |
 | `vote_start` / `vote_pass` / `vote_fail` | `VoteEvent` 状态轮询（内存读取） | 不改 `vote.lib.kt` |
 | `map_change` | 地图加载完成事件（`MapLoadFinishedEvent`） | 地图名/模式 |
 | `system` | 脚本启停等 | 如「实时事件流已启动」 |
@@ -587,10 +612,43 @@ KDoc 扫描 210 文件干净、`sa listFailed` 空、`scriptdiag count` 失败 0
 - 事件流的 `chat/join/leave/vote/map_change` 真实事件：测试期间服务器无人，只验证了读取/容错与 system 事件；
   真实事件由游戏侧脚本在有人活动时产生（契约已对齐）。
 
+**慢速/畸形请求的复现口径（红队核对用，2026-11-05 第 1 轮修复后）：**
+
+```text
+# 1) 慢速 body（必须用 ≤10MB 的 Content-Length，否则会在头部阶段被立即 413，测不到 H-1）
+POST /api/upload HTTP/1.1
+Content-Type: multipart/form-data; boundary=deadbeef
+Content-Length: 5000000
+<只发送 3 字节后挂住>
+→ 期望：并发 GET /api/health 在约 0.7s 内返回 200；该连接约 0.8s 后收到 408 并被关闭
+
+# 2) 超限 body（不进读取循环）
+Content-Length: 12582913   (> maxRequestBytes 12582912)
+→ 期望：立即 413（实测 8ms），不读取任何 body
+
+# 3) 正常 10MB 上传
+→ 期望：200；进程工作集增量约 +19MB（旧版 +84MB 且不回落），完成后可被回收
+```
+
 **已知限制：**
 
-- 会话为内存态：重启 Web 后所有管理员需重新登录；
-- 后端为单线程请求循环：普通 API 很快，**日志下载已改异步写泵不阻塞**；但大文件**上传**仍会串行占用主循环（量大需改造）；
+- 会话为内存态：重启 Web 后所有管理员需重新登录（配置不热重载，改密后重启同样会清空）；
+- **登录节流也是内存态**：重启进程会清零 per-account 退避、全局失败预算与慢速令牌桶。
+  这是有意的（热路径不写盘），但意味着「重启 = 攻击者可重新获得完整尝试额度」；文档写明，运维知悉即可；
+- **节流只延迟、不封禁**：per-account 最坏情况要等 300s（8 次以上连续失败后），全局慢速下每 5 秒放行一次。
+  若怀疑被攻击，运维可通过调大/调小 `rateLimit.*` 或重启进程立刻恢复；
+- 后端为单线程请求循环：普通 API 很快，**日志下载已改异步写泵不阻塞**；上传已加读超时（30s / 停滞 200ms / 全局停滞预算 400ms）与内存优化，
+  但一次 10MB 上传仍会串行占用主循环约 200~400ms，**不是并发模型**（量大需改造为 Runspace/ThreadJob）；
+- **`/api/health` 的字段已按登录态拆分**：未认证只返回 `ok/serverTime/version`；绝对路径、`adminUser`、控制台 host:port、
+  会话数、待审队列数等只在 `Authorization: Bearer` 有效时返回。副作用：公开上传页不再显示「当前待审 N/上限」的实时数字，
+  降级为「仅显示上限」（这是既有前端降级路径）；
+- **未认证可占满待审队列（M-3，本轮裁决不修）**：`/api/upload` 是公开接口，攻击者可用合法 DP/地图把每种类型的 10 个待审位占满，
+  导致正常投稿返回 `QUEUE_FULL`。仅有的闸门是「每 IP 5 次/10 分钟」与人工审核；IPv6/代理池可绕过前者。
+  缓解靠运维：及时清理待审项（拒绝即可释放名额）或临时调小 `upload.queueLimitPerKind` 观察；彻底修复需 CAPTCHA/账号体系/邀请码，属后续需求；
+- **默认凭据只在启动横幅警告、不阻断启动（B-01，本轮裁决不改代码）**：若部署者保留默认密码并绑定公网，
+  攻击者可直接登录（默认密码写在仓库 README 与 `web-config.json` 里）。上线前必须改用 `admin.passwordHash`；
+- **门户自身无 HTTPS（B-03，本轮裁决留待后续）**：`HttpListener` 只注册 `http://`。公网部署必须由反代提供 TLS，
+  且门户继续监听 127.0.0.1；否则 Bearer token 与登录密码在网络上明文可见；
 - 日志下载直链使用 `?token=<sessionToken>`（浏览器导航无法带 Authorization 头）：token 会出现在 URL/浏览器历史，
   仅限下载链接使用、勿分享；当前未实现一次性 download token（可选增强）；
 - 历史事件查询为文件系统级倒序扫描 + 有上限的行文本缓存：单次深分页最多读取 `historyMaxFiles` 个文件（默认 13 个、每个 ≤2MB），
@@ -598,6 +656,17 @@ KDoc 扫描 210 文件干净、`sa listFailed` 空、`scriptdiag count` 失败 0
 - 宿主机上行带宽是网卡总量（含游戏服/Web/系统其它流量），**游戏服与 Web 不同机时无意义**；
 - 控制台桥是**可选依赖**（见 §6.6）：不开启/连不上属正常情况，审核/删除不受影响，只是不热重载、不刷新地图列表；
 - `/api/status` 的 `maxPlayers` 无可靠服务端来源，固定 `null`；
+- **CSP 会拦掉「每日一言」的远程拉取**：`Content-Security-Policy` 为 `default-src 'self'; connect-src 'self'; ...`，
+  因此 `quote.js` 对 `https://v1.hitokoto.cn` 的 `fetch` 会被浏览器拦截并**静默降级到本地语料**（1484 条，功能不受影响）。
+  如需恢复远程一言，把该域名加入 `Add-PortalSecurityHeaders`（`server/portal-http.ps1`）的 `connect-src` 白名单即可 ——
+  默认不放开是有意的：服务器门户不应主动向第三方发起请求；
+- **`Server: Microsoft-HTTPAPI/2.0` 去不掉（R2-7，接受）**：该头由 http.sys 在**内核层**写入，
+  应用层（`HttpListener`）没有 API 可以移除或改写它。已知信息量极低（只说明跑在 Windows + HttpListener），
+  已在威胁模型里按「可指纹化」接受；如需彻底隐藏必须换前置反代（反代可覆写该头）；
+- **`/index.html/` 这类「文件路径带尾斜杠」的 URL 返回 404（R2-7）**：除根路径 `/` 外一律按不存在处理，
+  避免同一内容出现多个 URL（缓存/指纹面）。静态文件本身仍支持 `HEAD`（`-HeadOnly`），API 的 `HEAD` 统一 405；
+- **上传/日志配额只统计成功请求（R2-6）**：`404/405/408/413/400` 不消耗每 IP 配额，
+  只有真正受理上传或真正下发日志内容才计数；否则攻击者可以用垃圾请求把正常用户的配额耗光；
 - 门户自身无 HTTPS（如需公网建议反代 + 保持 127.0.0.1 监听）。
 
 **遗留 TODO：**

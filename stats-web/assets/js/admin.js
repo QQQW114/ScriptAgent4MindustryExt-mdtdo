@@ -139,7 +139,11 @@
       UI.setBusy(el.loginBtn, false);
       var info = Api.errorInfo(err);
       UI.showError(el.loginError, err);
-      if (formError && err && err.code === 'RATE_LIMITED') formError.textContent = '登录失败次数过多，请稍后再试';
+      // 第 2 轮：节流改为「指数退避 / 全局慢速」，服务端会带 retryAfter（秒）。
+      // 措辞避开「锁定/封禁」，避免管理员误以为账号被冻结。
+      if (formError && err && err.code === 'RATE_LIMITED') {
+        formError.textContent = '尝试过于频繁' + (err && err.retryAfter ? '，请 ' + err.retryAfter + ' 秒后再试' : '，请稍后再试');
+      }
       UI.toast(info.title, 'error');
     });
   }
