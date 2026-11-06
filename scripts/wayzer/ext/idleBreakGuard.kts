@@ -152,7 +152,8 @@ private val conveyorNames by lazy {
     conveyorWhitelist.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 }
 
-private val dailyLocks = ConcurrentHashMap<String, Any>()
+/** 每日首次判定用全局锁：单次 DB 操作很短；不用「每 uid 一个锁」避免锁对象永久堆积。 */
+private val dailyFirstLock = Any()
 
 /** 每日周期日期：凌晨 4 点前算前一天，4 点整切换到新周期。 */
 private fun dailyCycleDate(now: LocalDateTime = LocalDateTime.now()): LocalDate {
@@ -164,8 +165,9 @@ private fun dailyCycleDate(now: LocalDateTime = LocalDateTime.now()): LocalDate 
     }
 }
 
+/** 每个账号主体只保留一个 key，值是当前周期日期；避免每天新增一行、长期膨胀。 */
 private fun dailyFirstKey(uid: String): String =
-    "idleBreakGuard.firstJoin." + dailyCycleDate() + "." + uid
+    "idleBreakGuard.firstJoin." + uid
 
 /**
  * 非游客每天首次进服才监控：
@@ -174,12 +176,13 @@ private fun dailyFirstKey(uid: String): String =
  */
 private fun tryMarkDailyFirstJoin(uid: String): Boolean {
     val key = dailyFirstKey(uid)
+    val cycle = dailyCycleDate().toString()
     return runCatching {
-        synchronized(dailyLocks.computeIfAbsent(uid) { Any() }) {
-            if (MdtStorage.getSetting(key) != null) {
+        synchronized(dailyFirstLock) {
+            if (MdtStorage.getSetting(key) == cycle) {
                 false
             } else {
-                MdtStorage.setSetting(key, "1")
+                MdtStorage.setSetting(key, cycle)
                 true
             }
         }
@@ -192,8 +195,13 @@ private fun initMonitor(player: Player) {
     val data = PlayerData[player]
     val level = levelOf(player)
     val seconds = windowSecondsFor(level)
+    // 3 级以上豁免：先判断豁免，避免白白消耗当天的首次进服 key。
+    if (seconds <= 0) {
+        monitors.remove(uuid)
+        return
+    }
 
-    // 游客始终监控；非游客每天首次进服才监控（3 级以上仍豁免）。
+    // 游客始终监控；非游客每天首次进服才监控。
     var dailyUid: String? = null
     if (data.authed) {
         if (!tryMarkDailyFirstJoin(data.id)) {
@@ -204,10 +212,6 @@ private fun initMonitor(player: Player) {
         dailyUid = data.id
     }
 
-    if (seconds <= 0) {
-        monitors.remove(uuid)
-        return
-    }
     val now = System.currentTimeMillis()
     monitors[uuid] = Monitor(
         uuid = uuid,
@@ -224,6 +228,11 @@ private fun refreshMonitor(player: Player) {
     val data = PlayerData[player]
     val level = levelOf(player)
     val seconds = windowSecondsFor(level)
+    // 等级升到 3 级以上：直接撤销监控，不消耗每日首次 key。
+    if (seconds <= 0) {
+        monitors.remove(uuid)
+        return
+    }
 
     // 游客在本次会话中登录账号：按新账号补做“每日首次”判定。
     if (data.authed && monitor.dailyUid != data.id) {
@@ -235,10 +244,6 @@ private fun refreshMonitor(player: Player) {
         monitor.dailyUid = data.id
     }
 
-    if (seconds <= 0) {
-        monitors.remove(uuid)
-        return
-    }
     monitor.level = level
     monitor.deadline = monitor.joinedAt + seconds * 1000L
 }
