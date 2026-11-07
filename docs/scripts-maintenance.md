@@ -39,13 +39,16 @@ B 项「批量选中含接收台，最后拆接收台」未按预期触发 `疑�
   `val anchorPos = event.tile.build?.tile?.pos() ?: event.tile.pos()`；
 - 接收台判定 A/B 使用 `anchorPos`；
 - 普通 `selected` 匹配和 `started=true` 也使用 `anchorPos`；
+- 修复 `/vote quitOb` 提前解除观战后 `monitor.triggered` 不重置的问题：
+  - `tickRelease` 先检查 `isForceOb`，提前解除时清记录并调用 `resetMonitorForNextOffense`；
+  - 清空 `selected` / `receiverTiles` / `started` / `triggered`，但保留原 `deadline` 和 `dailyUid`；
 - 文档同步修正 `receiverBlocks` 配置表中“直接拆除会立即还原”的错误描述。
 
 ### 3. 验证
 
 - 本地测试服冷启动：`共找到167脚本,加载成功163,启用成功158,出错0`；
 - `idleBreakGuard V0.1.5` Enabled；
-- 多格建筑 B/C 仍需真实客户端复测（本地只能验证编译/加载与坐标换算逻辑）。
+- 多格建筑 B/C 与 quitOb 后二次触发仍需真实客户端复测（本地只能验证编译/加载与坐标换算逻辑）。
 
 ## 2026-11-07（第三十七批）：idleBreakGuard 接收台黑名单 + V0.1.5 版本标注
 

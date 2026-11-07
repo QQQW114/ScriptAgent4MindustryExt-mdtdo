@@ -12,6 +12,9 @@
 - `BlockBuildBeginEvent` 原来用 `event.tile.pos()`，拆非锚点格子时会匹配失败；
 - 现在统一换算为 `event.tile.build?.tile?.pos() ?: event.tile.pos()`；
 - 修复 B 项「批量选中含接收台，拆到接收台角落」被误判为 A，以及 C 项开始拆除未匹配 `selected` 的问题。
+- 修复 `/vote quitOb` 提前退出观战后 `monitor.triggered` 仍为 `true`，导致原监控窗口内后续拆除不再触发监控的问题：
+  - 观战提前解除时清理 `selected` / `receiverTiles` / `started` / `triggered`；
+  - 不延长原监控窗口，不消耗新的每日首次 key。
 
 本地验证：
 
