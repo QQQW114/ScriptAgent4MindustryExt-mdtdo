@@ -15,11 +15,17 @@
 - 修复 `/vote quitOb` 提前退出观战后 `monitor.triggered` 仍为 `true`，导致原监控窗口内后续拆除不再触发监控的问题：
   - 观战提前解除时清理 `selected` / `receiverTiles` / `started` / `triggered`；
   - 不延长原监控窗口，不消耗新的每日首次 key。
+- 修复“被 OB 后退出重进，再 vote 解除 OB 仍不触发”的问题：
+  - `PlayerLeave` 不再立即删除 `obRecords`，保留到重连或记录过期；
+  - `tickRelease` 离线时只在 `rec.until` 过期后清理；
+  - 重连后检测到 `isForceOb == false` 时重置 `triggered`。
 
-本地验证：
+> 由Holy和他的dsh完成实机测试：修复了拆除接收台被 OB 并解除观战后，再次拆除接收台无法再次触发 OB 的问题；同时修复了被 OB 后退出重连、解除观战后不再检测接收台拆除的问题，确保后续拆除接收台仍会重新触发 OB。
+
+验证：
 
 - 冷启动编译/加载成功，`idleBreakGuard V0.1.5` Enabled；
-- B/C 真实客户端行为仍需复测。
+- 由Holy和他的dsh完成实机测试。
 
 ## V0.1.5（2026-11-07）
 
