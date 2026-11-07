@@ -408,6 +408,7 @@ private fun checkGuestRelease(player: Player, rec: ObRecord) {
             if (!Groups.player.contains(player)) return@withContext
             if (!with(voteOb) { isForceOb(player) }) {
                 obRecords.remove(player.uuid())
+                resetMonitorForNextOffense(player.uuid())
                 return@withContext
             }
             if (alt && guestAltKeepObserver) {
@@ -426,19 +427,37 @@ private fun drainBatches() {
     }
 }
 
+/**
+ * 玩家通过 /vote quitOb（或被管理员解除）提前退出观战后，清掉本次处罚的触发标记，
+ * 让仍在原监控窗口内的后续拆除可以再次被监控；不延长原窗口，也不消耗新的每日首次。
+ */
+private fun resetMonitorForNextOffense(uuid: String) {
+    val monitor = monitors[uuid] ?: return
+    if (monitor.triggered) {
+        monitor.triggered = false
+        monitor.started = false
+        monitor.batchSeen = false
+        monitor.selected.clear()
+        monitor.receiverTiles.clear()
+        Log.info("[IDLEGUARD] reset monitor after ob release uuid=" + uuid)
+    }
+}
+
 private fun tickRelease() {
     val now = System.currentTimeMillis()
     for ((uuid, rec) in obRecords) {
-        if (now < rec.until) continue
         val player = Groups.player.find { it.uuid() == uuid }
         if (player == null) {
             obRecords.remove(uuid)
             continue
         }
+        // 玩家投票 /vote quitOb 或管理员提前解除时，立即清理记录并恢复监控
         if (!with(voteOb) { isForceOb(player) }) {
             obRecords.remove(uuid)
+            resetMonitorForNextOffense(uuid)
             continue
         }
+        if (now < rec.until) continue
         rec.until = now + 60_000L
         if (rec.guest) checkGuestRelease(player, rec)
         else releaseObserver(player, "观战已解除。")
