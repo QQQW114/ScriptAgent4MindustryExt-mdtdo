@@ -24,6 +24,7 @@ updater/
 ├─ config.json                          # 唯一需要改的文件（绝对路径 + 仓库/代理/保护规则）
 ├─ UpdateCommon.ps1                     # 公共实现（各入口脚本共用；一般不用改）
 ├─ update-mainserver.ps1 / .bat         # ★ 主服（MDT DO）快速同步：scripts(main) + email-service
+├─ update-mainserver-scripts.bat         # ★ 主服只更新 scripts(main)，不检查/不更新 email-service
 ├─ update-subserver.ps1 / .bat          # ★ 分服（MDC DO）快速同步：只 scripts(默认 mdc-do)
 ├─ update-email-service.ps1 / .bat      # ★ 只同步 email-service（保护 config.json / logs）
 ├─ update-plugins.ps1 / .bat            # ① 严格镜像更新服务器插件脚本（运行中可 console socket 逐个热重载）
@@ -70,14 +71,17 @@ updater/
 | 服务器 | 命令 | 同步内容 | 分支 |
 |---|---|---|---|
 | **主服 MDT DO** | `update-mainserver.bat` | 插件 `scripts/**`（严格镜像 + 可选热重载）+ `email-service/**`（只增改，保护 `config.json`/`logs`） | `main` |
+| **主服仅插件** | `update-mainserver-scripts.bat` | 只同步 `scripts/**`（严格镜像 + 热重载），完全不检查/不更新 email-service | `main` |
 | **分服 MDC DO** | `update-subserver.bat` | 只同步插件 `scripts/**`（严格镜像 + 可选热重载），不部署 email-service/账号系统 | `mdc-do`（`-Branch` 可覆盖） |
 
 ```bat
 :: 第一次使用先预览（零风险，不改任何文件）
 update-mainserver.bat -DryRun
+update-mainserver-scripts.bat -DryRun
 update-subserver.bat  -DryRun
 :: 正式更新
 update-mainserver.bat
+update-mainserver-scripts.bat
 update-subserver.bat
 ```
 
@@ -91,6 +95,7 @@ update-subserver.bat
 | 脚本 | 作用 | 需要停游戏服 | 受保护内容（默认） | 更新后要做什么 |
 |---|---|---|---|---|
 | `update-mainserver.bat` | **主服一键**：`scripts/**`（严格镜像 + 运行中逐个热重载）+ `email-service/**`（只新增/更新） | 插件部分同 `update-plugins`；email-service 不需要停游戏服 | `data\`、`external-cp\`、`cache\`；`email-service` 的 `config.json`、`logs\`、`dist\` | 邮件服务如正在运行需**重启**；游戏服无需重启 |
+| `update-mainserver-scripts.bat` | **主服仅插件**：只同步 `scripts/**`（`main`，严格镜像 + 运行中逐个热重载），不检查/不更新 email-service | 同 `update-plugins`（socket 可用时逐个热重载） | `data\`、`external-cp\`、`cache\` | 无（服务器未运行则手动启动验证） |
 | `update-subserver.bat` | **分服一键**：只严格镜像 `scripts/**`（默认分支 `mdc-do`，不含账号系统） | 同 `update-plugins`（socket 可用时热重载） | `data\`、`external-cp\`、`cache\` | 无（服务器未运行则手动启动验证） |
 | `update-email-service.bat` | 只同步 `email-service/**`（默认只新增/更新、不删除本地文件） | 否 | `config.json`、`logs\`、`dist\` | 更新后自动重启计划任务（`-NoRestartEmailService` 可关闭） |
 | `update-plugins.bat` | 严格镜像 `scripts/**` → `serverScriptsPath`；服务器运行中时通过 console socket **逐个**热重载变更脚本 | **否**（socket 可用时逐个热重载；首次部署 socket 需停服一次） | `data\`、`external-cp\`、`cache\`（不碰不备份不删） | 无（服务器未运行则手动启动验证） |
