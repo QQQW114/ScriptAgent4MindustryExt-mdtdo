@@ -448,7 +448,9 @@ private fun tickRelease() {
     for ((uuid, rec) in obRecords) {
         val player = Groups.player.find { it.uuid() == uuid }
         if (player == null) {
-            obRecords.remove(uuid)
+            // 断线重连要保留记录，重连后 quitOb 时才能识别并重置 monitor.triggered；
+            // 玩家一直不回来则等记录自然过期后再清理。
+            if (now >= rec.until) obRecords.remove(uuid)
             continue
         }
         // 玩家投票 /vote quitOb 或管理员提前解除时，立即清理记录并恢复监控
@@ -558,8 +560,8 @@ listen<EventType.PlayerLeave> { event ->
     leftAt[uuid] = System.currentTimeMillis()
     if (!reconnectResumeEnabled) {
         monitors.remove(uuid)
+        obRecords.remove(uuid)
     }
-    obRecords.remove(uuid)
 }
 
 onEnable {
