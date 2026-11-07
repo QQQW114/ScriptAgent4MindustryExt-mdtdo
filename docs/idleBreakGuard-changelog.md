@@ -4,6 +4,20 @@
 > 版本：**V0.1.5**
 > 当前版本维护者：八色 和他的 dsh
 
+## V0.1.5-fix（2026-11-07）
+
+修复多格建筑（接收台 `landing-pad` 为 3×3）的坐标判定：
+
+- `handleBatch` 的 `selected` / `receiverTiles` 使用 `build.tile.pos()`（建筑锚点）；
+- `BlockBuildBeginEvent` 原来用 `event.tile.pos()`，拆非锚点格子时会匹配失败；
+- 现在统一换算为 `event.tile.build?.tile?.pos() ?: event.tile.pos()`；
+- 修复 B 项「批量选中含接收台，拆到接收台角落」被误判为 A，以及 C 项开始拆除未匹配 `selected` 的问题。
+
+本地验证：
+
+- 冷启动编译/加载成功，`idleBreakGuard V0.1.5` Enabled；
+- B/C 真实客户端行为仍需复测。
+
 ## V0.1.5（2026-11-07）
 
 简单汇报一下这次插件更新了什么。

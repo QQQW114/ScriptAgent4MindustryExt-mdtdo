@@ -478,12 +478,16 @@ listen<EventType.BlockBuildBeginEvent> { event ->
     val now = System.currentTimeMillis()
     if (now > monitor.deadline) return@listen
 
+    // 多格建筑（接收台 3x3）的 BlockBuildBeginEvent 可能落在非锚点格子；
+    // selected / receiverTiles 存的是 build.tile.pos()，这里统一换算成锚点坐标。
+    val anchorPos = event.tile.build?.tile?.pos() ?: event.tile.pos()
+
     // A/B/C 的接收台判定：玩家开始拆接收台本身（游客/1级、窗口期内）。
     // ConstructBuild.previous 是原方块。
     // 2026-11-07 用户决定：只处罚，不实现“还原接收台”。
     val construct = event.tile.build as? ConstructBlock.ConstructBuild
     if (construct != null && isReceiverBlock(construct.previous) && monitor.level <= 1) {
-        val pos = event.tile.pos()
+        val pos = anchorPos
         val count = monitor.selected.size
         val overThreshold = count > thresholdFor(monitor.level)
         // B：批量选中里含接收台且未到阈值 → 「拆到接收台时」才处罚“疑似将要拆除接收台”；
@@ -503,7 +507,7 @@ listen<EventType.BlockBuildBeginEvent> { event ->
 
     // 只有开始拆「选中集合里的 tile」才算这次框选开始拆除；
     // 否则选中一批建筑后去拆别的建筑也会被误判为触发。
-    if (event.tile.pos().toLong() !in monitor.selected) return@listen
+    if (anchorPos.toLong() !in monitor.selected) return@listen
     monitor.started = true
     if (debugLog) Log.info("[IDLEGUARD] begin uuid=" + player.uuid() + " selected=" + monitor.selected.size)
     if (monitor.triggered) return@listen

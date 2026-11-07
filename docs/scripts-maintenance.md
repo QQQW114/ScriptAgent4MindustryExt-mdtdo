@@ -22,6 +22,31 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-07（第三十八批）：idleBreakGuard 多格建筑锚点坐标修复
+
+类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`）。
+
+### 1. 问题
+
+B 项「批量选中含接收台，最后拆接收台」未按预期触发 `疑似将要拆除接收台`，而是退化成
+`试图拆除接收台`。接收台 `landing-pad` 是 3×3 多格建筑，`handleBatch` 存的是
+`build.tile.pos()`（锚点），而 `BlockBuildBeginEvent` 用的是 `event.tile.pos()`；拆非锚点
+格子时坐标不匹配，导致 `receiverTiles`/`selected` 判定失败。C 项同样可能因锚点不匹配而漏判。
+
+### 2. 改动
+
+- `BlockBuildBeginEvent` 统一计算
+  `val anchorPos = event.tile.build?.tile?.pos() ?: event.tile.pos()`；
+- 接收台判定 A/B 使用 `anchorPos`；
+- 普通 `selected` 匹配和 `started=true` 也使用 `anchorPos`；
+- 文档同步修正 `receiverBlocks` 配置表中“直接拆除会立即还原”的错误描述。
+
+### 3. 验证
+
+- 本地测试服冷启动：`共找到167脚本,加载成功163,启用成功158,出错0`；
+- `idleBreakGuard V0.1.5` Enabled；
+- 多格建筑 B/C 仍需真实客户端复测（本地只能验证编译/加载与坐标换算逻辑）。
+
 ## 2026-11-07（第三十七批）：idleBreakGuard 接收台黑名单 + V0.1.5 版本标注
 
 类型：脚本功能 + 版本标注（`scripts/wayzer/ext/idleBreakGuard.kts`，`docs/idleBreakGuard.md`）。
