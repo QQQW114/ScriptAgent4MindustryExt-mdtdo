@@ -135,6 +135,10 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
 1. 包层处理时，看到选中坐标已经是**拆除态** `ConstructBuild`；
 2. `BlockBuildBeginEvent` 中，玩家开始拆的 tile 在 `monitor.selected` 里。
 
+> V0.1.5-fix：多格建筑（如 3×3 接收台）的事件 tile 可能不是锚点；
+> `BlockBuildBeginEvent` 现在统一使用 `event.tile.build?.tile?.pos()` 换算成建筑锚点，
+> 再与 `selected` / `receiverTiles` 匹配，避免拆角落时漏判 B/C。
+
 只有 `started=true` 且 `selected.size > 阈值` 才会触发，避免“只框选、不拆”也被强制观战。
 
 ### 3.4 触发
@@ -183,7 +187,7 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 | `ignoreBoulders` | true | 忽略名称含 boulder 的巨石 |
 | `conveyorWhitelist` | `conveyor,titanium-conveyor,plastanium-conveyor` | 只拆这些传送带时豁免 |
 | `buildingWhitelist` | 21 种（见 §2.2） | 额外豁免的建筑物（与 `conveyorWhitelist` 取并集，选中不计入） |
-| `receiverBlocks` | `landing-pad` | 接收台黑名单：监控对象选中/拆除即处罚，直接拆除会立即还原（§2.3） |
+| `receiverBlocks` | `landing-pad` | 接收台黑名单：监控对象选中/拆除即处罚；只处罚，不还原（§2.3） |
 | `debugLog` | false | 输出批次/触发诊断日志 |
 
 配置示例：
