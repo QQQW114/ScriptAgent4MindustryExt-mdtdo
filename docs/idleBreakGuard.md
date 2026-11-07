@@ -2,8 +2,10 @@
 
 > 脚本：`scripts/wayzer/ext/idleBreakGuard.kts`
 > 部署路径：`config/scripts/wayzer/ext/idleBreakGuard.kts`
+> 版本：**V0.1.5**（当前版本维护者：八色 和他的 dsh）
+> 更新日志：`docs/idleBreakGuard-changelog.md`
 > 首次提交：PR #1（`feat/idlebreakguard`）
-> 状态：本地开发服测试通过；真实客户端时序/观感待验证
+> 状态：由Holy和他的dsh完成实机测试；V0.1.5 接收台、quitOb 与退出重连修复已验证
 
 ---
 
@@ -16,6 +18,10 @@
 - 插件在服务端包层读取这批坐标，统计其中**真实建筑物**的数量；
 - 游客超过 50 个、1 级超过 100 个、2 级超过 150 个，且确实开始拆除时，
   调用 `voteOb.forceObPlayer` 强制观战 600 秒（理由“疑似乱拆”）。
+- **V0.1.5 新增**：
+  - 建筑物豁免（§2.2）：21 种墙/传送带/管道/钻头/逻辑块等不计入批量数量；
+  - 接收台黑名单（§2.3）：游客/1 级在窗口内拆除接收台立即处罚；批量选中含接收台且未到阈值时，
+    **拆到接收台这一格**才处罚（按用户决定：只处罚，不做还原）。
 
 只作用于服务端，不需要客户端 mod。
 
@@ -51,6 +57,48 @@
   - 可通过配置 `dailyResetHour` 调整（默认 `4`，0～23）。
 - 游客在本次会话中登录账号时，会立即按该账号补做“每日首次”判定；如果该账号今天已经进过，则取消本次游客监控。
 - 断线 30 秒内重连仍按原监控窗口接续，不算新的一次进服；超过 30 秒后重连则按每日首次规则重新判断。
+
+## 2.2 建筑物豁免（2026-11-07，V0.1.5）
+
+- 新增配置 `buildingWhitelist`：名单内的方块**永不计入**批量拆除数量（与 `conveyorWhitelist` 取并集）。
+- 默认豁免 21 种廉价/可快速重建的基础设施（按 `block.name`）：
+
+| 中文名 | block.name | 中文名 | block.name |
+|---|---|---|---|
+| 合金传送带 | `surge-conveyor` | 物品管道 | `duct` |
+| 铜墙 | `copper-wall` | 大型铜墙 | `copper-wall-large` |
+| 废墙 | `scrap-wall` | 大型废墙 | `scrap-wall-large` |
+| 巨型废墙 | `scrap-wall-huge` | 超巨型废墙 | `scrap-wall-gigantic` |
+| 铍墙 | `beryllium-wall` | 大型铍墙 | `beryllium-wall-large` |
+| 钨墙 | `tungsten-wall` | 大型钨墙 | `tungsten-wall-large` |
+| 双管 | `duo` | 机械钻头 | `mechanical-drill` |
+| 气动钻头 | `pneumatic-drill` | 微型处理器 | `micro-processor` |
+| 逻辑显示屏 | `logic-display` | 大型逻辑显示屏 | `large-logic-display` |
+| 逻辑显示单元 | `tile-logic-display` | 画布 | `canvas` |
+| 大型画布 | `large-canvas` | — | — |
+
+- 语义：这些方块**单个也不计数**，而不是“只有全部选中它们时才豁免”；混选时只统计非豁免方块。
+- 玩家正常重建自家墙/传送带/逻辑设施不会再被误判。
+
+## 2.3 接收台黑名单（2026-11-07，V0.1.5）
+
+“接收台”= `landing-pad`（地图开局自带、服务器科技里不可制造，负责接收/产出固定物品）。
+新增配置 `receiverBlocks`（默认 `landing-pad`）。只对**游客与 1 级**、且在**监控窗口期内**生效：
+
+| 场景 | 判定 | 处罚理由 | 处置 |
+|---|---|---|---|
+| A. 直接开始拆接收台本身（不在批量选中里，或选中里只有它） | `BlockBuildBeginEvent(breaking)` 且 `ConstructBuild.previous` 是接收台 | `试图拆除接收台` | 立即处罚 |
+| B. 批量选中里含接收台、未到阈值，**拆到接收台这一格时** | 同上，且接收台在本次选中集合里、`1 < selected.size <= 阈值` | `疑似将要拆除接收台` | 立即处罚 |
+| C. 批量选中超阈值且含接收台，开始拆选中建筑 | `selected.size > 阈值` | `疑似乱拆（批量选中拆除 N 个建筑物）`（与正常处罚一致） | 立即处罚 |
+
+- **B 的时机（用户 2026-11-07 修订）**：不是“一开始拆选中的建筑就处罚”，而是**拆到接收台这一格时**才处罚；
+  没拆到接收台就不触发 B。
+- 处罚 = `voteOb.forceObPlayer` 强制观战（时长见 `observerSeconds`），同一监控窗口只处罚一次。
+- **不实现“还原接收台”（用户 2026-11-07 决定）**：A/B 只处罚，不恢复被拆的接收台；
+  接收台拆掉后其接收配置与已接收物品不会由本插件恢复，需要时由管理员/回档处理。
+  （开发过程中曾验证过还原方案：`tile.setNet` + `LandingPadBuild.config` / 物品 / 液体 / 血量复制，
+  按用户决定已移除，见 `scripts-maintenance.md` 第三十七批。）
+
 ## 3. 判定流程
 
 ### 3.1 包层收集
@@ -73,6 +121,7 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
 - `Team.derelict` 的地图原有物：跳过；
 - 名称含 `boulder` 的巨石：跳过；
 - 配置 `conveyorWhitelist` 里的传送带：跳过；
+- 配置 `buildingWhitelist` 里的建筑物（§2.2）：跳过；
 - 没有 `tile.build` 的格子：跳过；
 - 建造中的 `ConstructBuild`（`wasConstructing=true`）：跳过；
 - 拆除中的 `ConstructBuild`（`wasConstructing=false`）：用 `previous` 还原原方块，
@@ -85,6 +134,10 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
 
 1. 包层处理时，看到选中坐标已经是**拆除态** `ConstructBuild`；
 2. `BlockBuildBeginEvent` 中，玩家开始拆的 tile 在 `monitor.selected` 里。
+
+> V0.1.5-fix：多格建筑（如 3×3 接收台）的事件 tile 可能不是锚点；
+> `BlockBuildBeginEvent` 现在统一使用 `event.tile.build?.tile?.pos()` 换算成建筑锚点，
+> 再与 `selected` / `receiverTiles` 匹配，避免拆角落时漏判 B/C。
 
 只有 `started=true` 且 `selected.size > 阈值` 才会触发，避免“只框选、不拆”也被强制观战。
 
@@ -99,7 +152,10 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 - 强制观战 600 秒；
 - 全服广播由 `voteOb` 输出；
 - 玩家收到聊天提示：
-  `检测到批量选中拆除 N 个建筑物，已被强制观战 10 分钟。`
+  `检测到批量选中拆除 N 个建筑物，已被强制观战 10 分钟。`（V0.1.5 起提示文案为
+  `理由，已被强制观战 N 分钟。`，理由包含 §2.3 的接收台专项理由）。
+- V0.1.5 起所有处罚走统一入口 `punish(player, monitor, reason)`：同一监控窗口只处罚一次，
+  接收台专项处罚（§2.3）复用同一入口。
 
 ### 3.5 到期解除
 
@@ -130,6 +186,8 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 | `ignoreMapBlocks` | true | 忽略 derelict 地图原有物 |
 | `ignoreBoulders` | true | 忽略名称含 boulder 的巨石 |
 | `conveyorWhitelist` | `conveyor,titanium-conveyor,plastanium-conveyor` | 只拆这些传送带时豁免 |
+| `buildingWhitelist` | 21 种（见 §2.2） | 额外豁免的建筑物（与 `conveyorWhitelist` 取并集，选中不计入） |
+| `receiverBlocks` | `landing-pad` | 接收台黑名单：监控对象选中/拆除即处罚；只处罚，不还原（§2.3） |
 | `debugLog` | false | 输出批次/触发诊断日志 |
 
 配置示例：
@@ -200,6 +258,7 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 | 建造中的 60 个 `ConstructBuild` | 不计入、不触发 |
 | 60 个传送带 | 豁免、不触发 |
 | A 选中 60 个，B 去拆其中一个 | A 不被误判 |
+| 21 种豁免方块内部名称（2026-11-07） | 运行服 `Vars.content.blocks()` 校验 21/21 全部注册，无拼写错误 |
 
 关键修复：
 
@@ -212,12 +271,18 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 
 ## 8. 未验证/已知限制
 
-1. **真实客户端**：本地是服务端构造 `ConstructBuild` 模拟，真实客户端的包拆分、事件顺序、观战提示观感需要实机确认。
+1. **真实客户端**：已由Holy和他的dsh完成实机测试，覆盖接收台拆除、OB 解除与退出重连场景。
 2. **终止拆除不回退**：框选后取消，`selected` 仍保留到窗口结束；再次框选会继续累加。
 3. **`BlockBuildBeginEvent` 依赖**：若某些路径不触发该事件，可能出现已选中但 `started` 未置位；目前靠包层 `ConstructBuild` 计数兜底。
 4. **强制观战是会话态**：不跨重启持久化，重连/重启可能丢失。
 5. **阈值是启发式**：正常大规模重建/拆自己建筑也可能达到阈值，需按实际误判调整。
 6. **没有 UI/弹窗**：只发聊天提示；强制观战广播由 `voteOb` 负责。
+7. **（V0.1.5）接收台 A/B/C 三条判定已由Holy和他的dsh完成实机验证**；广播文案与观战观感以实机结果为准。
+8. **（V0.1.5）不还原接收台（用户决定）**：A/B 只处罚，不恢复被拆的接收台；
+   拆除后其接收配置与已接收物品不保留，需要时由管理员/回档处理。
+9. **（V0.1.5）范围口径**：接收台专项保护只覆盖游客与 1 级（按需求）；2 级及以上不触发专项处罚。
+10. **（V0.1.5）B 的时序依赖**：B 依据“本次选中批次里有接收台”的已记录集合；
+    若客户端选完立刻开拆、批次还没被插件处理（100ms 合并窗口），可能退化为 A 的理由（处罚照常）。
 
 ---
 
@@ -225,12 +290,11 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 
 | 行（约） | 内容 |
 |---|---|
-| 53 | `Monitor` 状态 |
-| 129 | `handleBatch()` 批次计数 |
-| 190 | `trigger()` 强制观战 |
-| 220 | `checkGuestRelease()` 游客到期检查 |
-| 276 | `listenPacket2Server<ClientSnapshotCallPacket>` |
-| 293 | `BlockBuildBeginEvent` 开始拆除 |
-| 327 | `onEnable` 100ms 循环 |
+| 95 | `Monitor` 状态（含 V0.1.5 的 `receiverTiles`） |
+| 296 | `handleBatch()` 批次计数（含豁免与 C 判定） |
+| 364 | `punish()` 统一处罚入口 / `trigger()` |
+| 457 | `listenPacket2Server<ClientSnapshotCallPacket>` |
+| 474 | `BlockBuildBeginEvent` 开始拆除（含接收台 A/B/C 判定） |
+| 542 | `onEnable` 100ms 循环 + 版本日志 |
 
 维护时注意：不要改 `vote.lib.kt` / `wayzer/lib/*.kt`；块注释里不要出现嵌套的 `/**`；改完清 `cache` 冷启动。
