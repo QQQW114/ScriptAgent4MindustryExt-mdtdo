@@ -1,7 +1,7 @@
 /* ============================================================================
  * MDT DO 服务器门户 - 投稿页
  *  - 类型（DP / 地图）、标题、作者、介绍、可选替换条目、文件
- *  - 前端校验：必填 + 扩展名 + 单文件 10MB（与后端 web-config.json 默认值一致）
+ *  - 前端校验：必填 + 扩展名 + 单文件限制（DP 默认 30MB，地图默认 10MB，与后端 web-config.json 一致）
  *  - 上传进度（XHR）、后端错误码人话化、待审队列进度、现有列表
  * ==========================================================================*/
 (function (global) {
@@ -14,7 +14,9 @@
   var UPLOAD = SITE.upload || {};
 
   var MAX_BYTES = Number(UPLOAD.maxFileBytes) || 10 * 1024 * 1024;
+  var MAX_DP_BYTES = Number(UPLOAD.maxDpFileBytes) || 30 * 1024 * 1024;
   var QUEUE_LIMIT = Number(UPLOAD.queueLimit) || 10;
+  function maxBytesForKind(kind) { return kind === 'map' ? MAX_BYTES : MAX_DP_BYTES; }
 
   var state = {
     kind: 'dp',
@@ -72,7 +74,7 @@
       : 'DP 会被放入服务器 <code>external-cp</code> 列表，支持 .zip / .json / .hjson / .json5';
     var allowed = allowedExtensions();
     if (el.fileInput) el.fileInput.setAttribute('accept', allowed.join(','));
-    if (el.dropHint) el.dropHint.textContent = '支持 ' + allowed.join(' / ') + '，单文件不超过 10MB';
+    if (el.dropHint) el.dropHint.textContent = '支持 ' + allowed.join(' / ') + '，单文件不超过 ' + U.fmtBytes(maxBytesForKind(state.kind));
     el.replaceSelect.value = '';
     rebuildReplaceOptions();
     // 已选文件类型与新类型不匹配时清空
@@ -90,8 +92,9 @@
     if (allowed.indexOf(ext) < 0) {
       return '不支持的文件类型「' + (ext || '无扩展名') + '」；' + kindLabel() + '支持：' + allowed.join(' / ');
     }
-    if (file.size > MAX_BYTES) {
-      return '文件大小 ' + U.fmtBytes(file.size) + ' 超过 ' + U.fmtBytes(MAX_BYTES) + ' 上限';
+    var maxBytes = maxBytesForKind(state.kind);
+    if (file.size > maxBytes) {
+      return '文件大小 ' + U.fmtBytes(file.size) + ' 超过 ' + U.fmtBytes(maxBytes) + ' 上限';
     }
     if (!file.size) return '文件内容为空，请重新选择';
     return '';

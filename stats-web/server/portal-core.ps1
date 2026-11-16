@@ -21,7 +21,8 @@ $script:PortalDefaultConfigJson = @'
   },
   "upload": {
     "maxFileBytes": 10485760,
-    "maxRequestBytes": 12582912,
+    "maxDpFileBytes": 31457280,
+    "maxRequestBytes": 33554432,
     "queueLimitPerKind": 10,
     "historyLimit": 200,
     "allowedDpExtensions": [".zip", ".json", ".hjson", ".json5"],
@@ -1001,7 +1002,10 @@ function Initialize-PortalConfig {
 
     if ($null -eq $Config.upload) { $Config.upload = [ordered]@{} }
     $Config.upload.maxFileBytes = Get-PortalLong $Config.upload.maxFileBytes 10485760 1024 104857600
-    $Config.upload.maxRequestBytes = Get-PortalLong $Config.upload.maxRequestBytes ($Config.upload.maxFileBytes + 2097152) ([long]$Config.upload.maxFileBytes + 65536) 209715200
+    # DP 包独立上限：默认 30MB；地图仍使用 maxFileBytes（默认 10MB）。
+    $Config.upload.maxDpFileBytes = Get-PortalLong $Config.upload.maxDpFileBytes 31457280 1024 104857600
+    $uploadFileMax = [Math]::Max([long]$Config.upload.maxFileBytes, [long]$Config.upload.maxDpFileBytes)
+    $Config.upload.maxRequestBytes = Get-PortalLong $Config.upload.maxRequestBytes ($uploadFileMax + 2097152) ($uploadFileMax + 65536) 209715200
     $Config.upload.queueLimitPerKind = Get-PortalInt $Config.upload.queueLimitPerKind 10 1 100
     $Config.upload.historyLimit = Get-PortalInt $Config.upload.historyLimit 200 20 5000
     $Config.upload.allowedDpExtensions = Get-PortalStringList $Config.upload.allowedDpExtensions @(".zip", ".json", ".hjson", ".json5")

@@ -1,4 +1,4 @@
-﻿{
+{
   "_comment": "MDT DO 服务器门户 Web 配置。修改后重启 start-web.ps1 生效。相对路径以 stats-web 目录为基准；命令行参数 -Bind/-Port 可临时覆盖。详细说明见 docs/web-portal.md。",
   "_securityWarning": "安全提醒：默认管理员账号/密码与 session.secret 仅供首次启动！对外提供服务前必须修改 admin.password（或改用 admin.passwordHash）与 session.secret。默认密码启动时会持续打印红色警告。",
   "_docs": {
@@ -29,7 +29,8 @@
 
   "upload": {
     "maxFileBytes": 10485760,
-    "maxRequestBytes": 12582912,
+    "maxDpFileBytes": 31457280,
+    "maxRequestBytes": 33554432,
     "queueLimitPerKind": 10,
     "historyLimit": 200,
     "allowedDpExtensions": [".zip", ".json", ".hjson", ".json5"],

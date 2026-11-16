@@ -52,7 +52,7 @@ cd mdtdo\stats-web
   [hitokoto-osc/sentences-bundle](https://github.com/hitokoto-osc/sentences-bundle) 开源句子库），离线可用；
   浏览器能联网时会低频率（≥10 分钟）尝试从一言 API 取一条新句，失败静默降级到本地，不影响页面。
   轮换间隔与联网开关见 `assets/js/site-config.js` 的 `quote.rotateSeconds` / `quote.remoteEnabled`。
-- **投稿与审核**：DP / 服务器地图投稿；单文件 **≤10MB**（扩展名 + 文件头双重校验）；**每种类型待审队列上限 10**
+- **投稿与审核**：DP / 服务器地图投稿；DP 单文件 **≤30MB**、地图 **≤10MB**（扩展名 + 文件头双重校验）；**每种类型待审队列上限 10**
   （满返回 `QUEUE_FULL`）；**管理员审核通过后**才落盘到服务器目录——DP → `mdtserver\config\scripts\external-cp\`，
   地图 → `mdtserver\config\maps\`（通过后自动调用游戏控制台 `maps` 刷新服务器地图列表，免重启）；
   支持「更新现有 DP/地图」的替换语义、拒绝留原因、移除现有 DP/地图。

@@ -48,7 +48,7 @@ function Show-PortalBanner {
     Write-Host ("  DP 目录:    {0}" -f $Config.dpDirPath) -ForegroundColor DarkGray
     Write-Host ("  地图目录:   {0}" -f $Config.mapsDirPath) -ForegroundColor DarkGray
     Write-Host ("  管理员账号: {0}（同一账号允许多 IP/多会话登录）" -f (Get-PortalString $Config.admin.username "admin"))
-    Write-Host ("  上传限制:   单文件 {0:N1} MB，待审队列 每种类型上限 {1} 个" -f ([double]$Config.upload.maxFileBytes / 1MB), $Config.upload.queueLimitPerKind)
+    Write-Host ("  上传限制:   DP 单文件 {0:N1} MB / 地图单文件 {1:N1} MB，待审队列 每种类型上限 {2} 个" -f ([double]$Config.upload.maxDpFileBytes / 1MB), ([double]$Config.upload.maxFileBytes / 1MB), $Config.upload.queueLimitPerKind)
     Write-Host ("  日志下载:   {0}（{1}，并发 {2}，{3} 次/{4} 分钟/IP，单文件上限 {5:N0} MB）" -f `
         $(if (Get-PortalBool $Config.logs.enabled $true) { "启用" } else { "禁用" }), `
         $(if (Get-PortalBool $Config.logs.requireLogin $true) { "需管理员登录" } else { "公开（注意日志含敏感信息）" }), `

@@ -132,8 +132,9 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | `admin.password` | `ChangeMe_123456` | 明文管理员密码（**必须立即修改**） |
 | `admin.passwordHash` | `""` | 非空时**优先于** `admin.password`；用 `start-web.ps1 -GenPasswordHash "新密码"` 生成（PBKDF2） |
 | `admin.sessionHours` | `12` | 登录会话有效期（小时） |
-| `upload.maxFileBytes` | `10485760` | 单文件上限（10MB） |
-| `upload.maxRequestBytes` | `12582912` | 整个请求体上限（10MB + multipart 开销），超限 413 |
+| `upload.maxFileBytes` | `10485760` | 地图单文件上限（10MB） |
+| `upload.maxDpFileBytes` | `31457280` | DP 包单文件上限（30MB） |
+| `upload.maxRequestBytes` | `33554432` | 整个请求体上限（30MB + multipart 开销），超限 413 |
 | `upload.queueLimitPerKind` | `10` | **每种类型**（DP/地图各自）待审队列上限，满 → `QUEUE_FULL` |
 | `upload.historyLimit` | `200` | 已处理记录元数据保留条数（pending 永远保留） |
 | `upload.allowedDpExtensions` | `.zip/.json/.hjson/.json5` | DP 允许扩展名（另做文件头校验） |
@@ -409,7 +410,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 ### 6.1 提交（公开）
 
 1. 玩家打开 `/upload.html`，选择 DP 或地图，填写介绍/标题、作者、可选「是否为现有某个 DP/地图的更新」（`replaceOf`），选择文件；
-2. 前端先做 10MB 与扩展名预检；后端再按 §5 做完整校验；
+2. 前端先做扩展名与单文件预检（DP 30MB / 地图 10MB）；后端再按 §5 做完整校验；
 3. 通过后写入 `web-data/uploads/<id>/` 并在 `submissions.json` 记 `pending`；返回受理号与队列进度；
 4. 任一类型待审满 10 个时新上传返回 `QUEUE_FULL`（提示稍后再试）。
 
@@ -565,7 +566,7 @@ HttpListener 监听非 localhost 地址需要先注册 URL 保留（管理员执
 | 5 | 登出 | ✅ `POST /api/logout` 后原 token 401 `SESSION_EXPIRED`，第二会话仍有效 |
 | 6 | 未授权管理 API | ✅ 无 token / 伪造 token → 401 `UNAUTHORIZED`/`SESSION_EXPIRED`（approve/reject/delete 均验证） |
 | 7 | 上传非法类型 | ✅ `.exe` → 400 `BAD_TYPE`；伪 zip（文件头错）→ 400 `BAD_TYPE`；非 JSON 内容 → 400 `BAD_TYPE` |
-| 8 | 上传超 10MB | ✅ 11.5MB `/api/upload` → 413 `FILE_TOO_LARGE`；13MB 请求体（超过 maxRequestBytes）→ 413 |
+| 8 | 上传超限 | 旧 10MB 默认：11.5MB `/api/upload` → 413 `FILE_TOO_LARGE`；13MB 请求体 → 413。2026-11-16 起 DP/地图分限：25MB DP → 200，11MB 地图 → 413 |
 | 9 | 合法上传 | ✅ DP zip、地图 `.msav`（S9100 副本改名）上传均 200 pending；中文文件名正常还原 |
 | 10 | 队列上限 | ✅ 依次上传至 10 个 DP 待审，第 11 个 → 409 `QUEUE_FULL`（`queue:{limit:10,pending:10}`） |
 | 11 | 审核通过（DP） | ✅ 文件落在 `external-cp/`，`/api/catalog` 出现该文件且带提交时作者/介绍；`reload:false` 不触发游戏侧动作 |
@@ -615,7 +616,7 @@ KDoc 扫描 210 文件干净、`sa listFailed` 空、`scriptdiag count` 失败 0
 **慢速/畸形请求的复现口径（红队核对用，2026-11-05 第 1 轮修复后）：**
 
 ```text
-# 1) 慢速 body（必须用 ≤10MB 的 Content-Length，否则会在头部阶段被立即 413，测不到 H-1）
+# 1) 慢速 body（必须用 ≤30MB 的 Content-Length，否则会在头部阶段被立即 413，测不到 H-1）
 POST /api/upload HTTP/1.1
 Content-Type: multipart/form-data; boundary=deadbeef
 Content-Length: 5000000
@@ -623,11 +624,11 @@ Content-Length: 5000000
 → 期望：并发 GET /api/health 在约 0.7s 内返回 200；该连接约 0.8s 后收到 408 并被关闭
 
 # 2) 超限 body（不进读取循环）
-Content-Length: 12582913   (> maxRequestBytes 12582912)
+Content-Length: 33554433   (> maxRequestBytes 33554432)
 → 期望：立即 413（实测 8ms），不读取任何 body
 
-# 3) 正常 10MB 上传
-→ 期望：200；进程工作集增量约 +19MB（旧版 +84MB 且不回落），完成后可被回收
+# 3) 正常 25MB DP 上传
+→ 期望：200；进程工作集增量按上传大小采样，完成后可被回收
 ```
 
 **已知限制：**
@@ -638,7 +639,7 @@ Content-Length: 12582913   (> maxRequestBytes 12582912)
 - **节流只延迟、不封禁**：per-account 最坏情况要等 300s（8 次以上连续失败后），全局慢速下每 5 秒放行一次。
   若怀疑被攻击，运维可通过调大/调小 `rateLimit.*` 或重启进程立刻恢复；
 - 后端为单线程请求循环：普通 API 很快，**日志下载已改异步写泵不阻塞**；上传已加读超时（30s / 停滞 200ms / 全局停滞预算 400ms）与内存优化，
-  但一次 10MB 上传仍会串行占用主循环约 200~400ms，**不是并发模型**（量大需改造为 Runspace/ThreadJob）；
+  但一次 25MB DP 上传仍会串行占用主循环更长，**不是并发模型**（量大需改造为 Runspace/ThreadJob）；
 - **`/api/health` 的字段已按登录态拆分**：未认证只返回 `ok/serverTime/version`；绝对路径、`adminUser`、控制台 host:port、
   会话数、待审队列数等只在 `Authorization: Bearer` 有效时返回。副作用：公开上传页不再显示「当前待审 N/上限」的实时数字，
   降级为「仅显示上限」（这是既有前端降级路径）；
