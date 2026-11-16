@@ -1,8 +1,35 @@
 # idleBreakGuard 更新日志
 
 > 插件：`scripts/wayzer/ext/idleBreakGuard.kts`
-> 版本：**V0.1.5**
+> 版本：**V0.1.6**
 > 当前版本维护者：八色 和他的 dsh
+
+## V0.1.6（2026-11-16）
+
+修复沙盒模式误封：切到沙盒（或临时「编辑器模式」）后插件继续判定，会把正常拆除当成乱拆。
+
+- 新增 `isSandboxLike()`：读 `Vars.state.rules.mode()`，`sandbox` / `editor` 都算豁免。
+  - 沙盒图加载时 `applyRules(Gamemode.sandbox)` 会置 `infiniteResources=true`；
+  - 神权菜单/投票的临时「编辑器模式」会置 `editor=true`；
+  - PVP/进攻图不受影响（`mode()` 优先级 pvp/attack 更高，照常检测）。
+- 四个入口都加豁免：`initMonitor`（不建窗口）、`handleBatch`（丢弃批次）、
+  `BlockBuildBeginEvent`（不判定）、`punish`（兜底不处罚），因此在游戏中途切到沙盒也立即生效。
+- 沙盒里进服不消耗每日首次 key；切回生存后仍按当天首次进服监控。
+- 新增配置 `ignoreSandboxMode`（默认 `true`），设为 `false` 可回退旧行为。
+- 修复换图/异常快照时 `ClientSnapshotCallPacket.plans` 含 `null` 导致的
+  `NullPointerException: Cannot read field "breaking" because "plan" is null`：
+  跳过空元素，同一包中后续合法 `plan` 继续处理；`debugLog` 开启时记录警告。
+- 版本号 `V0.1.6`。
+
+验证：
+
+- 本地测试服（`mdtserver-test`，B509 + SA 3.4.0）清缓存后冷启动：
+  `共找到169脚本,加载成功165,启用成功160,出错0`，`wayzer/ext/idleBreakGuard` = `Enabled failReason=无`，
+  `[IDLEGUARD] idleBreakGuard V0.1.6 已启用`；
+- 用临时探针脚本在真实服务端上确认 `Vars.state.rules.mode()` 的判定：
+  `infiniteResources=true` → `沙盒`；`editor=true` → `地图编辑器`；全部复位 → `生存`（探针验证完已删除）；
+- 由Holy和他的dsh完成实机测试并修补漏洞：沙盒里框选拆除不再触发强制观战；
+  换图时 `plans` 含空 `plan` 不再报错，已跳过空元素并保留后续合法 `plan` 的处理。
 
 ## V0.1.5-fix（2026-11-07）
 

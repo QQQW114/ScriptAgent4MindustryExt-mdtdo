@@ -2,10 +2,10 @@
 
 > 脚本：`scripts/wayzer/ext/idleBreakGuard.kts`
 > 部署路径：`config/scripts/wayzer/ext/idleBreakGuard.kts`
-> 版本：**V0.1.5**（当前版本维护者：八色 和他的 dsh）
+> 版本：**V0.1.6**（当前版本维护者：八色 和他的 dsh）
 > 更新日志：`docs/idleBreakGuard-changelog.md`
 > 首次提交：PR #1（`feat/idlebreakguard`）
-> 状态：由Holy和他的dsh完成实机测试；V0.1.5 接收台、quitOb 与退出重连修复已验证
+> 状态：由Holy和他的dsh完成实机测试；V0.1.5 接收台、quitOb 与退出重连修复，V0.1.6 沙盒豁免与空 plan 防护已验证
 
 ---
 
@@ -99,6 +99,24 @@
   （开发过程中曾验证过还原方案：`tile.setNet` + `LandingPadBuild.config` / 物品 / 液体 / 血量复制，
   按用户决定已移除，见 `scripts-maintenance.md` 第三十七批。）
 
+## 2.4 沙盒/编辑器豁免（2026-11-16，V0.1.6）
+
+沙盒图或临时「编辑器模式」里不做任何检测（用户反馈：切到沙盒后插件继续判定，导致误封）。
+
+- **判定**：每次判定直接读当前规则 `Vars.state.rules.mode()`。
+  `Rules.mode()` 的优先级是 `pvp > editor > attack > infiniteResources(sandbox) > survival`：
+  - 沙盒图：MapManager 加载时 `map.applyRules(Gamemode.sandbox)` 会置 `infiniteResources = true`；
+  - 临时「编辑器模式」（神权菜单/投票的 `enableSandbox`）：置 `editor = true`；
+  - 管理员手动改出来的全局无限资源同样按 sandbox 处理。
+- **生效点**（四个入口都有守卫，覆盖「在线时切到沙盒」的情况）：
+  1. `initMonitor`：不建监控窗口；
+  2. `handleBatch`：包层收集到的批量数据直接丢弃；
+  3. `BlockBuildBeginEvent`：不判定拆除；
+  4. `punish`：最后一道保险，判定期间切到沙盒也不处罚。
+- **不消耗每日首次 key**：沙盒里进服不会写 `idleBreakGuard.firstJoin.<uid>`，切回生存后仍按当天首次进服正常监控。
+- **不覆盖的情况**：PVP/进攻图即使开了无限资源，`mode()` 仍返回 `pvp`/`attack`，插件照常检测（这些模式下的拆建筑仍然是可判定行为）。
+- 可用配置 `ignoreSandboxMode=false` 关闭该豁免（回退到旧行为）。
+
 ## 3. 判定流程
 
 ### 3.1 包层收集
@@ -185,6 +203,7 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 | `guestAltKeepObserver` | true | 游客疑似小号时是否继续观战 |
 | `ignoreMapBlocks` | true | 忽略 derelict 地图原有物 |
 | `ignoreBoulders` | true | 忽略名称含 boulder 的巨石 |
+| `ignoreSandboxMode` | true | 沙盒/编辑器模式下不做任何检测（§2.4） |
 | `conveyorWhitelist` | `conveyor,titanium-conveyor,plastanium-conveyor` | 只拆这些传送带时豁免 |
 | `buildingWhitelist` | 21 种（见 §2.2） | 额外豁免的建筑物（与 `conveyorWhitelist` 取并集，选中不计入） |
 | `receiverBlocks` | `landing-pad` | 接收台黑名单：监控对象选中/拆除即处罚；只处罚，不还原（§2.3） |

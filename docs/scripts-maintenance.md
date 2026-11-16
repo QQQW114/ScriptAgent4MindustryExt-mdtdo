@@ -22,6 +22,43 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-16（第三十九批）：idleBreakGuard 沙盒/编辑器模式豁免
+
+类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`，V0.1.6）。
+
+### 1. 问题
+
+用户反馈：游戏切到沙盒模式后插件继续生效，导致误封。沙盒/临时「编辑器模式」里本来就允许
+无限资源、随地建造与拆除，继续按进服窗口统计批量拆除并强制观战属于误判。
+
+### 2. 改动
+
+- 新增 `isSandboxLike()`：读 `Vars.state.rules.mode()`，`Gamemode.sandbox` 与
+  `Gamemode.editor` 都算沙盒类模式。`Rules.mode()` 的优先级是
+  `pvp > editor > attack > infiniteResources(sandbox) > survival`：
+  - 沙盒图由 MapManager `map.applyRules(Gamemode.sandbox)` 置 `infiniteResources=true`；
+  - 临时「编辑器模式」（`funRuleModes.enableSandbox`）置 `editor=true`；
+  - PVP/进攻图不受影响，照常检测。
+- 四个入口加守卫：`initMonitor`（不建监控、不写每日首次 key）、`handleBatch`（丢弃批次）、
+  `BlockBuildBeginEvent`（不判定）、`punish`（兜底不处罚）。游戏中途切模式也立即生效。
+- 新增配置 `ignoreSandboxMode`（默认 `true`），`false` 即回退旧行为。
+- 修复 `ClientSnapshotCallPacket.plans` 含 `null` 导致的
+  `NullPointerException: Cannot read field "breaking" because "plan" is null`：
+  跳过空元素，同一包中后续合法 `plan` 继续处理。
+- 插件版本 `V0.1.5` → `V0.1.6`，`docs/idleBreakGuard.md` §2.4 / 配置表、changelog 同步。
+- 不引入新脚本依赖，不需要改 `@file:Depends`。
+
+### 3. 验证
+
+- 本地测试服（`mdtserver-test`，B509 + SA 3.4.0）清 `config/scripts/cache` 后冷启动：
+  `共找到169脚本,加载成功165,启用成功160,出错0`，`scriptdiag state wayzer/ext/idleBreakGuard` = `Enabled failReason=无`，
+  `sa listFailed` 无输出，日志 `[IDLEGUARD] idleBreakGuard V0.1.6 已启用`。
+- 临时探针脚本（`testHooks/sandboxProbe.kts`，验证后已卸载并删除）在真实服务端确认 `Rules.mode()`：
+  `infiniteResources=true` → `沙盒`，`editor=true` → `地图编辑器`，复位后 → `生存`；
+  即 `isSandboxLike()` 的判定与服务端实际模式一致。
+- 由Holy和他的dsh完成实机测试并修补漏洞：沙盒里框选拆除不再触发强制观战；
+  换图时 `plans` 含空 `plan` 不再报错，已跳过空元素并保留后续合法 `plan` 的处理。
+
 ## 2026-11-07（第三十八批）：idleBreakGuard 多格建筑锚点坐标修复
 
 类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`）。
