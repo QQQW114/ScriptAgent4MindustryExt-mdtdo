@@ -2,10 +2,10 @@
 
 > 脚本：`scripts/wayzer/ext/idleBreakGuard.kts`
 > 部署路径：`config/scripts/wayzer/ext/idleBreakGuard.kts`
-> 版本：**V0.1.5**（当前版本维护者：八色 和他的 dsh）
+> 版本：**V0.1.6**（当前版本维护者：八色 和他的 dsh）
 > 更新日志：`docs/idleBreakGuard-changelog.md`
 > 首次提交：PR #1（`feat/idlebreakguard`）
-> 状态：由Holy和他的dsh完成实机测试；V0.1.5 接收台、quitOb 与退出重连修复已验证
+> 状态：由Holy和他的dsh完成实机测试；V0.1.5 接收台、quitOb 与退出重连修复，V0.1.6 沙盒豁免与空 plan 防护已验证
 
 ---
 

@@ -514,6 +514,10 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
         val iterator = plans.iterator()
         while (iterator.hasNext()) {
             val plan = iterator.next()
+            if (plan == null) {
+                if (debugLog) Log.warn("[IDLEGUARD] ignore null plan uuid=${player.uuid()}")
+                continue
+            }
             if (plan.breaking) positions.add(Point2.pack(plan.x, plan.y))
         }
         if (positions.isNotEmpty()) {
