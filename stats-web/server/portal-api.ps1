@@ -654,7 +654,8 @@ function Handle-PortalApiUpload {
         Send-PortalApiError -Context $Context -StatusCode 429 -Code "RATE_LIMITED" -Message "上传过于频繁，请稍后再试"
         return
     }
-    $multipart = Read-PortalMultipart -Context $Context -MaxRequestBytes ([long]$Config.upload.maxRequestBytes) -MaxFileBytes ([long]$Config.upload.maxFileBytes) -Config $Config
+    $maxUploadFileBytes = [Math]::Max([long]$Config.upload.maxFileBytes, [long]$Config.upload.maxDpFileBytes)
+    $multipart = Read-PortalMultipart -Context $Context -MaxRequestBytes ([long]$Config.upload.maxRequestBytes) -MaxFileBytes $maxUploadFileBytes -Config $Config
     if (-not $multipart.ok) {
         if ($multipart.error -eq "BUSY") {
             # R2-1：大 body 的停滞预算已被其它慢连接耗尽 —— 回 503 而不是 408，
@@ -670,7 +671,7 @@ function Handle-PortalApiUpload {
             return
         }
         if ($multipart.error -eq "FILE_TOO_LARGE" -or $multipart.error -eq "TOO_LARGE") {
-            Send-PortalApiError -Context $Context -StatusCode 413 -Code "FILE_TOO_LARGE" -Message ("文件超过大小上限（{0} 字节）" -f $Config.upload.maxFileBytes)
+            Send-PortalApiError -Context $Context -StatusCode 413 -Code "FILE_TOO_LARGE" -Message ("文件超过大小上限（{0} 字节）" -f $maxUploadFileBytes)
         } else {
             Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_REQUEST" -Message ("上传请求解析失败：" + (Get-PortalString $multipart.error "未知错误"))
         }
@@ -692,8 +693,9 @@ function Handle-PortalApiUpload {
         Send-PortalApiError -Context $Context -StatusCode 400 -Code "BAD_REQUEST" -Message "文件为空"
         return
     }
-    if ([long]$file.size -gt [long]$Config.upload.maxFileBytes) {
-        Send-PortalApiError -Context $Context -StatusCode 413 -Code "FILE_TOO_LARGE" -Message ("文件超过大小上限（{0} 字节）" -f $Config.upload.maxFileBytes)
+    $maxFileBytes = if ($kind -eq "dp") { [long]$Config.upload.maxDpFileBytes } else { [long]$Config.upload.maxFileBytes }
+    if ([long]$file.size -gt $maxFileBytes) {
+        Send-PortalApiError -Context $Context -StatusCode 413 -Code "FILE_TOO_LARGE" -Message ("文件超过大小上限（{0} 字节）" -f $maxFileBytes)
         return
     }
     $leaf = Get-PortalSafeLeafName -RawName $file.fileName

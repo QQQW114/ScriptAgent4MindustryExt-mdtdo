@@ -54,6 +54,7 @@
     // 前端上传限制（与后端 web-config.json 默认值保持一致）
     upload: {
       maxFileBytes: 10 * 1024 * 1024,
+      maxDpFileBytes: 30 * 1024 * 1024,
       allowedDpExtensions: ['.zip', '.json', '.hjson', '.json5'],
       allowedMapExtensions: ['.msav'],
       queueLimit: 10,
