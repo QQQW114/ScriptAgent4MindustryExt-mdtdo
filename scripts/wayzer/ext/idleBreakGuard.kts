@@ -4,7 +4,7 @@
 @file:Depends("wayzer/user/accountIpGuard", "风险IP/疑似小号线索")
 
 // ── 插件版本 ────────────────────────────────────────────────────────────────
-// idleBreakGuard 版本：V0.1.5
+// idleBreakGuard 版本：V0.1.6
 // 当前版本维护者：八色 和他的 dsh
 
 package wayzer.ext
@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mindustry.Vars
 import mindustry.game.EventType
+import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.ClientSnapshotCallPacket
 import mindustry.gen.Groups
@@ -32,7 +33,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 
-private val pluginVersion = "V0.1.5"
+private val pluginVersion = "V0.1.6"
 private val pluginMaintainers = "八色 和他的 dsh"
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
@@ -56,6 +57,26 @@ private val dailyResetHour by config.key(4, "每日首次重置小时（0-23，�
 // 代码级回退：把下面这个开关改成 false，即恢复旧行为（离开立刻丢弃监控状态）。
 private val reconnectResumeEnabled = true
 private val reconnectGraceSeconds by config.key(30, "断线重连接续窗口（秒）：窗口内重连不重新开始监控")
+
+// ── 沙盒/编辑器豁免（2026-11-16）────────────────────────────────────────────
+// 沙盒图与「编辑器模式」（神权菜单 / 投票临时开启 editor + infiniteResources）里本来就允许
+// 无限资源、随地建造与拆除，继续按进服窗口判定会把这些正常操作误判成乱拆并强制观战。
+// 判定直接读当前规则：Rules.mode() 的优先级是 pvp > editor > attack > infiniteResources(sandbox) > survival，
+// 所以沙盒图（applyRules 会置 infiniteResources）和临时编辑器模式（editor=true）都能覆盖；
+// 不依赖地图元数据，运行中切换规则后下一次判定立即生效。
+// 只有监控在沙盒里不建立/不判定，不消耗每日首次 key；切回生存后仍按首次进服正常监控。
+private val ignoreSandboxMode by config.key(true, "沙盒/编辑器模式下不做任何检测")
+
+/** 当前规则是否属于沙盒/编辑器模式（沙盒图、临时编辑器模式、管理员改出来的无限资源都算）。 */
+private fun isSandboxLike(): Boolean {
+    if (!ignoreSandboxMode) return false
+    return runCatching {
+        when (Vars.state.rules.mode()) {
+            Gamemode.sandbox, Gamemode.editor -> true
+            else -> false
+        }
+    }.getOrDefault(false)
+}
 
 
 // 批量选中拆除的真实建筑物数量阈值（超过才触发）
@@ -231,6 +252,12 @@ private fun tryMarkDailyFirstJoin(uid: String): Boolean {
 }
 private fun initMonitor(player: Player) {
     val uuid = player.uuid()
+    // 沙盒/编辑器：不建立监控窗口，也不写每日首次 key（切回生存后仍按首次进服监控）。
+    if (isSandboxLike()) {
+        monitors.remove(uuid)
+        if (debugLog) Log.info("[IDLEGUARD] skip monitor: sandbox/editor mode uuid=$uuid")
+        return
+    }
     val data = PlayerData[player]
     val level = levelOf(player)
     val seconds = windowSecondsFor(level)
@@ -294,6 +321,8 @@ private fun isRealBuildingBlock(block: mindustry.world.Block): Boolean {
 }
 
 private fun handleBatch(batch: Batch) {
+    // 沙盒/编辑器：包层收到也直接丢弃，不做任何判定。
+    if (isSandboxLike()) return
     val player = Groups.player.find { it.uuid() == batch.uuid } ?: return
     val monitor = monitors[batch.uuid] ?: return
     if (monitor.triggered) return
@@ -363,6 +392,8 @@ private fun handleBatch(batch: Batch) {
  */
 private fun punish(player: Player, monitor: Monitor, reason: String) {
     if (monitor.triggered) return
+    // 双保险：判定期间切到沙盒/编辑器时不再处罚（包层与事件入口也各有守卫）。
+    if (isSandboxLike()) return
     monitor.triggered = true
     if (debugLog) {
         Log.info("[IDLEGUARD] punish uuid=" + player.uuid() + " reason=" + reason + " selected=" + monitor.selected.size)
@@ -494,6 +525,7 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
 
 listen<EventType.BlockBuildBeginEvent> { event ->
     if (!event.breaking) return@listen
+    if (isSandboxLike()) return@listen
     val player = event.unit?.player ?: return@listen
     val monitor = monitors[player.uuid()] ?: return@listen
     val now = System.currentTimeMillis()
