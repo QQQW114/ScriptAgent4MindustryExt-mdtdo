@@ -42,6 +42,9 @@
 - 四个入口加守卫：`initMonitor`（不建监控、不写每日首次 key）、`handleBatch`（丢弃批次）、
   `BlockBuildBeginEvent`（不判定）、`punish`（兜底不处罚）。游戏中途切模式也立即生效。
 - 新增配置 `ignoreSandboxMode`（默认 `true`），`false` 即回退旧行为。
+- 修复 `ClientSnapshotCallPacket.plans` 含 `null` 导致的
+  `NullPointerException: Cannot read field "breaking" because "plan" is null`：
+  跳过空元素，同一包中后续合法 `plan` 继续处理。
 - 插件版本 `V0.1.5` → `V0.1.6`，`docs/idleBreakGuard.md` §2.4 / 配置表、changelog 同步。
 - 不引入新脚本依赖，不需要改 `@file:Depends`。
 
@@ -53,7 +56,8 @@
 - 临时探针脚本（`testHooks/sandboxProbe.kts`，验证后已卸载并删除）在真实服务端确认 `Rules.mode()`：
   `infiniteResources=true` → `沙盒`，`editor=true` → `地图编辑器`，复位后 → `生存`；
   即 `isSandboxLike()` 的判定与服务端实际模式一致。
-- 真实客户端行为（沙盒里框选拆除不触发强制观战）待用户实测。
+- 由Holy和他的dsh完成实机测试并修补漏洞：沙盒里框选拆除不再触发强制观战；
+  换图时 `plans` 含空 `plan` 不再报错，已跳过空元素并保留后续合法 `plan` 的处理。
 
 ## 2026-11-07（第三十八批）：idleBreakGuard 多格建筑锚点坐标修复
 

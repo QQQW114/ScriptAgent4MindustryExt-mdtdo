@@ -16,6 +16,9 @@
   `BlockBuildBeginEvent`（不判定）、`punish`（兜底不处罚），因此在游戏中途切到沙盒也立即生效。
 - 沙盒里进服不消耗每日首次 key；切回生存后仍按当天首次进服监控。
 - 新增配置 `ignoreSandboxMode`（默认 `true`），设为 `false` 可回退旧行为。
+- 修复换图/异常快照时 `ClientSnapshotCallPacket.plans` 含 `null` 导致的
+  `NullPointerException: Cannot read field "breaking" because "plan" is null`：
+  跳过空元素，同一包中后续合法 `plan` 继续处理；`debugLog` 开启时记录警告。
 - 版本号 `V0.1.6`。
 
 验证：
@@ -25,7 +28,8 @@
   `[IDLEGUARD] idleBreakGuard V0.1.6 已启用`；
 - 用临时探针脚本在真实服务端上确认 `Vars.state.rules.mode()` 的判定：
   `infiniteResources=true` → `沙盒`；`editor=true` → `地图编辑器`；全部复位 → `生存`（探针验证完已删除）；
-- 真实客户端行为（沙盒里框选拆除不触发强制观战）待用户实测。
+- 由Holy和他的dsh完成实机测试并修补漏洞：沙盒里框选拆除不再触发强制观战；
+  换图时 `plans` 含空 `plan` 不再报错，已跳过空元素并保留后续合法 `plan` 的处理。
 
 ## V0.1.5-fix（2026-11-07）
 
