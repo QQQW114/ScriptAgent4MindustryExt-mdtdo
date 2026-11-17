@@ -119,12 +119,15 @@ private sealed class BatchOutcome {
     data class Rejected(val userMessage: String) : BatchOutcome()
 }
 private data class Voucher(
-    val id: Int,
+    val ids: List<Int>,
     val name: String,
     val kind: String,
     val effect: String,
     val duration: Int,
-)
+) {
+    val id: Int get() = ids.first()
+    val count: Int get() = ids.size
+}
 private data class HistoryRow(
     val id: Int,
     val prizeName: String,
@@ -432,9 +435,7 @@ private fun loadProfile(uid: String): Profile = dbResult { ensureProfileTx(uid) 
 
 private fun countUnusedVouchersTx(uid: String): Int {
     return LotteryDraws.selectAll().where {
-        (LotteryDraws.uid eq uid) and
-                (LotteryDraws.status eq "unused") and
-                (LotteryDraws.prizeType eq "buff")
+        (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
     }.count().toInt()
 }
 
@@ -449,15 +450,17 @@ private fun unusedVouchers(uid: String): List<Voucher> = dbResult {
         val id = row[LotteryDraws.id].value
         val name = row[LotteryDraws.prizeName]
         when (row[LotteryDraws.prizeType]) {
-            "headticket" -> Voucher(id, name, "headticket", "", -1)
-            "buff_all" -> Voucher(id, name, "buff_all", "", -1)
+            "headticket" -> Voucher(listOf(id), name, "headticket", "", -1)
+            "buff_all" -> Voucher(listOf(id), name, "buff_all", "", -1)
             "buff" -> {
                 val parsed = parseEffectJson(row[LotteryDraws.effectJson]) ?: return@mapNotNull null
-                Voucher(id, name, "buff", parsed.first, parsed.second)
+                Voucher(listOf(id), name, "buff", parsed.first, parsed.second)
             }
             else -> null
         }
-    }
+    }.groupBy { Triple(it.kind, it.effect, it.duration) }
+        .values
+        .map { group -> group.first().copy(ids = group.flatMap { it.ids }) }
 }
 
 private fun historyRows(uid: String): List<HistoryRow> = dbResult {
@@ -581,8 +584,8 @@ private fun nextJokeTx(uid: String): Joke {
     error("题库轮次并发冲突，请重试")
 }
 
-private fun choosePrize(): Prize {
-    if (Random.nextDouble() < HEAD_TICKET_CHANCE) return HEAD_TICKET
+private fun choosePrize(vouchers: Int): Prize {
+    if (vouchers < MAX_VOUCHERS && Random.nextDouble() < HEAD_TICKET_CHANCE) return HEAD_TICKET
     val pool = loadedPool ?: error("奖池未加载")
     if (pool.prizes.isEmpty()) error("没有可抽取的奖品")
     var roll = Random.nextDouble() * pool.totalWeight
@@ -611,7 +614,7 @@ private fun prepareDrawTx(
     vouchers: Int,
 ): PreparedDraw {
     val profile = ensureProfileTx(uid)
-    var prize = choosePrize()
+    var prize = choosePrize(vouchers)
     if (prize.type == "buff" && vouchers >= MAX_VOUCHERS) {
         val compensation = voucherCompensation(prize.duration)
         prize = prize.copy(
@@ -668,7 +671,7 @@ private fun prepareBatch(uid: String, count: Int, cost: Int, batchId: String): B
     var vouchers = countUnusedVouchersTx(uid)
     val draws = List(count) { index ->
         val draw = prepareDrawTx(uid, batchId, index, count, cost, vouchers)
-        if (draw.prize.type == "buff" && draw.status == "unused") vouchers++
+        if (draw.status == "unused") vouchers++
         draw
     }
     BatchOutcome.Success(draws)
@@ -949,13 +952,14 @@ private suspend fun openBackpack(player: Player) {
         wrapInPane = false
         rootWidth = 620f
         val vouchers = unusedVouchers(uid)
-        val buffCount = vouchers.count { it.kind == "buff" }
-        val ticketCount = vouchers.count { it.kind == "headticket" }
+        val totalCount = vouchers.sumOf { it.count }
+        val buffCount = vouchers.filter { it.kind == "buff" }.sumOf { it.count }
+        val ticketCount = vouchers.filter { it.kind == "headticket" }.sumOf { it.count }
         msg = """
             |[cyan]这里存放正面 buff 奖券、头奖抽奖券和全增益兑换券（非实物，不进入物品栏）。
-            |[gray]buff/全增益券需附身普通单位使用；核心机不适用。头奖抽奖券无单位限制。
-            |[gray]未附身时奖券会保留，不设过期时间；正面 buff 最多同时持有 $MAX_VOUCHERS 张。
-            |[gray]当前未使用：[white]${vouchers.size}[gray] 张（buff [white]$buffCount/$MAX_VOUCHERS[gray]，头奖券 [white]$ticketCount[gray]）。
+            |[gray]相同奖券已堆叠，只显示不同项；点击使用 1 张。buff/全增益券需附身普通单位，核心机不适用；头奖券无单位限制。
+            |[gray]未附身时奖券会保留，不设过期时间；所有奖券合计最多 $MAX_VOUCHERS 张。
+            |[gray]当前未使用：[white]$totalCount/$MAX_VOUCHERS[gray] 张（buff [white]$buffCount[gray]，头奖券 [white]$ticketCount[gray]，共 [white]${vouchers.size}[gray] 种）。
             |[gray]不显示当前单位状态，只显示奖券本身。
         """.trimMargin()
 
@@ -963,8 +967,9 @@ private suspend fun openBackpack(player: Player) {
             option("（背包为空）") { }
         } else {
             renderPaged(vouchers, prePage = 6, key = "lottery_bag") { voucher ->
+                val stack = if (voucher.count > 1) "[white] ×${voucher.count}" else ""
                 option(
-                    "[green]${voucher.name}[gray] · ${voucherSubtitle(voucher)}"
+                    "[green]${voucher.name}$stack[gray] · ${voucherSubtitle(voucher)}"
                 ) {
                     val result = useVoucher(player, voucher.id)
                     player.sendMessage(result.with())
@@ -1138,13 +1143,13 @@ private suspend fun openRules(player: Player) {
             |
             |[gold]头奖
             |[white]普通抽奖不再直接出现头奖。每次抽奖有 0.5% 概率获得“头奖抽奖券”，在背包中使用后从 13 项头奖中随机抽取，所有头奖概率相同。
-            |[gray]头奖抽奖券不与普通 buff 奖券共享 100 张上限。
+            |[gray]所有未使用奖券（buff/头奖抽奖券/全增益券）合计最多 100 张；背包满时普通抽奖不再产出新的头奖抽奖券。
             |
             |[gold]奖券
             |[white]正面 buff 会存为奖券（不设过期时间）。只在附身普通单位时可用；核心机或无单位状态点击会被拒绝，奖券保留。
             |[white]“无限时长全增益 buff 兑换券”使用后对当前普通单位施加快速、超速、护盾三种永久增益。
             |[white]debuff 不进入背包，抽到后立即永久生效，不询问。
-            |[white]未使用正面 buff 奖券最多 $MAX_VOUCHERS 张；满额后抽到的 buff 会折算为 MDC（3 分钟 +$VOUCHER_MDC_3M，8 分钟 +$VOUCHER_MDC_8M，永久 +$VOUCHER_MDC_PERMANENT）。
+            |[white]buff/头奖抽奖券/全增益券合计最多 $MAX_VOUCHERS 张，重复奖券会堆叠显示；满额后抽到的 buff 会折算为 MDC（3 分钟 +$VOUCHER_MDC_3M，8 分钟 +$VOUCHER_MDC_8M，永久 +$VOUCHER_MDC_PERMANENT）。
             |[white]MDC 增减、单位、服务器音效、冷笑话立即生效。
             |
             |[gold]冷笑话
@@ -1177,8 +1182,9 @@ private suspend fun openLotteryMenu(player: Player) {
         wrapInPane = false
         rootWidth = 620f
         val vouchers = unusedVouchers(uid)
-        val buffCount = vouchers.count { it.kind == "buff" }
-        val ticketCount = vouchers.count { it.kind == "headticket" }
+        val totalVouchers = vouchers.sumOf { it.count }
+        val buffCount = vouchers.filter { it.kind == "buff" }.sumOf { it.count }
+        val ticketCount = vouchers.filter { it.kind == "headticket" }.sumOf { it.count }
         val round = activeRound(uid)
         val pool = loadedPool
         val library = currentJokeVersion?.let { loadedLibraries[it] }
@@ -1186,7 +1192,7 @@ private suspend fun openLotteryMenu(player: Player) {
 
         msg = """
             |[gold]余额：[white]$balance MDC
-            |[gold]背包：[white]buff $buffCount/$MAX_VOUCHERS[gray] · 头奖券 [white]$ticketCount[gray] 张
+            |[gold]背包：[white]$totalVouchers/$MAX_VOUCHERS[gray] 张 · buff [white]$buffCount[gray] · 头奖券 [white]$ticketCount[gray]
             |[gold]冷话题库：[white]${library?.version ?: "未加载"}[gray] / ${library?.jokes?.size ?: 0} 条
             |[gold]当前轮次：[white]${round?.let { "${it.remaining}/${it.total} 条剩余" } ?: "尚未开始"}
             |[gold]奖池：[white]${pool?.let { "v${it.version} / ${it.prizes.size} 项" } ?: "未加载"}
@@ -1200,7 +1206,7 @@ private suspend fun openLotteryMenu(player: Player) {
             drawAndShow(player, 10)
             refresh()
         }
-        option("[cyan]背包[gray] · ${vouchers.size} 张券（buff $buffCount/$MAX_VOUCHERS，头奖券 $ticketCount）") {
+        option("[cyan]背包[gray] · ${vouchers.size} 种 / $totalVouchers 张（buff $buffCount，头奖券 $ticketCount）") {
             close()
             openBackpack(player)
         }

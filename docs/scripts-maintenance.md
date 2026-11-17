@@ -6376,7 +6376,7 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 # 2026-11-18：抽奖改为头奖抽奖券
 
 - 按用户要求取消直接头奖与 100 抽保底：普通池加载时过滤 `rarity=grand`，默认普通池 23 项；旧 `pool.json` 的 grand 项只打日志忽略，不需要手动删除。
-- 普通抽奖每次独立 0.5% 概率产出 `headticket`（头奖抽奖券），存入背包，不占普通 buff 奖券 100 张上限。
+- 普通抽奖每次独立 0.5% 概率产出 `headticket`（头奖抽奖券），存入背包；和 buff/全增益券合计占用 100 张总上限。
 - 使用头奖券后从 13 项等概率头奖中抽取：王座 `reign`、死星 `corvus`、天蝎 `toxopid`、领主 `conquer`、天帝 `collaris`、日蚀 `eclipse`、要塞 `oct`、disrupt `disrupt`、发散 `emanate`、起飞的海神 `omura`、起飞的龙王 `navanax`、1000 MDC、无限时长全增益 buff 兑换券。
 - 飞行头奖在单位生成后设置 `elevation=1f; update()`，逻辑复用 `skillsLevel2.kts` 的 `flying` 技能；全增益券使用后对普通单位施加 `fast`/`overdrive`/`shielded` 永久状态。
 - `Prize` 新增 `flying`；`Profile` 去掉保底字段；`LotteryProfiles` 表定义移除 `pityCounter`（旧库残留列不参与逻辑）。新增 `HEAD_TICKET_CHANCE`、`HEAD_TICKET`、`HEAD_PRIZES`、`prepareHeadDrawTx`、`drawHeadPrize`、`validateHeadPrizes`；`Voucher` 增加 `kind`，背包支持头奖券/全增益券/普通 buff 分派。
@@ -6384,3 +6384,13 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 - 文档：重写 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`；同步 `docs/help-menu.md`、`docs/database-system.md`。
 - 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（23 项），题库 v1（10 条）`；日志确认忽略旧 grand，并出现 `[lottery] 头奖池 13 项校验通过（含起飞单位/全增益券）`；插件 Enabled。
 - 未完成：真实客户端抽头奖券/13 项头奖/飞行单位/全增益券/奖券满额测试；未做最终 KDoc、`git diff --check`、rebase 与 PR 更新。
+
+# 2026-11-18：奖券背包堆叠与总上限
+
+- 背包按 `(kind, effect, duration)` 聚合未使用奖券：相同 buff/时长只显示一项并标注 `×N`，不同效果或时长分开；头奖券、全增益券各自堆叠。
+- `Voucher` 改为持有同组 `ids`，点击一次只 claim 并使用 1 张，数量减 1。
+- 100 张上限改为所有未使用奖券合计（buff + 头奖券 + 全增益券）；`countUnusedVouchersTx` 不再只统计 buff。
+- 满 100 时普通抽奖不再产出新的头奖券；buff 仍按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 在同一事务内折算。
+- 头奖券使用会先释放 1 个槽位，头奖结果中的全增益券仍可正常入包，不会突破 100。
+- 同步 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md` 和规则页。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；奖池 v1/23、头奖池 13 项校验通过、插件 Enabled。真实客户端的堆叠数量显示、点击消耗 1 张、总上限 100、满包时头奖券停止产出与 buff 折算仍待实测。
