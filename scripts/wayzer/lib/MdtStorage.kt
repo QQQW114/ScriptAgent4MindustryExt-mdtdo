@@ -1889,6 +1889,11 @@ object MdtStorage {
         setDefaultBoundPlayerLevelAndRaise(settingKey, levelCode)
 
     fun addTrustPoints(uid: String, amount: Int): Int = transaction {
+        addTrustPointsInTx(uid, amount)
+    }
+
+    // 必须在已有事务内调用；调用方负责在提交后同步缓存与事件。
+    fun addTrustPointsInTx(uid: String, amount: Int): Int {
         ensureTrustProfile(uid)
         val row = TrustProfiles.selectAll().where { TrustProfiles.id eq uid }.first()
         val current = row[TrustProfiles.currentPoints]
@@ -1900,7 +1905,7 @@ object MdtStorage {
             it[totalPoints] = newTotal
             it[updatedAt] = now()
         }
-        newCurrent
+        return newCurrent
     }
 
     fun addTrustPointsBatch(rewards: Map<String, Int>): Map<String, Int> = transaction {
@@ -1927,7 +1932,8 @@ object MdtStorage {
         result
     }
 
-    private fun addCurrentTrustPointsInTx(uid: String, amount: Int): Int {
+    // 必须在已有事务内调用；只改 current，不增加累计发放量。
+    fun addCurrentTrustPointsInTx(uid: String, amount: Int): Int {
         ensureTrustProfile(uid)
         val row = TrustProfiles.selectAll().where { TrustProfiles.id eq uid }.first()
         val current = row[TrustProfiles.currentPoints]
@@ -2000,15 +2006,20 @@ object MdtStorage {
     }
 
     fun spendTrustPoints(uid: String, amount: Int): Boolean = transaction {
-        if (amount <= 0) return@transaction true
+        spendTrustPointsInTx(uid, amount)
+    }
+
+    // 必须在已有事务内调用；返回 false 时不修改余额，由调用方决定是否回滚。
+    fun spendTrustPointsInTx(uid: String, amount: Int): Boolean {
+        if (amount <= 0) return true
         ensureTrustProfile(uid)
         val current = TrustProfiles.selectAll().where { TrustProfiles.id eq uid }.first()[TrustProfiles.currentPoints]
-        if (current < amount) return@transaction false
+        if (current < amount) return false
         TrustProfiles.update({ TrustProfiles.id eq uid }) {
             it[currentPoints] = current - amount
             it[updatedAt] = now()
         }
-        true
+        return true
     }
 
     fun setTrustPoints(uid: String, value: Int): Int = transaction {

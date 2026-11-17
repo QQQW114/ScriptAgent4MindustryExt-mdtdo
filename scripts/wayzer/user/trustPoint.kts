@@ -37,6 +37,19 @@ fun getTotalTrustPoints(uid: String): Int = MdtStorage.getTotalTrustPoints(uid)
 fun getCachedTrustPoints(uid: String): Int =
     currentPointCache.getOrPut(uid) { MdtStorage.getTrustPoints(uid) }
 
+// 事务内直接改库后调用：重新读取余额、刷新缓存并通知界面。
+fun refreshTrustPoints(uid: String): Int {
+    val points = MdtStorage.getTrustPoints(uid)
+    setCachedTrustPoints(uid, points)
+    emitTrustPointChanged(uid)
+    return points
+}
+
+// 事务内完成正向发放后调用，仅补发统计事件，不重复改余额。
+fun notifyMdcGranted(uid: String, amount: Int, desc: String) {
+    emitMdcGranted(uid, amount, desc)
+}
+
 private fun emitTrustPointChanged(uid: String) {
     launch { TrustPointChangedEvent(setOf(uid)).emitAsync() }
 }
