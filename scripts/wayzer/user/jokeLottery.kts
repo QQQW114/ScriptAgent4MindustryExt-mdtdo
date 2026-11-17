@@ -2,6 +2,7 @@
 @file:Depends("coreLibrary/db", "抽奖记录持久化")
 @file:Depends("wayzer/mdtDatabase", "MDT 玩家数据")
 @file:Depends("wayzer/user/trustPoint", "MDC 扣除/发放")
+@file:Depends("wayzer/user/trustLevel", "抽奖信任等级门槛")
 @file:Depends("wayzer/user/ext/skills", "单位生成与状态效果")
 @file:Depends("wayzer/ext/soundEffectMenu", "服务器小音效")
 
@@ -36,6 +37,7 @@ import kotlin.time.Duration.Companion.seconds
 name = "MDT 抽奖系统"
 
 private val trustPoint = contextScript<wayzer.user.TrustPoint>()
+private val trustLevel = contextScript<wayzer.user.TrustLevel>()
 private val skillsCore = contextScript<wayzer.user.ext.Skills>()
 private val soundEffects = contextScript<wayzer.ext.SoundEffectMenu>()
 
@@ -625,7 +627,15 @@ private fun formatTime(epochMillis: Long): String =
         .atZone(java.time.ZoneId.systemDefault())
         .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
 
+private fun lotteryAccessMessage(player: Player): String? =
+    if (trustLevel.hasTrustLevel(player, "3")) null
+    else "[red]抽奖仅对信任等级 3 级及以上玩家开放。"
+
 private fun drawAndShow(player: Player, count: Int) {
+    lotteryAccessMessage(player)?.let {
+        player.sendMessage(it.with())
+        return
+    }
     val uid = PlayerData[player].id
     val pool = loadedPool
     if (pool == null || pool.prizes.isEmpty()) {
@@ -737,6 +747,7 @@ private suspend fun openBackpack(player: Player) {
 }
 
 private fun useVoucher(player: Player, drawId: Int): String {
+    lotteryAccessMessage(player)?.let { return it }
     val uid = PlayerData[player].id
     val row = dbResult {
         LotteryDraws.selectAll().where {
@@ -867,6 +878,10 @@ private suspend fun openRules(player: Player) {
 }
 
 private suspend fun openLotteryMenu(player: Player) {
+    lotteryAccessMessage(player)?.let {
+        player.sendMessage(it.with())
+        return
+    }
     val uid = PlayerData[player].id
     MenuV3(player) {
         title = "MDT 抽奖"
