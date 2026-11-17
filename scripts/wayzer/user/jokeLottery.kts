@@ -19,6 +19,7 @@ import mindustry.Vars
 import mindustry.content.StatusEffects
 import mindustry.ctype.ContentType
 import mindustry.gen.Player
+import mindustry.gen.Unit
 import mindustry.type.StatusEffect
 import mindustry.type.UnitType
 import org.jetbrains.exposed.dao.id.IntIdTable
@@ -560,8 +561,17 @@ private fun statusLabel(status: String): String = when (status) {
     else -> status
 }
 
+private fun debuffTarget(player: Player): Unit? {
+    player.unit()?.takeIf { it.isValid && !it.dead }?.let { return it }
+    if (player.dead()) return null
+    runCatching { player.checkSpawn() }.onFailure {
+        Log.warn("[lottery] core spawn failed uid=${player.uuid()}: ${it.message}")
+    }
+    return player.unit()?.takeIf { it.isValid && !it.dead }
+}
+
 private fun applyStatusPrize(player: Player, effectName: String, duration: Int): String {
-    val unit = player.unit() ?: return "[yellow]当前没有控制单位，状态未能施加"
+    val unit = debuffTarget(player) ?: return "[yellow]当前没有可施加状态的核心机或单位"
     val effect = findStatusEffect(effectName) ?: return "[red]状态 ${effectName} 不存在"
     val seconds = if (duration < 0) Float.POSITIVE_INFINITY else duration.toFloat()
     val applied = skillsCore.applyStackedStatus(unit, effect, seconds, 1)
@@ -743,7 +753,8 @@ private fun useVoucher(player: Player, drawId: Int): String {
     }
     val parsed = parseEffectJson(row[LotteryDraws.effectJson])
         ?: return "[red]奖券效果数据损坏。"
-    val unit = player.unit() ?: return "[yellow]当前没有控制单位，奖券已保留。"
+    val unit = player.unit()?.takeIf { it.isValid && !it.dead && !it.spawnedByCore }
+        ?: return "[yellow]当前未附身单位，奖券已保留。"
     val effect = findStatusEffect(parsed.first) ?: return "[red]状态 ${parsed.first} 不存在，奖券已保留。"
     val seconds = if (parsed.second < 0) Float.POSITIVE_INFINITY else parsed.second.toFloat()
     val applied = skillsCore.applyStackedStatus(unit, effect, seconds, 1)
