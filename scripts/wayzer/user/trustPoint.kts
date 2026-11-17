@@ -88,6 +88,7 @@ private fun mdcChangeReason(desc: String, amount: Int): String {
         fixed.startsWith("RewardBatch") -> "奖励"
         fixed.startsWith("Achievement:") -> "成就奖励"
         fixed.startsWith("Skill:") -> if (amount >= 0) "技能奖励" else "技能消耗"
+        fixed.startsWith("Lottery:") -> if (amount >= 0) "抽奖奖励" else "抽奖消耗"
         fixed.startsWith("Shop:") -> "商店购买"
         fixed.startsWith("RedPacket:send") -> "红包发送"
         fixed.startsWith("RedPacket:grab") -> "红包领取"

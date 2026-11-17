@@ -210,6 +210,7 @@ private fun loadJokeLibraries(): Pair<Map<String, JokeLibrary>, String> {
     if (files.isEmpty()) {
         val seed = File(dir, "v1.jsonl")
         writeDefaultJokes(seed)
+        Log.warn("[lottery] 未发现题库，已生成测试题库 v1（测试1-10）；上线前请替换为正式内容")
         files = listOf(seed)
     }
 
@@ -325,6 +326,12 @@ private fun loadPool(): Pool {
     return Pool(version, prizes)
 }
 
+private fun isDefaultJokeLibrary(library: JokeLibrary?): Boolean =
+    library != null &&
+            library.jokes.size == defaultJokes.size &&
+            library.jokes.map { it.id } == defaultJokes.map { it.id } &&
+            library.jokes.map { it.text } == defaultJokes.map { it.text }
+
 private fun reloadContent(): String {
     val libraries = runCatching { loadJokeLibraries() }.getOrElse {
         return "[red]题库加载失败：${it.message ?: it.javaClass.simpleName}"
@@ -335,6 +342,12 @@ private fun reloadContent(): String {
     loadedLibraries = libraries.first
     currentJokeVersion = libraries.second
     loadedPool = newPool
+    if (isDefaultJokeLibrary(libraries.first[currentJokeVersion])) {
+        Log.warn(
+            "[lottery] 当前题库仍是自动生成的测试题库 ${currentJokeVersion}（测试1-10）；" +
+                    "上线前请替换为正式题库，避免带着测试文案上线"
+        )
+    }
     return "[green]已加载奖池 v${newPool.version}（${newPool.prizes.size} 项），" +
             "题库 ${currentJokeVersion}（${libraries.first[currentJokeVersion]?.jokes?.size ?: 0} 条）"
 }
@@ -1065,6 +1078,7 @@ command("lottery", "打开 MDT 抽奖页面") {
     }
 }
 
+// 维护入口：故意不受 DatabaseFeature.Lottery 限制；关闭玩家抽奖后仍可 reload/status。
 command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
     usage = "<reload|status>"
     requirePermission("wayzer.admin.lottery")

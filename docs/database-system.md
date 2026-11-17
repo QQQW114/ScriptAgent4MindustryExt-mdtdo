@@ -178,7 +178,7 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 - `LotteryRounds`：`uid`、`roundNo`、`libraryVersion`、`offset`、`stride`、`cursor`、`total`、`status`；`(uid, roundNo)` 唯一，`uid` 普通索引。
 - `LotteryDraws`：`uid`、`batchId`、奖品快照、`status`、`cost`、`expiresAt`；`uid` 与 `(uid, status)` 索引。
 
-删号时插件通过 `MdtStorage.registerSubjectCleanupHook` 注册清理器，在同一事务内删除该 UID 的三表数据；禁用插件时注销。数据库业务开关为 `DatabaseFeature.Lottery`，关闭后抽奖入口、抽奖和奖券使用均拒绝。
+删号时插件通过 `MdtStorage.registerSubjectCleanupHook` 注册清理器，在同一事务内删除该 UID 的三表数据；禁用插件时注销。数据库业务开关为 `DatabaseFeature.Lottery`，关闭后玩家抽奖入口、抽奖和奖券使用均拒绝；`/lotteryadmin status|reload` 是维护入口，故意不受该开关限制，仍受管理员权限保护。
 
 ### 赞/踩
 

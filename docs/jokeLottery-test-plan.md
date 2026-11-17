@@ -26,6 +26,7 @@
 - `wayzer/user/jokeLottery` 为 `Enabled`
 - 日志出现：`[lottery] 已加载奖池 v1（24 项），题库 v1（10 条）`
 - 控制台执行 `/lotteryadmin status`，能看到奖池版本、题库版本、价格、保底
+- 若 `config/lottery/jokes/` 为空、自动生成测试题库，启动日志应有 `[lottery] ... 测试题库 ... 上线前请替换` WARN
 
 > 脚本总数和启用数会随分支变化，不要只看固定数字；核心是 `出错0` 且本插件 `Enabled`。
 
@@ -209,7 +210,7 @@
 - 背包 100 张时十连：允许；所有 buff 折算 MDC，非 buff 奖品正常发放
 - 玩家没有核心机且死亡/观战：状态类奖品要有明确提示，不静默吞掉；记录状态记为发放失败
 - 账号删除：删除一个抽过奖的账号后，三张抽奖表中的该 UID 数据应清空（可查数据库/重新注册同名账号确认无残留）
-- 关闭 `DatabaseFeature.Lottery`：`/lottery`、`/lotteryadmin` 入口/抽奖/使用奖券应被拒绝；重新开启后恢复
+- 关闭 `DatabaseFeature.Lottery`：`/lottery`、抽奖、使用奖券应被拒绝；`/lotteryadmin status`/`reload` 仍应可用（维护入口，故意绕过开关）；重新开启后玩家入口恢复
 
 ## 7. 测试记录模板
 

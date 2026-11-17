@@ -53,7 +53,7 @@
 - 取题索引：`floorMod(offset + cursor * stride, total)`，用 Long 计算避免大题库乘加溢出。
 - 同一轮内不重复；cursor 达到 total 后标记 completed，下次抽奖自动开新一轮。
 - 活跃轮次锁定创建时的题库版本；更新题库后，新轮次使用新版本，旧轮次继续用旧版本直到结束。
-- 测试题库当前为 `v1.jsonl` 的“测试1-10”。
+- 测试题库当前为 `v1.jsonl` 的“测试1-10”；若启动时仍是自动生成的测试题库，`onEnable` 会打 WARN，提醒上线前替换。
 
 ## 5. 数据模型与事务边界
 
@@ -92,7 +92,8 @@
 
 - 入口权限：`/lottery` 仅信任等级 **3 级及以上**；游客按 0 级处理。
 - 管理权限：`/lotteryadmin` 需要 `wayzer.admin.lottery`（默认 `@admin`）。
-- 数据库开关：`DatabaseFeature.Lottery`（`serverFeatures.database.lottery.enabled`）；关闭后抽奖页、抽奖、使用奖券均拒绝。
+- 数据库开关：`DatabaseFeature.Lottery`（`serverFeatures.database.lottery.enabled`）；关闭后玩家抽奖页、抽奖、使用奖券均拒绝。
+- `/lotteryadmin` 是维护入口，故意不受数据库开关限制：关闭后管理员仍可 `status`/`reload`，便于停用玩家入口时维护内容；它仍受 `wayzer.admin.lottery` 权限保护。
 - 删号清理：插件在 `onEnable` 向 `MdtStorage.registerSubjectCleanupHook` 注册清理器，在 `deleteSubjectBusinessDataInTx` 的同一事务中删除三张表中该 UID 的数据；`onDisable` 注销。
 - 删号 hook 是 lib 的通用扩展点，不把插件表定义搬进 lib；如果插件被禁用，删号时不会执行该 hook。
 
