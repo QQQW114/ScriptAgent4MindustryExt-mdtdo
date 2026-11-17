@@ -58,8 +58,22 @@ private val VOUCHER_MDC_3M = 11
 private val VOUCHER_MDC_8M = 22
 private val VOUCHER_MDC_PERMANENT = 66
 private val HEAD_TICKET_CHANCE = 0.005
-private val SHIELD_BUFF_AMOUNT = 500_000f
+private val SHIELD_BUFF_3M = 25_000f
+private val SHIELD_BUFF_8M = 100_000f
+private val SHIELD_BUFF_PERMANENT = 500_000f
 private val ALL_BUFF_EFFECTS = listOf("fast", "overdrive", "shielded")
+
+private fun shieldBuffAmount(duration: Int): Float = when {
+    duration < 0 -> SHIELD_BUFF_PERMANENT
+    duration <= 180 -> SHIELD_BUFF_3M
+    else -> SHIELD_BUFF_8M
+}
+
+private fun shieldBuffLabel(duration: Int): String = when {
+    duration < 0 -> "500,000"
+    duration <= 180 -> "25,000"
+    else -> "100,000"
+}
 
 private data class Joke(val id: String, val text: String)
 private data class JokeLibrary(val version: String, val jokes: List<Joke>)
@@ -788,7 +802,7 @@ private fun parseEffectJson(raw: String?): Pair<String, Int>? {
 private fun voucherSubtitle(voucher: Voucher): String = when {
     voucher.kind == "headticket" -> "使用后抽取头奖"
     voucher.kind == "buff_all" -> "快速/超速永久增益 + 500,000 护盾"
-    voucher.effect == "shielded" -> "使用后获得 500,000 护盾"
+    voucher.effect == "shielded" -> "使用后获得 ${shieldBuffLabel(voucher.duration)} 护盾"
     else -> durationLabel(voucher.duration)
 }
 
@@ -1050,7 +1064,7 @@ private fun useAllBuffVoucher(player: Player, drawId: Int, row: ResultRow): Stri
         for (effect in statusEffects) {
             applied += skillsCore.applyStackedStatus(unit, effect, Float.POSITIVE_INFINITY, 1)
         }
-        unit.shield(SHIELD_BUFF_AMOUNT)
+        unit.shield(SHIELD_BUFF_PERMANENT)
         applied++
     } catch (t: Throwable) {
         releaseVoucher(uid, drawId)
@@ -1091,13 +1105,13 @@ private fun useVoucher(player: Player, drawId: Int): String {
     if (parsed.first == "shielded") {
         if (!claimVoucher(uid, drawId)) return "[yellow]奖券状态已变化，未生效。"
         try {
-            unit.shield(SHIELD_BUFF_AMOUNT)
+            unit.shield(shieldBuffAmount(parsed.second))
         } catch (t: Throwable) {
             releaseVoucher(uid, drawId)
             Log.warn("[lottery] 应用护盾奖券失败 uid=$uid draw=$drawId", t)
             return "[red]奖券效果应用失败，奖券已保留，请稍后再试。"
         }
-        return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，当前普通单位获得 500,000 护盾。"
+        return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，当前普通单位获得 ${shieldBuffLabel(parsed.second)} 护盾。"
     }
 
     val effect = findStatusEffect(parsed.first) ?: return "[red]状态 ${parsed.first} 不存在，奖券已保留。"
