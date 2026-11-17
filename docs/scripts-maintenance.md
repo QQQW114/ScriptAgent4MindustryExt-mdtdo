@@ -6354,3 +6354,13 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 - 每次 `DataManager.load` 前先按当前 Content 修复容量，避免动态内容清理器读取新增物品时自身越界；加载/卸载后默认开启30秒逐tick轻量守护，只扫描活跃建筑并仅在实际修复时限频记录。`contentsTweaker.kts` 的动态物品/液体清理也增加数组边界防御。
 - 本地冷启动结果为155/151/146/0。地图ID24662（废料警戒进攻图）加载真实包后一次性修复1663个物品模块；加载32秒、44秒检查均为 `items=27, empty=27, bad=0`，显式调用4个核心的 `onProximityUpdate()` 正常。
 - 随后卸载成功，1/4/10秒检查均为 `items=22, empty=22, bad=0`；没有 `Index 22`、卸载失败或回滚失败。测试服务端和 `.tmp-dpfix*` 临时日志已清理，正式 `config/logs` 作为本地证据保留；生产部署状态仍待用户确认。
+
+# 2026-11-17：抽奖插件清单修订与 lib 扩展
+
+- 来源：PR #10 `feat/joke-lottery` 的交接清单 v2（基于本轮原子事务提交）。本轮按清单 1–5 修订，并选定第 6 项“奖券满额折算 MDC”。
+- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 30 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
+- lib 变更（需维护者按红线流程批准）：`MdtStorage.kt` 新增 `registerSubjectCleanupHook`/`unregisterSubjectCleanupHook`，删号事务末尾执行插件清理器；新增事务内 `addTrustPointsInTx`/`spendTrustPointsInTx`（本分支已加），`addCurrentTrustPointsInTx` 收回 private。`DatabaseFeatureSettings.kt` 新增 `DatabaseFeature.Lottery`。
+- 插件 `onEnable` 注册三表删号清理，`onDisable` 注销；`lotteryAccessMessage` 检查数据库业务开关与 3 级信任门槛。
+- 文档：新增 `docs/jokeLottery.md`；更新 `docs/jokeLottery-test-plan.md`、`docs/help-menu.md`、`docs/database-system.md`。
+- 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（24 项），题库 v1（10 条）`；`lotteryadmin status` 返回奖池 v1/24、题库 v1/10、单抽 33、十连 264、保底 100。修复过 hook 返回类型 `kotlin.Unit` 与 `LotteryDraws.status` 的 CLOB 索引错误。
+- 未完成：真实玩家单抽/十连/保底/奖券满额折算/删号/开关实测；lib 变更未合入 main，禁止热重载；合并前需维护者批准并做全量冷启动。

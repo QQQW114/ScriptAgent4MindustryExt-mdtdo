@@ -54,6 +54,17 @@ object MdtStorage {
     private const val RECENT_REPUTATION_DAYS = 7L
     private const val KEEP_REPUTATION_DAILY_DAYS = 14L
     private val dbLogger = Logger.getLogger("wayzer.lib.MdtStorage")
+    private val subjectCleanupHooks =
+        java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
+
+    // 插件可在 onEnable 注册；回调在删号事务内执行，函数内部必须使用当前事务。
+    fun registerSubjectCleanupHook(hook: (String) -> Unit) {
+        subjectCleanupHooks.addIfAbsent(hook)
+    }
+
+    fun unregisterSubjectCleanupHook(hook: (String) -> Unit) {
+        subjectCleanupHooks.remove(hook)
+    }
 
     data class ReputationCounts(
         val receivedLikes: Int = 0,
@@ -825,6 +836,8 @@ object MdtStorage {
         PlayerSkills.deleteWhere { PlayerSkills.uid eq subjectUid }
         RandomForms.deleteWhere { RandomForms.id eq subjectUid }
         MutedPlayers.deleteWhere { MutedPlayers.id eq subjectUid }
+
+        subjectCleanupHooks.forEach { it(subjectUid) }
 
         ownedTitleCodes
             .filter { it.startsWith("shop_custom_") }
@@ -1933,7 +1946,7 @@ object MdtStorage {
     }
 
     // 必须在已有事务内调用；只改 current，不增加累计发放量。
-    fun addCurrentTrustPointsInTx(uid: String, amount: Int): Int {
+    private fun addCurrentTrustPointsInTx(uid: String, amount: Int): Int {
         ensureTrustProfile(uid)
         val row = TrustProfiles.selectAll().where { TrustProfiles.id eq uid }.first()
         val current = row[TrustProfiles.currentPoints]

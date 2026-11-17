@@ -50,6 +50,13 @@ fun notifyMdcGranted(uid: String, amount: Int, desc: String) {
     emitMdcGranted(uid, amount, desc)
 }
 
+// 事务内直接扣费后调用，补发聊天提示；缓存与变更事件由 refreshTrustPoints 负责。
+fun notifyMdcSpent(uid: String, amount: Int, desc: String, newPoints: Int) {
+    if (amount <= 0) return
+    setCachedTrustPoints(uid, newPoints)
+    notifyMdcChanged(uid, -amount, desc, newPoints)
+}
+
 private fun emitTrustPointChanged(uid: String) {
     launch { TrustPointChangedEvent(setOf(uid)).emitAsync() }
 }
