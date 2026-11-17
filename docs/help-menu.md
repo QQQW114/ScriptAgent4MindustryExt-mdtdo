@@ -52,7 +52,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 本次已接入：
 
 - `/points`、`/pay`、`/redpacket`、`/grab`：MDC查询、转账与红包；单个红包最多 500 MDC；MDC变动时会私聊提示本人。
-- `/lottery`（别名 `抽奖`/`jokelottery`/`lc`）：仅信任 3 级及以上；单抽 33 MDC、十连 264 MDC；每次普通抽奖 0.5% 概率获得“头奖抽奖券”，在背包使用后从 13 项等概率头奖中抽取（王座/死星/天蝎/领主/天帝/日蚀/要塞/disrupt/发散/起飞的海神/起飞的龙王/1000 MDC/无限时长全增益 buff 兑换券）；已取消 100 抽保底与直接头奖；buff/头奖券/全增益券合计最多 100 张，重复奖券在背包堆叠显示；buff 奖券需附身普通单位，不设过期时间，奖券满 100 后新 buff 按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 折算；`/lotteryadmin status|reload` 为管理员入口。
+- `/lottery`（别名 `抽奖`/`jokelottery`/`lc`）：仅信任 3 级及以上；单抽 33 MDC、十连 264 MDC；每次普通抽奖 0.5% 概率获得“头奖抽奖券”，在背包使用后从 13 项等概率头奖中抽取（王座/死星/天蝎/领主/天帝/日蚀/要塞/disrupt/发散/起飞的海神/起飞的龙王/1000 MDC/无限时长全增益 buff 兑换券）；保留 100 抽保底（第 100 抽必得头奖券）；buff/全增益券合计最多 100 张，头奖券独立堆叠最多 64 张、不占 100 张额度；重复奖券在背包堆叠显示；buff 奖券需附身普通单位，不设过期时间，护盾 buff 给予当前单位 500,000 护盾；buff 满 100 后新 buff 按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 折算；`/lotteryadmin status|reload` 为管理员入口。
 - `/seniority`、`/资历`、`/playtime`：查看资历等级、累计在线时长与下一资历等级条件。
 - `/captcha`、`/register`、`/login`、`/logout`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、退出登录（结束会话并解除本机自动登录）、改密与注销；登录不需要验证码。
 - `/msg`、`/r`：私聊与回复最近私聊对象。
