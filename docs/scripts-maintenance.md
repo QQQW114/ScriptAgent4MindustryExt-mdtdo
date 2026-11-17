@@ -6358,9 +6358,29 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 # 2026-11-17：抽奖插件清单修订与 lib 扩展
 
 - 来源：PR #10 `feat/joke-lottery` 的交接清单 v2（基于本轮原子事务提交）。本轮按清单 1–5 修订，并选定第 6 项“奖券满额折算 MDC”。
-- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 66 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
+- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；奖券不设过期时间，未使用长期保留；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 66 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
 - lib 变更（需维护者按红线流程批准）：`MdtStorage.kt` 新增 `registerSubjectCleanupHook`/`unregisterSubjectCleanupHook`，删号事务末尾执行插件清理器；新增事务内 `addTrustPointsInTx`/`spendTrustPointsInTx`（本分支已加），`addCurrentTrustPointsInTx` 收回 private。`DatabaseFeatureSettings.kt` 新增 `DatabaseFeature.Lottery`。
 - 插件 `onEnable` 注册三表删号清理，`onDisable` 注销；`lotteryAccessMessage` 检查数据库业务开关与 3 级信任门槛。
 - 文档：新增 `docs/jokeLottery.md`；更新 `docs/jokeLottery-test-plan.md`、`docs/help-menu.md`、`docs/database-system.md`。
 - 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（24 项），题库 v1（10 条）`；`lotteryadmin status` 返回奖池 v1/24、题库 v1/10、单抽 33、十连 264、保底 100。修复过 hook 返回类型 `kotlin.Unit` 与 `LotteryDraws.status` 的 CLOB 索引错误。
 - 未完成：真实玩家单抽/十连/保底/奖券满额折算/删号/开关实测；lib 变更未合入 main，禁止热重载；合并前需维护者批准并做全量冷启动。
+
+# 2026-11-18：抽奖头奖池扩展
+
+- `jokeLottery.kts` 默认奖池新增两个 `grand` 单位头奖：`grand-unit-collaris`（头奖：天帝）、`grand-unit-disrupt`（头奖：瓦解），与 `grand-mdc-1000` 权重均为 1。
+- 第 100 抽保底现在会在三个头奖之间随机；任意 `rarity=grand` 的奖品（自然或保底）都会在同一事务内把 `pityCounter` 清零，十连中多个头奖各自触发清零。
+- 默认测试奖池由 24 项增至 26 项，总权重 180；单个头奖普通概率约 0.56%，任意头奖合计约 1.67%。
+- 已同步 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md`；测试服需删除旧 `config/lottery/pool.json` 或手动补两项后再验证。
+- 冷启动加载结果：奖池 v1/26、题库 v1/10、插件 Enabled、`出错0`；真实客户端头奖生成未实测。
+
+# 2026-11-18：抽奖改为头奖抽奖券
+
+- 按用户要求取消直接头奖与 100 抽保底：普通池加载时过滤 `rarity=grand`，默认普通池 23 项；旧 `pool.json` 的 grand 项只打日志忽略，不需要手动删除。
+- 普通抽奖每次独立 0.5% 概率产出 `headticket`（头奖抽奖券），存入背包，不占普通 buff 奖券 100 张上限。
+- 使用头奖券后从 13 项等概率头奖中抽取：王座 `reign`、死星 `corvus`、天蝎 `toxopid`、领主 `conquer`、天帝 `collaris`、日蚀 `eclipse`、要塞 `oct`、disrupt `disrupt`、发散 `emanate`、起飞的海神 `omura`、起飞的龙王 `navanax`、1000 MDC、无限时长全增益 buff 兑换券。
+- 飞行头奖在单位生成后设置 `elevation=1f; update()`，逻辑复用 `skillsLevel2.kts` 的 `flying` 技能；全增益券使用后对普通单位施加 `fast`/`overdrive`/`shielded` 永久状态。
+- `Prize` 新增 `flying`；`Profile` 去掉保底字段；`LotteryProfiles` 表定义移除 `pityCounter`（旧库残留列不参与逻辑）。新增 `HEAD_TICKET_CHANCE`、`HEAD_TICKET`、`HEAD_PRIZES`、`prepareHeadDrawTx`、`drawHeadPrize`、`validateHeadPrizes`；`Voucher` 增加 `kind`，背包支持头奖券/全增益券/普通 buff 分派。
+- 头奖券使用与头奖记录写入同一事务；普通批次仍为批次级原子事务。外部单位/音效/状态失败标记 `delivery_failed`，不自动退款。
+- 文档：重写 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`；同步 `docs/help-menu.md`、`docs/database-system.md`。
+- 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（23 项），题库 v1（10 条）`；日志确认忽略旧 grand，并出现 `[lottery] 头奖池 13 项校验通过（含起飞单位/全增益券）`；插件 Enabled。
+- 未完成：真实客户端抽头奖券/13 项头奖/飞行单位/全增益券/奖券满额测试；未做最终 KDoc、`git diff --check`、rebase 与 PR 更新。

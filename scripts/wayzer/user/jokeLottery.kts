@@ -49,14 +49,14 @@ private val poolFile by config.key("config/lottery/pool.json", "抽奖奖池 JSO
 private val jokeDir by config.key("config/lottery/jokes", "冷笑话题库目录")
 private val singleCost by config.key(33, "单抽价格（MDC）")
 private val tenCost by config.key(264, "十连价格（MDC）")
-private val voucherDays by config.key(28, "奖券有效天数")
 
 private val MAX_VOUCHERS = 100
-private val PITY_LIMIT = 100
 private val HISTORY_LIMIT = 200
 private val VOUCHER_MDC_3M = 11
 private val VOUCHER_MDC_8M = 22
 private val VOUCHER_MDC_PERMANENT = 66
+private val HEAD_TICKET_CHANCE = 0.005
+private val ALL_BUFF_EFFECTS = listOf("fast", "overdrive", "shielded")
 
 private data class Joke(val id: String, val text: String)
 private data class JokeLibrary(val version: String, val jokes: List<Joke>)
@@ -73,14 +73,38 @@ private data class Prize(
     val sound: String = "",
     val effect: String = "",
     val duration: Int = -1,
+    val flying: Boolean = false,
 )
 
 private data class Pool(val version: String, val prizes: List<Prize>) {
     val totalWeight: Int get() = prizes.sumOf { it.weight }
-    val hasGrand: Boolean get() = prizes.any { it.rarity == "grand" }
 }
 
-private data class Profile(val uid: String, val pity: Int, val draws: Int)
+private data class Profile(val uid: String, val draws: Int)
+
+private val HEAD_TICKET = Prize(
+    id = "headticket",
+    name = "头奖抽奖券",
+    type = "headticket",
+    rarity = "special",
+    weight = 1,
+)
+private val HEAD_PRIZES = listOf(
+    Prize("head-reign", "王座", "unit", "head", 1, unit = "reign"),
+    Prize("head-corvus", "死星", "unit", "head", 1, unit = "corvus"),
+    Prize("head-toxopid", "天蝎", "unit", "head", 1, unit = "toxopid"),
+    Prize("head-conquer", "领主", "unit", "head", 1, unit = "conquer"),
+    Prize("head-collaris", "天帝", "unit", "head", 1, unit = "collaris"),
+    Prize("head-eclipse", "日蚀", "unit", "head", 1, unit = "eclipse"),
+    Prize("head-oct", "要塞", "unit", "head", 1, unit = "oct"),
+    Prize("head-disrupt", "disrupt（悲怆）", "unit", "head", 1, unit = "disrupt"),
+    Prize("head-emanate", "发散", "unit", "head", 1, unit = "emanate"),
+    Prize("head-omura", "起飞的海神", "unit", "head", 1, unit = "omura", flying = true),
+    Prize("head-navanax", "起飞的龙王", "unit", "head", 1, unit = "navanax", flying = true),
+    Prize("head-mdc-1000", "1000 MDC", "mdc", "head", 1, amount = 1000),
+    Prize("head-buff-all", "无限时长全增益 buff 兑换券", "buff_all", "head", 1),
+)
+
 private data class PreparedDraw(
     val id: Int,
     val prize: Prize,
@@ -94,7 +118,13 @@ private sealed class BatchOutcome {
     data class Success(val draws: List<PreparedDraw>) : BatchOutcome()
     data class Rejected(val userMessage: String) : BatchOutcome()
 }
-private data class Voucher(val id: Int, val name: String, val effect: String, val duration: Int, val expiresAt: Long)
+private data class Voucher(
+    val id: Int,
+    val name: String,
+    val kind: String,
+    val effect: String,
+    val duration: Int,
+)
 private data class HistoryRow(
     val id: Int,
     val prizeName: String,
@@ -110,7 +140,6 @@ private data class RoundInfo(val remaining: Int, val total: Int, val version: St
 
 private object LotteryProfiles : IntIdTable("LotteryProfiles") {
     val uid = varchar("uid", 64).uniqueIndex()
-    val pityCounter = integer("pityCounter").default(0)
     val totalDraws = integer("totalDraws").default(0)
     val updatedAt = long("updatedAt").default(0L)
 }
@@ -147,7 +176,6 @@ private object LotteryDraws : IntIdTable("LotteryDraws") {
     val status = varchar("status", 32).default("applied")
     val createdAt = long("createdAt").default(0L)
     val usedAt = long("usedAt").nullable()
-    val expiresAt = long("expiresAt").nullable()
 
     init {
         index(false, uid)
@@ -268,9 +296,7 @@ private val defaultPoolJson = """
     {"id":"debuff-tarred","name":"焦油（永久）","type":"debuff","rarity":"rare","weight":4,"effect":"tarred","duration":-1},
     {"id":"debuff-corroded","name":"腐蚀（永久）","type":"debuff","rarity":"epic","weight":3,"effect":"corroded","duration":-1},
 
-    {"id":"sound-omg","name":"omg 服务器音效","type":"sound","rarity":"epic","weight":2,"sound":"omg"},
-
-    {"id":"grand-mdc-1000","name":"头奖：1000 MDC","type":"mdc","rarity":"grand","weight":1,"amount":1000}
+    {"id":"sound-omg","name":"omg 服务器音效","type":"sound","rarity":"epic","weight":2,"sound":"omg"}
   ]
 }
 """.trimIndent()
@@ -292,6 +318,10 @@ private fun loadPool(): Pool {
         val rarity = node.getString("rarity", "common").trim().lowercase()
         val weight = node.getInt("weight", 1)
         if (id.isBlank() || name.isBlank() || weight <= 0) return@mapNotNull null
+        if (rarity == "grand") {
+            Log.info("[lottery] 已忽略旧头奖配置 $id；头奖改由头奖抽奖券抽取")
+            return@mapNotNull null
+        }
         if (type !in setOf("joke", "mdc", "unit", "sound", "buff", "debuff")) {
             Log.warn("[lottery] 未知奖品类型 $type，已跳过: $id")
             return@mapNotNull null
@@ -326,6 +356,30 @@ private fun loadPool(): Pool {
     return Pool(version, prizes)
 }
 
+private fun validateHeadPrizes() {
+    var missing = 0
+    for (prize in HEAD_PRIZES) {
+        when (prize.type) {
+            "unit" -> if (skillsCore.unitTypeByName(prize.unit) == null) {
+                missing++
+                Log.warn("[lottery] 头奖单位不存在: ${prize.name} (${prize.unit})")
+            }
+            "mdc" -> Unit
+            "buff_all" -> for (effect in ALL_BUFF_EFFECTS) {
+                if (findStatusEffect(effect) == null) {
+                    missing++
+                    Log.warn("[lottery] 全增益状态不存在: $effect")
+                }
+            }
+            else -> {
+                missing++
+                Log.warn("[lottery] 未知头奖类型: ${prize.type} / ${prize.name}")
+            }
+        }
+    }
+    if (missing == 0) Log.info("[lottery] 头奖池 ${HEAD_PRIZES.size} 项校验通过（含起飞单位/全增益券）")
+}
+
 private fun isDefaultJokeLibrary(library: JokeLibrary?): Boolean =
     library != null &&
             library.jokes.size == defaultJokes.size &&
@@ -342,6 +396,7 @@ private fun reloadContent(): String {
     loadedLibraries = libraries.first
     currentJokeVersion = libraries.second
     loadedPool = newPool
+    validateHeadPrizes()
     if (isDefaultJokeLibrary(libraries.first[currentJokeVersion])) {
         Log.warn(
             "[lottery] 当前题库仍是自动生成的测试题库 ${currentJokeVersion}（测试1-10）；" +
@@ -363,37 +418,23 @@ private fun findStatusEffect(name: String): StatusEffect? {
 private fun ensureProfileTx(uid: String): Profile {
     val row = LotteryProfiles.selectAll().where { LotteryProfiles.uid eq uid }.firstOrNull()
     if (row != null) {
-        return Profile(uid, row[LotteryProfiles.pityCounter], row[LotteryProfiles.totalDraws])
+        return Profile(uid, row[LotteryProfiles.totalDraws])
     }
     LotteryProfiles.insert {
         it[LotteryProfiles.uid] = uid
-        it[pityCounter] = 0
         it[totalDraws] = 0
         it[updatedAt] = now()
     }
-    return Profile(uid, 0, 0)
+    return Profile(uid, 0)
 }
 
 private fun loadProfile(uid: String): Profile = dbResult { ensureProfileTx(uid) }
 
-private fun expireOldVouchersTx(uid: String) {
-    val now = now()
-    LotteryDraws.selectAll().where {
-        (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
-    }.toList().forEach { row ->
-        val expires = row[LotteryDraws.expiresAt]
-        if (expires != null && expires <= now) {
-            LotteryDraws.update({ LotteryDraws.id eq row[LotteryDraws.id].value }) {
-                it[status] = "expired"
-            }
-        }
-    }
-}
-
 private fun countUnusedVouchersTx(uid: String): Int {
-    expireOldVouchersTx(uid)
     return LotteryDraws.selectAll().where {
-        (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
+        (LotteryDraws.uid eq uid) and
+                (LotteryDraws.status eq "unused") and
+                (LotteryDraws.prizeType eq "buff")
     }.count().toInt()
 }
 
@@ -402,18 +443,20 @@ private fun countUnusedVouchers(uid: String): Int = dbResult {
 }
 
 private fun unusedVouchers(uid: String): List<Voucher> = dbResult {
-    expireOldVouchersTx(uid)
     LotteryDraws.selectAll().where {
         (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
-    }.orderBy(LotteryDraws.expiresAt to SortOrder.ASC).mapNotNull { row ->
-        val parsed = parseEffectJson(row[LotteryDraws.effectJson]) ?: return@mapNotNull null
-        Voucher(
-            id = row[LotteryDraws.id].value,
-            name = row[LotteryDraws.prizeName],
-            effect = parsed.first,
-            duration = parsed.second,
-            expiresAt = row[LotteryDraws.expiresAt] ?: 0L,
-        )
+    }.orderBy(LotteryDraws.id to SortOrder.DESC).mapNotNull { row ->
+        val id = row[LotteryDraws.id].value
+        val name = row[LotteryDraws.prizeName]
+        when (row[LotteryDraws.prizeType]) {
+            "headticket" -> Voucher(id, name, "headticket", "", -1)
+            "buff_all" -> Voucher(id, name, "buff_all", "", -1)
+            "buff" -> {
+                val parsed = parseEffectJson(row[LotteryDraws.effectJson]) ?: return@mapNotNull null
+                Voucher(id, name, "buff", parsed.first, parsed.second)
+            }
+            else -> null
+        }
     }
 }
 
@@ -538,16 +581,16 @@ private fun nextJokeTx(uid: String): Joke {
     error("题库轮次并发冲突，请重试")
 }
 
-private fun choosePrize(forceGrand: Boolean): Prize {
+private fun choosePrize(): Prize {
+    if (Random.nextDouble() < HEAD_TICKET_CHANCE) return HEAD_TICKET
     val pool = loadedPool ?: error("奖池未加载")
-    val candidates = if (forceGrand) pool.prizes.filter { it.rarity == "grand" } else pool.prizes
-    if (candidates.isEmpty()) error("没有可抽取的奖品")
-    var roll = Random.nextDouble() * candidates.sumOf { it.weight }
-    for (prize in candidates) {
+    if (pool.prizes.isEmpty()) error("没有可抽取的奖品")
+    var roll = Random.nextDouble() * pool.totalWeight
+    for (prize in pool.prizes) {
         roll -= prize.weight
         if (roll <= 0.0) return prize
     }
-    return candidates.last()
+    return pool.prizes.last()
 }
 
 private fun effectJsonFor(prize: Prize): String =
@@ -568,8 +611,7 @@ private fun prepareDrawTx(
     vouchers: Int,
 ): PreparedDraw {
     val profile = ensureProfileTx(uid)
-    val forceGrand = profile.pity >= PITY_LIMIT - 1
-    var prize = choosePrize(forceGrand)
+    var prize = choosePrize()
     if (prize.type == "buff" && vouchers >= MAX_VOUCHERS) {
         val compensation = voucherCompensation(prize.duration)
         prize = prize.copy(
@@ -581,10 +623,12 @@ private fun prepareDrawTx(
         )
     }
     val joke = if (prize.type == "joke") nextJokeTx(uid) else null
-    val isHead = prize.rarity == "grand"
+    val isHead = false
     val effectJson = if (prize.type == "buff" || prize.type == "debuff") effectJsonFor(prize) else null
-    val status = if (prize.type == "buff") "unused" else "applied"
-    val expiresAt = if (status == "unused") now() + voucherDays.toLong() * 86_400_000L else null
+    val status = when (prize.type) {
+        "buff", "headticket", "buff_all" -> "unused"
+        else -> "applied"
+    }
     val drawCost = if (count > 1 && index > 0) 0 else totalCost
     val balanceAfter = if (prize.type == "mdc") {
         MdtStorage.addTrustPointsInTx(uid, prize.amount)
@@ -606,11 +650,9 @@ private fun prepareDrawTx(
         it[LotteryDraws.isHead] = isHead
         it[LotteryDraws.status] = status
         it[LotteryDraws.createdAt] = now()
-        it[LotteryDraws.expiresAt] = expiresAt
     }.value
 
     LotteryProfiles.update({ LotteryProfiles.uid eq uid }) {
-        it[pityCounter] = if (isHead) 0 else profile.pity + 1
         it[totalDraws] = profile.draws + 1
         it[updatedAt] = now()
     }
@@ -626,10 +668,80 @@ private fun prepareBatch(uid: String, count: Int, cost: Int, batchId: String): B
     var vouchers = countUnusedVouchersTx(uid)
     val draws = List(count) { index ->
         val draw = prepareDrawTx(uid, batchId, index, count, cost, vouchers)
-        if (draw.status == "unused") vouchers++
+        if (draw.prize.type == "buff" && draw.status == "unused") vouchers++
         draw
     }
     BatchOutcome.Success(draws)
+}
+
+private fun prepareHeadDrawTx(uid: String, ticketId: Int): PreparedDraw? = dbResult {
+    val claimed = LotteryDraws.update({
+        (LotteryDraws.id eq ticketId) and
+                (LotteryDraws.uid eq uid) and
+                (LotteryDraws.status eq "unused") and
+                (LotteryDraws.prizeType eq "headticket")
+    }) {
+        it[status] = "used"
+        it[usedAt] = now()
+    }
+    if (claimed == 0) return@dbResult null
+
+    val prize = HEAD_PRIZES.random()
+    val status = if (prize.type == "buff_all") "unused" else "applied"
+    val balanceAfter = if (prize.type == "mdc") {
+        MdtStorage.addTrustPointsInTx(uid, prize.amount)
+    } else {
+        null
+    }
+    val id = LotteryDraws.insertAndGetId {
+        it[LotteryDraws.uid] = uid
+        it[LotteryDraws.batchId] = "head:$ticketId"
+        it[LotteryDraws.prizeId] = prize.id
+        it[LotteryDraws.prizeName] = prize.name
+        it[LotteryDraws.prizeType] = prize.type
+        it[LotteryDraws.rarity] = prize.rarity
+        it[LotteryDraws.effectJson] = null
+        it[LotteryDraws.jokeId] = null
+        it[LotteryDraws.jokeText] = null
+        it[LotteryDraws.cost] = 0
+        it[LotteryDraws.isHead] = true
+        it[LotteryDraws.status] = status
+        it[LotteryDraws.createdAt] = now()
+    }.value
+    PreparedDraw(id, prize, null, null, null, status, balanceAfter)
+}
+
+private fun drawHeadPrize(player: Player, ticketId: Int): String {
+    val uid = PlayerData[player].id
+    val prepared = try {
+        prepareHeadDrawTx(uid, ticketId)
+    } catch (t: Throwable) {
+        Log.warn("[lottery] 头奖抽取失败 uid=$uid ticket=$ticketId", t)
+        return "[red]头奖抽取失败，奖券仍保留，请稍后再试。"
+    } ?: return "[yellow]该头奖抽奖券已被使用或状态已变化。"
+
+    if (prepared.prize.type == "mdc") {
+        runCatching { trustPoint.refreshTrustPoints(uid) }
+            .onFailure { Log.warn("[lottery] 刷新 MDC 缓存失败 uid=$uid", it) }
+        trustPoint.notifyMdcGranted(uid, prepared.prize.amount, "Lottery:${prepared.prize.id}")
+    }
+
+    if (prepared.prize.type == "buff_all") {
+        broadcast("[gold][抽奖] [white]${player.plainName()}[gold] 抽中了头奖：[white]${prepared.prize.name}".with())
+        return "[gold]头奖：[white]${prepared.prize.name}[green] 已存入背包，可在背包中对普通单位使用。"
+    }
+
+    val line = try {
+        applyPrize(player, prepared)
+    } catch (t: Throwable) {
+        Log.warn("[lottery] 头奖发放异常 uid=$uid draw=${prepared.id}", t)
+        markDeliveryFailed(prepared.id)
+        "[red]头奖 ${prepared.prize.name} 发放异常，记录已保留，请联系管理员"
+    }
+    val failed = prepared.prize.type in setOf("unit", "mdc") && !line.startsWith("[green]")
+    if (failed) markDeliveryFailed(prepared.id)
+    broadcast("[gold][抽奖] [white]${player.plainName()}[gold] 抽中了头奖：[white]${prepared.prize.name}".with())
+    return line
 }
 
 private fun parseEffectJson(raw: String?): Pair<String, Int>? {
@@ -640,6 +752,12 @@ private fun parseEffectJson(raw: String?): Pair<String, Int>? {
         val duration = json.getInt("duration", -1)
         if (effect.isBlank()) null else effect to duration
     }.getOrNull()
+}
+
+private fun voucherSubtitle(voucher: Voucher): String = when (voucher.kind) {
+    "headticket" -> "使用后抽取头奖"
+    "buff_all" -> "对当前普通单位施加 3 种无限时长增益"
+    else -> durationLabel(voucher.duration)
 }
 
 private fun durationLabel(duration: Int): String = when {
@@ -687,16 +805,24 @@ private fun spawnPrizeUnits(player: Player, prize: Prize): String {
     val type: UnitType = skillsCore.unitTypeByName(prize.unit)
         ?: return "[red]单位 ${prize.unit} 不存在"
     val count = prize.count.coerceIn(1, 20)
+    fun applyFlight(unit: Unit) {
+        if (prize.flying) {
+            unit.elevation = 1f
+            unit.update()
+        }
+    }
     if (player.unit() != null) {
-        skillsCore.spawnAround(type, player, count)
+        skillsCore.spawnAround(type, player, count) { applyFlight(it) }
     } else {
         repeat(count) {
             val unit = type.create(player.team())
             unit.set(player.x, player.y)
             unit.add()
+            applyFlight(unit)
         }
     }
-    return "[green]已生成 [cyan]$count[green] 个 [white]${type.localizedName}"
+    val flight = if (prize.flying) "（已起飞）" else ""
+    return "[green]已生成 [cyan]$count[green] 个 [white]${type.localizedName}$flight"
 }
 
 private fun applyPrize(player: Player, prepared: PreparedDraw): String {
@@ -715,7 +841,9 @@ private fun applyPrize(player: Player, prepared: PreparedDraw): String {
             val result = soundEffects.playFixedSoundEffect(prize.sound, player.name, ignoreInterval = true)
             if (result.startsWith("[green]")) "[green]服务器音效：[white]${prize.name}" else result
         }
-        "buff" -> "[green]已存入背包：[cyan]${prize.name}[gray]（${durationLabel(prize.duration)}，${voucherDays} 天内使用）"
+        "buff" -> "[green]已存入背包：[cyan]${prize.name}[gray]（${durationLabel(prize.duration)}，不设过期时间）"
+        "headticket" -> "[green]已存入背包：[cyan]头奖抽奖券[gray]（在背包中使用后抽取头奖）"
+        "buff_all" -> "[green]已存入背包：[cyan]无限时长全增益 buff 兑换券"
         "debuff" -> applyStatusPrize(player, prize.effect, -1)
         else -> "[yellow]未知奖品类型：${prize.type}"
     }
@@ -743,10 +871,6 @@ private fun drawAndShow(player: Player, count: Int) {
     val pool = loadedPool
     if (pool == null || pool.prizes.isEmpty()) {
         player.sendMessage("[yellow]奖池未配置，暂不能抽奖。".with())
-        return
-    }
-    if (!pool.hasGrand) {
-        player.sendMessage("[yellow]奖池没有配置头奖（rarity=grand），暂不能抽奖。".with())
         return
     }
     val needJoke = pool.prizes.any { it.type == "joke" }
@@ -799,9 +923,6 @@ private fun drawAndShow(player: Player, count: Int) {
         val failed = draw.prize.type in setOf("unit", "sound", "debuff") && !line.startsWith("[green]")
         if (failed) markDeliveryFailed(draw.id)
         lines += line
-        if (draw.prize.rarity == "grand") {
-            broadcast("[gold][抽奖] [white]${player.plainName()}[gold] 抽中了头奖：[white]${draw.prize.name}".with())
-        }
     }
 
     val title = if (count <= 1) "单抽" else "十连"
@@ -828,11 +949,13 @@ private suspend fun openBackpack(player: Player) {
         wrapInPane = false
         rootWidth = 620f
         val vouchers = unusedVouchers(uid)
+        val buffCount = vouchers.count { it.kind == "buff" }
+        val ticketCount = vouchers.count { it.kind == "headticket" }
         msg = """
-            |[cyan]这里只存放抽奖获得的正面 buff 奖券（非实物，不进入物品栏）。
-            |[gray]使用奖券需先附身普通单位；核心机不适用（核心机较弱，避免浪费）。
-            |[gray]未附身时奖券会保留，每张 ${voucherDays} 天过期，最多同时持有 $MAX_VOUCHERS 张。
-            |[gray]当前未使用：[white]${vouchers.size}/$MAX_VOUCHERS[gray]。
+            |[cyan]这里存放正面 buff 奖券、头奖抽奖券和全增益兑换券（非实物，不进入物品栏）。
+            |[gray]buff/全增益券需附身普通单位使用；核心机不适用。头奖抽奖券无单位限制。
+            |[gray]未附身时奖券会保留，不设过期时间；正面 buff 最多同时持有 $MAX_VOUCHERS 张。
+            |[gray]当前未使用：[white]${vouchers.size}[gray] 张（buff [white]$buffCount/$MAX_VOUCHERS[gray]，头奖券 [white]$ticketCount[gray]）。
             |[gray]不显示当前单位状态，只显示奖券本身。
         """.trimMargin()
 
@@ -841,8 +964,7 @@ private suspend fun openBackpack(player: Player) {
         } else {
             renderPaged(vouchers, prePage = 6, key = "lottery_bag") { voucher ->
                 option(
-                    "[green]${voucher.name}[gray] · ${durationLabel(voucher.duration)}" +
-                            "[gray] · ${formatTime(voucher.expiresAt)} 过期"
+                    "[green]${voucher.name}[gray] · ${voucherSubtitle(voucher)}"
                 ) {
                     val result = useVoucher(player, voucher.id)
                     player.sendMessage(result.with())
@@ -857,6 +979,54 @@ private suspend fun openBackpack(player: Player) {
     }.send().awaitWithTimeout(120.seconds)
 }
 
+private fun claimVoucher(uid: String, drawId: Int): Boolean = dbResult {
+    LotteryDraws.update({
+        (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
+    }) {
+        it[status] = "used"
+        it[usedAt] = now()
+    } > 0
+}
+
+private fun releaseVoucher(uid: String, drawId: Int) {
+    dbResult {
+        LotteryDraws.update({
+            (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "used")
+        }) {
+            it[status] = "unused"
+            it[usedAt] = null
+        }
+    }
+}
+
+private fun useAllBuffVoucher(player: Player, drawId: Int, row: ResultRow): String {
+    val uid = PlayerData[player].id
+    val unit = player.unit()?.takeIf { it.isValid && !it.dead }
+        ?: return "[yellow]当前没有可控单位，奖券已保留。"
+    if (unit.spawnedByCore) return "[yellow]核心机不适用，请附身普通单位后再使用（奖券已保留）。"
+    val effects = ALL_BUFF_EFFECTS.map { name ->
+        findStatusEffect(name) ?: return "[red]状态 $name 不存在，奖券已保留。"
+    }
+    if (!claimVoucher(uid, drawId)) return "[yellow]奖券状态已变化，未生效。"
+
+    var applied = 0
+    try {
+        for (effect in effects) {
+            applied += skillsCore.applyStackedStatus(unit, effect, Float.POSITIVE_INFINITY, 1)
+        }
+    } catch (t: Throwable) {
+        releaseVoucher(uid, drawId)
+        Log.warn("[lottery] 应用全增益奖券失败 uid=$uid draw=$drawId", t)
+        return "[red]奖券效果应用失败，奖券已保留，请稍后再试。"
+    }
+    if (applied <= 0) {
+        releaseVoucher(uid, drawId)
+        return "[yellow]当前单位免疫全部增益，奖券已保留。"
+    }
+    val partial = if (applied < effects.size) "（部分增益免疫）" else ""
+    return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，对当前普通单位施加全增益$partial。"
+}
+
 private fun useVoucher(player: Player, drawId: Int): String {
     lotteryAccessMessage(player)?.let { return it }
     val uid = PlayerData[player].id
@@ -866,54 +1036,32 @@ private fun useVoucher(player: Player, drawId: Int): String {
         }.firstOrNull()
     } ?: return "[red]奖券不存在。"
     if (row[LotteryDraws.status] != "unused") return "[yellow]该奖券状态为：${statusLabel(row[LotteryDraws.status])}"
-    val expiresAt = row[LotteryDraws.expiresAt] ?: 0L
-    if (expiresAt <= now()) {
-        dbResult {
-            LotteryDraws.update({
-                (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
-            }) { it[status] = "expired" }
-        }
-        return "[red]该奖券已过期。"
+
+    when (row[LotteryDraws.prizeType]) {
+        "headticket" -> return drawHeadPrize(player, drawId)
+        "buff_all" -> return useAllBuffVoucher(player, drawId, row)
+        "buff" -> Unit
+        else -> return "[red]未知奖券类型：${row[LotteryDraws.prizeType]}"
     }
+
     val parsed = parseEffectJson(row[LotteryDraws.effectJson])
         ?: return "[red]奖券效果数据损坏。"
     val unit = player.unit()?.takeIf { it.isValid && !it.dead }
-    if (unit == null) return "[yellow]当前没有可控单位，奖券已保留。"
+        ?: return "[yellow]当前没有可控单位，奖券已保留。"
     if (unit.spawnedByCore) return "[yellow]核心机不适用，请附身普通单位后再使用（奖券已保留）。"
     val effect = findStatusEffect(parsed.first) ?: return "[red]状态 ${parsed.first} 不存在，奖券已保留。"
-
-    // 先抢占状态，避免连点导致同一张奖券被重复施加；失败再回滚为 unused。
-    val claimed = dbResult {
-        LotteryDraws.update({
-            (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "unused")
-        }) {
-            it[status] = "used"
-            it[usedAt] = now()
-        }
-    }
-    if (claimed == 0) return "[yellow]奖券状态已变化，未生效。"
-
-    fun releaseClaim() {
-        dbResult {
-            LotteryDraws.update({
-                (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid) and (LotteryDraws.status eq "used")
-            }) {
-                it[status] = "unused"
-                it[usedAt] = null
-            }
-        }
-    }
+    if (!claimVoucher(uid, drawId)) return "[yellow]奖券状态已变化，未生效。"
 
     val seconds = if (parsed.second < 0) Float.POSITIVE_INFINITY else parsed.second.toFloat()
     val applied = try {
         skillsCore.applyStackedStatus(unit, effect, seconds, 1)
     } catch (t: Throwable) {
-        releaseClaim()
+        releaseVoucher(uid, drawId)
         Log.warn("[lottery] 应用奖券效果失败 uid=$uid draw=$drawId", t)
         return "[red]奖券效果应用失败，奖券已保留，请稍后再试。"
     }
     if (applied <= 0) {
-        releaseClaim()
+        releaseVoucher(uid, drawId)
         return "[yellow]当前单位免疫 ${effect.localizedName}，奖券已保留。"
     }
     return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，作用于当前普通单位。"
@@ -988,14 +1136,15 @@ private suspend fun openRules(player: Player) {
             |[gold]价格
             |[white]单抽 $singleCost MDC；十连 $tenCost MDC（原价 ${singleCost * 10}，八折）。
             |
-            |[gold]保底
-            |[white]每名玩家独立计数，第 $PITY_LIMIT 抽必为头奖；自然抽到头奖会清零计数。
-            |[gray]十连按 10 次顺序结算，保底可能落在其中任意一抽。
+            |[gold]头奖
+            |[white]普通抽奖不再直接出现头奖。每次抽奖有 0.5% 概率获得“头奖抽奖券”，在背包中使用后从 13 项头奖中随机抽取，所有头奖概率相同。
+            |[gray]头奖抽奖券不与普通 buff 奖券共享 100 张上限。
             |
             |[gold]奖券
-            |[white]正面 buff 会存为奖券（${voucherDays} 天有效）。只在附身普通单位时可用；核心机或无单位状态点击会被拒绝，奖券保留。
+            |[white]正面 buff 会存为奖券（不设过期时间）。只在附身普通单位时可用；核心机或无单位状态点击会被拒绝，奖券保留。
+            |[white]“无限时长全增益 buff 兑换券”使用后对当前普通单位施加快速、超速、护盾三种永久增益。
             |[white]debuff 不进入背包，抽到后立即永久生效，不询问。
-            |[white]未使用正面奖券最多 $MAX_VOUCHERS 张；满额后抽到的 buff 会折算为 MDC（3 分钟 +$VOUCHER_MDC_3M，8 分钟 +$VOUCHER_MDC_8M，永久 +$VOUCHER_MDC_PERMANENT）。
+            |[white]未使用正面 buff 奖券最多 $MAX_VOUCHERS 张；满额后抽到的 buff 会折算为 MDC（3 分钟 +$VOUCHER_MDC_3M，8 分钟 +$VOUCHER_MDC_8M，永久 +$VOUCHER_MDC_PERMANENT）。
             |[white]MDC 增减、单位、服务器音效、冷笑话立即生效。
             |
             |[gold]冷笑话
@@ -1027,8 +1176,9 @@ private suspend fun openLotteryMenu(player: Player) {
         fillScreen = false
         wrapInPane = false
         rootWidth = 620f
-        val profile = loadProfile(uid)
-        val unused = countUnusedVouchers(uid)
+        val vouchers = unusedVouchers(uid)
+        val buffCount = vouchers.count { it.kind == "buff" }
+        val ticketCount = vouchers.count { it.kind == "headticket" }
         val round = activeRound(uid)
         val pool = loadedPool
         val library = currentJokeVersion?.let { loadedLibraries[it] }
@@ -1036,8 +1186,7 @@ private suspend fun openLotteryMenu(player: Player) {
 
         msg = """
             |[gold]余额：[white]$balance MDC
-            |[gold]保底进度：[white]${profile.pity}/$PITY_LIMIT[gray]（第 $PITY_LIMIT 抽必出头奖）
-            |[gold]背包：[white]$unused/$MAX_VOUCHERS[gray] 张未使用奖券
+            |[gold]背包：[white]buff $buffCount/$MAX_VOUCHERS[gray] · 头奖券 [white]$ticketCount[gray] 张
             |[gold]冷话题库：[white]${library?.version ?: "未加载"}[gray] / ${library?.jokes?.size ?: 0} 条
             |[gold]当前轮次：[white]${round?.let { "${it.remaining}/${it.total} 条剩余" } ?: "尚未开始"}
             |[gold]奖池：[white]${pool?.let { "v${it.version} / ${it.prizes.size} 项" } ?: "未加载"}
@@ -1051,7 +1200,7 @@ private suspend fun openLotteryMenu(player: Player) {
             drawAndShow(player, 10)
             refresh()
         }
-        option("[cyan]背包[gray] · $unused/$MAX_VOUCHERS 张未使用奖券") {
+        option("[cyan]背包[gray] · ${vouchers.size} 张券（buff $buffCount/$MAX_VOUCHERS，头奖券 $ticketCount）") {
             close()
             openBackpack(player)
         }
@@ -1092,7 +1241,8 @@ command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
                 returnReply(
                     ("[green]奖池：${pool?.let { "v${it.version} / ${it.prizes.size} 项" } ?: "未加载"}" +
                             "\n[green]题库：${library?.let { "${it.version} / ${it.jokes.size} 条" } ?: "未加载"}" +
-                            "\n[green]单抽 $singleCost MDC，十连 $tenCost MDC，保底 $PITY_LIMIT 抽").with()
+                            "\n[green]单抽 $singleCost MDC，十连 $tenCost MDC" +
+                            "\n[green]头奖抽奖券概率 0.5%，头奖池 ${HEAD_PRIZES.size} 项等概率").with()
                 )
             }
             else -> returnReply("[yellow]用法：/lotteryadmin <reload|status>".with())
