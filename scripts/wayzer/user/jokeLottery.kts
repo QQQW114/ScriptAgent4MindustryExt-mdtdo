@@ -56,7 +56,7 @@ private val PITY_LIMIT = 100
 private val HISTORY_LIMIT = 200
 private val VOUCHER_MDC_3M = 11
 private val VOUCHER_MDC_8M = 22
-private val VOUCHER_MDC_PERMANENT = 30
+private val VOUCHER_MDC_PERMANENT = 66
 
 private data class Joke(val id: String, val text: String)
 private data class JokeLibrary(val version: String, val jokes: List<Joke>)

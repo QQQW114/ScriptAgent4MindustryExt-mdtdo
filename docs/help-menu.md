@@ -52,7 +52,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 本次已接入：
 
 - `/points`、`/pay`、`/redpacket`、`/grab`：MDC查询、转账与红包；单个红包最多 500 MDC；MDC变动时会私聊提示本人。
-- `/lottery`（别名 `抽奖`/`jokelottery`/`lc`）：仅信任 3 级及以上；单抽 33 MDC、十连 264 MDC，100 抽保底；buff 奖券需附身普通单位，奖券满 100 后新 buff 按 3 分钟 11 / 8 分钟 22 / 永久 30 MDC 折算；`/lotteryadmin status|reload` 为管理员入口。
+- `/lottery`（别名 `抽奖`/`jokelottery`/`lc`）：仅信任 3 级及以上；单抽 33 MDC、十连 264 MDC，100 抽保底；buff 奖券需附身普通单位，奖券满 100 后新 buff 按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 折算；`/lotteryadmin status|reload` 为管理员入口。
 - `/seniority`、`/资历`、`/playtime`：查看资历等级、累计在线时长与下一资历等级条件。
 - `/captcha`、`/register`、`/login`、`/logout`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、退出登录（结束会话并解除本机自动登录）、改密与注销；登录不需要验证码。
 - `/msg`、`/r`：私聊与回复最近私聊对象。

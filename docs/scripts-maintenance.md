@@ -6358,7 +6358,7 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 # 2026-11-17：抽奖插件清单修订与 lib 扩展
 
 - 来源：PR #10 `feat/joke-lottery` 的交接清单 v2（基于本轮原子事务提交）。本轮按清单 1–5 修订，并选定第 6 项“奖券满额折算 MDC”。
-- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 30 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
+- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 66 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
 - lib 变更（需维护者按红线流程批准）：`MdtStorage.kt` 新增 `registerSubjectCleanupHook`/`unregisterSubjectCleanupHook`，删号事务末尾执行插件清理器；新增事务内 `addTrustPointsInTx`/`spendTrustPointsInTx`（本分支已加），`addCurrentTrustPointsInTx` 收回 private。`DatabaseFeatureSettings.kt` 新增 `DatabaseFeature.Lottery`。
 - 插件 `onEnable` 注册三表删号清理，`onDisable` 注销；`lotteryAccessMessage` 检查数据库业务开关与 3 级信任门槛。
 - 文档：新增 `docs/jokeLottery.md`；更新 `docs/jokeLottery-test-plan.md`、`docs/help-menu.md`、`docs/database-system.md`。
