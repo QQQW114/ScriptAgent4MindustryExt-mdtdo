@@ -58,6 +58,8 @@ private val VOUCHER_MDC_8M = 22
 private val VOUCHER_MDC_PERMANENT = 66
 private val HEAD_TICKET_CHANCE = 0.005
 private val BUFF_VOUCHER_CHANCE = 0.10
+private val UNIT_CHANCE = 0.11
+private val UNIT_TIER_WEIGHTS = listOf(1 to 50, 2 to 30, 3 to 20, 4 to 10)
 private val ALL_BUFF_EFFECTS = listOf("fast", "overdrive")
 
 private data class Joke(val id: String, val text: String)
@@ -76,6 +78,7 @@ private data class Prize(
     val effect: String = "",
     val duration: Int = -1,
     val flying: Boolean = false,
+    val tier: Int = 0,
 )
 
 private data class Pool(val version: String, val prizes: List<Prize>) {
@@ -106,6 +109,63 @@ private val HEAD_PRIZES = listOf(
     Prize("head-navanax", "起飞的龙王", "unit", "head", 1, unit = "navanax", flying = true),
     Prize("head-mdc-1000", "1000 MDC", "mdc", "head", 1, amount = 1000),
     Prize("head-buff-all", "无限时长全增益 buff 兑换券", "buff_all", "head", 1),
+)
+
+private fun unitPrize(tier: Int, unit: String, name: String): Prize {
+    val rarity = when (tier) {
+        1 -> "common"
+        2 -> "uncommon"
+        3 -> "rare"
+        else -> "epic"
+    }
+    return Prize("unit-t$tier-$unit", "T$tier $name", "unit", rarity, 1, unit = unit, tier = tier)
+}
+
+// 塞普罗/埃里克尔的全部 T1-T4 常规单位（不含核心机、导弹和内部单位）。
+private val UNIT_TIER_POOL = listOf(
+    unitPrize(1, "dagger", "尖刀"),
+    unitPrize(1, "nova", "新星"),
+    unitPrize(1, "crawler", "爬虫"),
+    unitPrize(1, "flare", "星辉"),
+    unitPrize(1, "mono", "独影"),
+    unitPrize(1, "risso", "梭鱼"),
+    unitPrize(1, "retusa", "潜螺"),
+    unitPrize(1, "stell", "星辉坦克"),
+    unitPrize(1, "merui", "明灭"),
+    unitPrize(1, "elude", "规避"),
+
+    unitPrize(2, "mace", "战锤"),
+    unitPrize(2, "pulsar", "脉冲星"),
+    unitPrize(2, "atrax", "毒蛛"),
+    unitPrize(2, "horizon", "天垠"),
+    unitPrize(2, "poly", "幻型"),
+    unitPrize(2, "minke", "飞鲨"),
+    unitPrize(2, "oxynoe", "电鳗"),
+    unitPrize(2, "locus", "径迹"),
+    unitPrize(2, "cleroi", "辉烁"),
+    unitPrize(2, "avert", "避让"),
+
+    unitPrize(3, "fortress", "堡垒"),
+    unitPrize(3, "quasar", "耀星"),
+    unitPrize(3, "spiroct", "血蛭"),
+    unitPrize(3, "zenith", "苍穹"),
+    unitPrize(3, "mega", "巨像"),
+    unitPrize(3, "bryde", "戟鲸"),
+    unitPrize(3, "cyerce", "江豚"),
+    unitPrize(3, "precept", "准则"),
+    unitPrize(3, "anthicus", "天守"),
+    unitPrize(3, "obviate", "消解"),
+
+    unitPrize(4, "scepter", "权杖"),
+    unitPrize(4, "vela", "灾星"),
+    unitPrize(4, "arkyid", "毒蛊"),
+    unitPrize(4, "antumbra", "月影"),
+    unitPrize(4, "quad", "四轴"),
+    unitPrize(4, "sei", "蛟龙"),
+    unitPrize(4, "aegires", "盾舰"),
+    unitPrize(4, "vanquish", "征服"),
+    unitPrize(4, "tecta", "天卫"),
+    unitPrize(4, "quell", "遏止"),
 )
 
 private data class PreparedDraw(
@@ -283,9 +343,6 @@ private val defaultPoolJson = """
     {"id":"mdc-100","name":"100 MDC","type":"mdc","rarity":"epic","weight":5,"amount":100},
     {"id":"mdc-minus-10","name":"-10 MDC","type":"mdc","rarity":"common","weight":8,"amount":-10},
 
-    {"id":"unit-dagger","name":"3 个 dagger","type":"unit","rarity":"rare","weight":8,"unit":"dagger","count":3},
-    {"id":"unit-mace","name":"1 个 mace","type":"unit","rarity":"epic","weight":4,"unit":"mace","count":1},
-    {"id":"unit-poly","name":"1 个 poly","type":"unit","rarity":"epic","weight":3,"unit":"poly","count":1},
 
     {"id":"buff-fast-3","name":"快速 3 分钟","type":"buff","rarity":"common","weight":10,"effect":"fast","duration":180},
     {"id":"buff-fast-8","name":"快速 8 分钟","type":"buff","rarity":"rare","weight":6,"effect":"fast","duration":480},
@@ -359,9 +416,16 @@ private fun loadPool(): Pool {
         }
         Prize(id, name, type, rarity, weight, amount, unit, count, sound, effect, duration)
     }
-    if (prizes.isEmpty()) error("奖池没有有效奖品: ${file.absolutePath}")
+    val builtinUnits = UNIT_TIER_POOL.filter { skillsCore.unitTypeByName(it.unit) != null }
+    if (builtinUnits.size != UNIT_TIER_POOL.size) {
+        Log.warn("[lottery] T1-T4 单位缺失 ${UNIT_TIER_POOL.size - builtinUnits.size} 项，请检查模组单位")
+    }
+    // 单位池由代码统一维护，外部 pool.json 只负责普通奖品；避免旧配置缺少新单位。
+    val merged = prizes.filter { it.type != "unit" } + builtinUnits
+    if (merged.isEmpty()) error("奖池没有有效奖品: ${file.absolutePath}")
+    Log.info("[lottery] 已合并 T1-T4 单位 ${builtinUnits.size} 项（T1 5% / T2 3% / T3 2% / T4 1%）")
     val version = root.getString("version", "1")
-    return Pool(version, prizes)
+    return Pool(version, merged)
 }
 
 private fun validateHeadPrizes() {
@@ -617,17 +681,42 @@ private fun chooseBuffPrize(prizes: List<Prize>): Prize {
     return chooseWeighted(candidates.ifEmpty { prizes })
 }
 
-private fun choosePrize(forceHeadTicket: Boolean): Prize {
-    if (forceHeadTicket || Random.nextDouble() < HEAD_TICKET_CHANCE) {
-        return HEAD_TICKET
+private fun chooseUnitPrize(prizes: List<Prize>): Prize {
+    val total = UNIT_TIER_WEIGHTS.sumOf { it.second }
+    var roll = Random.nextInt(total)
+    var tier = UNIT_TIER_WEIGHTS.first().first
+    for ((candidateTier, weight) in UNIT_TIER_WEIGHTS) {
+        if (roll < weight) {
+            tier = candidateTier
+            break
+        }
+        roll -= weight
     }
+    return chooseWeighted(prizes.filter { it.tier == tier }.ifEmpty { prizes })
+}
+
+private fun choosePrize(forceHeadTicket: Boolean): Prize {
+    if (forceHeadTicket) return HEAD_TICKET
     val pool = loadedPool ?: error("奖池未加载")
     if (pool.prizes.isEmpty()) error("没有可抽取的奖品")
-    val buffPrizes = pool.prizes.filter { it.type == "buff" }
-    if (buffPrizes.isNotEmpty() && Random.nextDouble() < BUFF_VOUCHER_CHANCE) {
-        return chooseBuffPrize(buffPrizes)
+
+    var roll = Random.nextDouble()
+    if (roll < HEAD_TICKET_CHANCE) return HEAD_TICKET
+    roll -= HEAD_TICKET_CHANCE
+
+    val unitPrizes = pool.prizes.filter { it.type == "unit" && it.tier in 1..4 }
+    if (unitPrizes.isNotEmpty()) {
+        if (roll < UNIT_CHANCE) return chooseUnitPrize(unitPrizes)
+        roll -= UNIT_CHANCE
     }
-    val normalPrizes = pool.prizes.filter { it.type != "buff" }
+
+    val buffPrizes = pool.prizes.filter { it.type == "buff" }
+    if (buffPrizes.isNotEmpty()) {
+        if (roll < BUFF_VOUCHER_CHANCE) return chooseBuffPrize(buffPrizes)
+        roll -= BUFF_VOUCHER_CHANCE
+    }
+
+    val normalPrizes = pool.prizes.filter { it.type != "buff" && it.type != "unit" }
     if (normalPrizes.isEmpty()) error("没有可抽取的普通奖品")
     return chooseWeighted(normalPrizes)
 }
@@ -1172,14 +1261,25 @@ private suspend fun openPoolPreview(player: Player) {
         msg = if (pool == null) {
             "[yellow]奖池尚未加载。"
         } else {
-            "[gray]当前奖池 v${pool.version}，共 ${prizes.size} 项；权重越高越常见。"
+            "[gray]当前奖池 v${pool.version}，共 ${prizes.size} 项；普通奖品按权重，单位按 T1-T4 档位概率。"
         }
         if (prizes.isEmpty()) {
             option("（奖池为空）") { }
         } else {
             renderPaged(prizes, prePage = 8, key = "lottery_pool") { prize ->
+                val tier = if (prize.type == "unit" && prize.tier in 1..4) {
+                    val chance = when (prize.tier) {
+                        1 -> "5%"
+                        2 -> "3%"
+                        3 -> "2%"
+                        else -> "1%"
+                    }
+                    " · T${prize.tier}（约 $chance）"
+                } else {
+                    " · 权重 ${prize.weight}"
+                }
                 option(
-                    "[white]${prize.name}[gray] · ${prize.type} · ${prize.rarity} · 权重 ${prize.weight}"
+                    "[white]${prize.name}[gray] · ${prize.type} · ${prize.rarity}$tier"
                 ) { }
             }
         }
@@ -1205,6 +1305,8 @@ private suspend fun openRules(player: Player) {
             |[white]普通抽奖不再直接出现头奖。每次抽奖有 0.5% 概率获得“头奖抽奖券”，在背包中使用后从 13 项头奖中随机抽取，所有头奖概率相同。
             |[white]每 $PITY_LIMIT 抽保底一张头奖抽奖券；抽到头奖券后保底计数清零。头奖券不设上限，不占其他奖券的 $MAX_VOUCHERS 张上限。
             |[white]普通抽奖中 buff 奖券总概率 10%，3 分钟 / 8 分钟 / 永久约为 5 / 3 / 2 张每 100 抽。
+            |[white]普通抽奖中 T1-T4 单位总概率 11%，T1 / T2 / T3 / T4 约为 5% / 3% / 2% / 1%，均高于头奖券的 0.5%。
+            |[white]单位奖池覆盖塞普罗/埃里克尔全部 40 个 T1-T4 常规单位，不含核心机、导弹和内部单位。
             |[white]背包中头奖券优先显示；没有头奖券时不显示该项。
             |
             |[gold]奖券
@@ -1316,6 +1418,7 @@ command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
                             "\n[green]单抽 $singleCost MDC，十连 $tenCost MDC" +
                             "\n[green]头奖抽奖券概率 0.5%，每 $PITY_LIMIT 抽保底一张；头奖池 ${HEAD_PRIZES.size} 项等概率" +
                             "\n[green]buff 奖券概率 10%，3 分钟 / 8 分钟 / 永久约 5 / 3 / 2 张每 100 抽" +
+                            "\n[green]T1-T4 单位概率 11%，约 5% / 3% / 2% / 1%（共 ${UNIT_TIER_POOL.size} 个常规单位）" +
                             "\n[green]buff/全增益券上限 $MAX_VOUCHERS，头奖券无上限").with()
                 )
             }
