@@ -11,6 +11,7 @@ Mindustry 159/B477 后只继续维护少量明确需要的地图玩法脚本。�
 | `mapScript/tags/hybrid.kts` | 地图特色杂交 | 地图标签 `[@hybrid]`、`/loadmapscript tags/hybrid` |
 | `mapScript/tags/flood.kts` | 洪水模式兼容版 | `[@flood]` / `[@floodV2]`、`/loadmapscript tags/flood` |
 | `mapScript/tags/pure.kts` | 地图纯净模式 | 地图简介标签 `[@pure]`、`/loadmapscript tags/pure` |
+| `mapScript/tags/unlimited.kts` | 地图无限资源 | 地图标签 `[@Unlimited]`；启用本局无限资源，换图恢复 |
 
 同时保留地图脚本框架文件：
 
