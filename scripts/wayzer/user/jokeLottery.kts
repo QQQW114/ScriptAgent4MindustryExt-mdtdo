@@ -1148,7 +1148,28 @@ private fun releaseVoucher(uid: String, drawId: Int) {
     }
 }
 
-private fun useAllBuffVoucher(player: Player, drawId: Int, row: ResultRow): String {
+private data class VoucherDetail(
+    val id: Int,
+    val prizeType: String,
+    val prizeName: String,
+    val effectJson: String?,
+    val status: String,
+)
+
+private fun loadVoucher(uid: String, drawId: Int): VoucherDetail? = dbResult {
+    val row = LotteryDraws.selectAll().where {
+        (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid)
+    }.firstOrNull() ?: return@dbResult null
+    VoucherDetail(
+        id = row[LotteryDraws.id].value,
+        prizeType = row[LotteryDraws.prizeType],
+        prizeName = row[LotteryDraws.prizeName],
+        effectJson = row[LotteryDraws.effectJson],
+        status = row[LotteryDraws.status],
+    )
+}
+
+private fun useAllBuffVoucher(player: Player, drawId: Int, voucher: VoucherDetail): String {
     val uid = PlayerData[player].id
     val unit = player.unit()?.takeIf { it.isValid && !it.dead }
         ?: return "[yellow]当前没有可控单位，奖券已保留。"
@@ -1174,27 +1195,23 @@ private fun useAllBuffVoucher(player: Player, drawId: Int, row: ResultRow): Stri
     }
     val totalEffects = statusEffects.size
     val partial = if (applied < totalEffects) "（部分增益免疫）" else ""
-    return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，对当前普通单位施加快速/超速永久增益$partial。"
+    return "[green]已使用 [cyan]${voucher.prizeName}[green]，对当前普通单位施加快速/超速永久增益$partial。"
 }
 
 private fun useVoucher(player: Player, drawId: Int): String {
     lotteryAccessMessage(player)?.let { return it }
     val uid = PlayerData[player].id
-    val row = dbResult {
-        LotteryDraws.selectAll().where {
-            (LotteryDraws.id eq drawId) and (LotteryDraws.uid eq uid)
-        }.firstOrNull()
-    } ?: return "[red]奖券不存在。"
-    if (row[LotteryDraws.status] != "unused") return "[yellow]该奖券状态为：${statusLabel(row[LotteryDraws.status])}"
+    val voucher = loadVoucher(uid, drawId) ?: return "[red]奖券不存在。"
+    if (voucher.status != "unused") return "[yellow]该奖券状态为：${statusLabel(voucher.status)}"
 
-    when (row[LotteryDraws.prizeType]) {
+    when (voucher.prizeType) {
         "headticket" -> return drawHeadPrize(player, drawId)
-        "buff_all" -> return useAllBuffVoucher(player, drawId, row)
+        "buff_all" -> return useAllBuffVoucher(player, drawId, voucher)
         "buff" -> Unit
-        else -> return "[red]未知奖券类型：${row[LotteryDraws.prizeType]}"
+        else -> return "[red]未知奖券类型：${voucher.prizeType}"
     }
 
-    val parsed = parseEffectJson(row[LotteryDraws.effectJson])
+    val parsed = parseEffectJson(voucher.effectJson)
         ?: return "[red]奖券效果数据损坏。"
     val unit = player.unit()?.takeIf { it.isValid && !it.dead }
         ?: return "[yellow]当前没有可控单位，奖券已保留。"
@@ -1218,7 +1235,7 @@ private fun useVoucher(player: Player, drawId: Int): String {
         releaseVoucher(uid, drawId)
         return "[yellow]当前单位免疫 ${effect.localizedName}，奖券已保留。"
     }
-    return "[green]已使用 [cyan]${row[LotteryDraws.prizeName]}[green]，作用于当前普通单位。"
+    return "[green]已使用 [cyan]${voucher.prizeName}[green]，作用于当前普通单位。"
 }
 
 private suspend fun openHistory(player: Player) {
