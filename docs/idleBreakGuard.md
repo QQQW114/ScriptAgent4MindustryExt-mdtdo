@@ -117,6 +117,25 @@
 - **不覆盖的情况**：PVP/进攻图即使开了无限资源，`mode()` 仍返回 `pvp`/`attack`，插件照常检测（这些模式下的拆建筑仍然是可判定行为）。
 - 可用配置 `ignoreSandboxMode=false` 关闭该豁免（回退到旧行为）。
 
+## 2.5 环境方块豁免：自然墙体 / 矿石 / 道具（2026-11-19，V0.1.7）
+
+用户反馈：有人拆除了正常玩法根本拆不了的自然墙体（例如带铅矿石的墙），插件却按“建筑物”计数，导致误封。
+
+- **判定**：`isEnvironmentBlock(block) = !block.hasBuilding()`。
+  Mindustry 用 `destructible` / `update` 表示方块是否有建筑实体，`hasBuilding()` 是二者之或：
+  - 玩家能造/能拆的建筑至少一个为 true（墙 `destructible=true`，传送带等 `update=true`）；
+  - 自然墙体（`StaticWall` / `Prop`）、矿石（`OreBlock` / `OverlayFloor`）、地板、悬崖、出生点等
+    环境方块两个都是 false。
+- **为什么会被误计**：这类方块本身没有 `tile.build`。只有当规则 `allowEnvironmentDeconstruct=true`
+  （测试/沙盒图）时才可能被拆成 `ConstructBuild`，此时 `ConstructBuild.previous` 是自然墙体，
+  旧逻辑会把它当成“真实建筑物”累加。
+- **改动**：`handleBatch` 中
+  - `ConstructBuild.previous` 是环境方块时直接跳过：**不计数，也不置 `monitor.started`**；
+  - 普通 `build.block` 如果是环境方块同样不计入；
+  - 自动识别，不依赖方块名单，CP/DP 新增的环境墙、矿石、道具同样覆盖。
+- 配置 `ignoreEnvironmentBlocks`（默认 `true`）；设为 `false` 可回退旧行为。
+- 不影响玩家建筑：玩家墙/传送带/炮塔/核心/接收台等 `hasBuilding()` 均为 true，照常计数。
+
 ## 3. 判定流程
 
 ### 3.1 包层收集
@@ -138,6 +157,7 @@ listenPacket2Server<ClientSnapshotCallPacket> { con, packet ->
 
 - `Team.derelict` 的地图原有物：跳过；
 - 名称含 `boulder` 的巨石：跳过；
+- 环境方块（自然墙体/矿石/地板/道具等，`!block.hasBuilding()`）：跳过，也不视为开始拆除（§2.5）；
 - 配置 `conveyorWhitelist` 里的传送带：跳过；
 - 配置 `buildingWhitelist` 里的建筑物（§2.2）：跳过；
 - 没有 `tile.build` 的格子：跳过；
@@ -203,6 +223,7 @@ with(voteOb) { forceObPlayer(player, reason, null, null, "system") }
 | `guestAltKeepObserver` | true | 游客疑似小号时是否继续观战 |
 | `ignoreMapBlocks` | true | 忽略 derelict 地图原有物 |
 | `ignoreBoulders` | true | 忽略名称含 boulder 的巨石 |
+| `ignoreEnvironmentBlocks` | true | 忽略正常玩法无法拆除的环境方块（自然墙体/矿石/地板/道具等，§2.5） |
 | `ignoreSandboxMode` | true | 沙盒/编辑器模式下不做任何检测（§2.4） |
 | `conveyorWhitelist` | `conveyor,titanium-conveyor,plastanium-conveyor` | 只拆这些传送带时豁免 |
 | `buildingWhitelist` | 21 种（见 §2.2） | 额外豁免的建筑物（与 `conveyorWhitelist` 取并集，选中不计入） |

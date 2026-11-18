@@ -4,7 +4,7 @@
 @file:Depends("wayzer/user/accountIpGuard", "风险IP/疑似小号线索")
 
 // ── 插件版本 ────────────────────────────────────────────────────────────────
-// idleBreakGuard 版本：V0.1.6
+// idleBreakGuard 版本：V0.1.7
 // 当前版本维护者：八色 和他的 dsh
 
 package wayzer.ext
@@ -33,7 +33,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 
-private val pluginVersion = "V0.1.6"
+private val pluginVersion = "V0.1.7"
 private val pluginMaintainers = "八色 和他的 dsh"
 
 private val trustLevel = contextScript<wayzer.user.TrustLevel>()
@@ -90,6 +90,10 @@ private val guestAltKeepObserver by config.key(true, "游客解除检查疑似�
 private val ignoreMapBlocks by config.key(true, "忽略地图原有物（derelict 队伍的巨石/废墟/残骸等）")
 private val debugLog by config.key(false, "调试日志")
 private val ignoreBoulders by config.key(true, "忽略地上的巨石（名称含 boulder 的方块）")
+
+// 环境方块豁免（2026-11-19）：自然墙体、矿石/地板、巨石/树/悬崖/出生点等正常玩法不可拆除的东西
+// 一律不计入批量拆除，也不视为“开始拆除”。判定见 isEnvironmentBlock()。
+private val ignoreEnvironmentBlocks by config.key(true, "忽略正常玩法无法拆除的环境方块（自然墙体/矿石/地板/道具等）")
 private val conveyorWhitelist by config.key(
     "conveyor,titanium-conveyor,plastanium-conveyor",
     "只拆除这些传送带时豁免（逗号分隔，不含路由器/溢流门/传送带桥等）"
@@ -314,7 +318,21 @@ private fun refreshMonitor(player: Player) {
     monitor.deadline = monitor.joinedAt + seconds * 1000L
 }
 
+/**
+ * 正常玩法下玩家根本不能拆除的环境方块（2026-11-19）。
+ *
+ * Mindustry 用 `destructible` / `update` 两个标记表示“这个方块有没有建筑实体”，
+ * `Block.hasBuilding()` 就是二者的或：玩家能造/能拆的建筑至少有一个为 true；
+ * 自然墙体（StaticWall/Prop）、矿石（OreBlock/OverlayFloor）、地板、悬崖、出生点等环境方块两者都是 false。
+ *
+ * 这类方块本身没有 `tile.build`，正常 `validBreak` 也过不了；只有在
+ * `rules.allowEnvironmentDeconstruct=true` 的地图/沙盒里才会被拆成 `ConstructBuild.previous`，
+ * 从而被本插件误当成“批量拆除的建筑物”。这里统一排除。
+ */
+private fun isEnvironmentBlock(block: mindustry.world.Block): Boolean = !block.hasBuilding()
+
 private fun isRealBuildingBlock(block: mindustry.world.Block): Boolean {
+    if (ignoreEnvironmentBlocks && isEnvironmentBlock(block)) return false
     if (ignoreBoulders && block.name.contains("boulder")) return false
     if (block.name in exemptBlockNames) return false
     return true
@@ -354,8 +372,11 @@ private fun handleBatch(batch: Batch) {
             // 框选确认后，方块会先变成 ConstructBuild 再真正拆掉。
             // 之前这里直接 continue，导致 packet 到达时 selected 永远是 0，必须等真正拆够才触发。
             if (build.wasConstructing) continue
-            monitor.started = true
             val previous = build.previous ?: continue
+            // 自然墙体/矿石等环境方块：正常玩法根本拆不了，只有 allowEnvironmentDeconstruct 的地图才会出现，
+            // 既不算“开始拆除”，也不计入数量（2026-11-19 误封修复）。
+            if (ignoreEnvironmentBlocks && isEnvironmentBlock(previous)) continue
+            monitor.started = true
             if (isReceiverBlock(previous)) monitor.receiverTiles.add(build.tile.pos())
             if (!isRealBuildingBlock(previous)) continue
             val key = build.tile.pos().toLong()
