@@ -48,9 +48,10 @@
    - 普通玩家可通过地图投票附带 DP，存在绕过严格 CP 投票的风险。
    - 本轮不调整门槛，只验证行为。
 
-7. **`@Unlimited` 注册依赖**
-   - `unlimited.kts` 未加载时，`@Unlimited` 会被拒绝。
-   - 测试服启动后应确认 `mapScript/tags/unlimited` 处于 Enabled。
+7. **`@Unlimited` 冷启动加载链路**
+   - 命令校验只检查脚本是否存在于 `ScriptRegistry`，**不检查是否已启用**；脚本存在但未启用时仍会通过校验。
+   - 冷启动第一张带 `@Unlimited` 的图，必须依赖 `TagSupport.fallbackTags` 的 `@Unlimited -> mapScript/tags/unlimited` 映射；否则会拼成 `mapScript/tags/Unlimited` 而静默失败。
+   - 复现步骤：冷启动 → `scriptdiag state mapScript/tags/unlimited`（应显示未启用）→ 走一次 `{}{[@Unlimited=true]}` 换图 → 检查是否出现 `[Load] mapScript/tags/unlimited` 且 `infiniteResources=true`。
 
 8. **CP 目录配置**
    - 当前校验写死默认目录 `config/scripts/external-cp`。
@@ -94,6 +95,7 @@
 | 无扩展名 | `{[@dp=赛克兰特高阶科技]}` | 自动补 `.zip` 后找到 |
 | 大小写 | `{[@dp=SAKELANTE.ZIP]}`（实际小写文件） | 大小写不敏感匹配 |
 | DP 文件删除后再投票通过 | 先通过投票，换图前删除文件 | 地图可能仍切换，DP 加载失败；记录日志 |
+| 地图自带 `@nodp` | `{[@dp=包A.zip]}{}` | 命令阶段拒绝：“该地图自带 @nodp，不能通过投票附加 DP” |
 | 第二块混合 | `{}{[@pure=true][@Unlimited=true]}` | 只应用标签，不加载 DP |
 
 ### D. 标签参数
@@ -105,7 +107,7 @@
 | 开启 Unlimited | `{}{[@Unlimited=true]}` | 本局 `infiniteResources=true` |
 | 关闭 Unlimited | 地图已带 Unlimited，再 `{}{[@Unlimited=false]}` | 不开启无限资源 |
 | 同标签 true+false | `{}{[@pure=true][@pure=false]}` | 拒绝 |
-| 标签大小写 | `{}{[@unlimited=true]}` | 当前按注册名，预期拒绝 |
+| 标签大小写 | `{}{[@unlimited=true]}` | 接受；与 `@Unlimited` 等价，均映射到 `mapScript/tags/unlimited` |
 | 标签 + DP | 两个块同时存在 | 两者都应用，顺序为 DP 后标签 |
 
 ### E. 投票与换图
