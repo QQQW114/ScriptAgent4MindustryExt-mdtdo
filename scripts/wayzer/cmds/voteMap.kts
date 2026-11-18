@@ -226,6 +226,11 @@ private fun parseDpTargets(content: String): List<String> {
     return result
 }
 
+private fun mapForbidsDp(map: MapInfo): Boolean {
+    val desc = map.description.lowercase()
+    return "[@nodp]" in desc || "[@nodp=" in desc || "[@dp=none]" in desc || "[@dp=off]" in desc
+}
+
 private fun parseTagChanges(content: String): Map<String, Boolean> {
     val text = content.trim()
     if (text.isEmpty()) return emptyMap()
@@ -374,6 +379,9 @@ fun VoteService.register() {
             parseMapVoteOptions(arg.drop(1).joinToString(" "))
         } catch (e: MapVoteArgumentException) {
             returnReply("[red]${e.message}".with())
+        }
+        if (options.dpTargets.isNotEmpty() && mapForbidsDp(map)) {
+            returnReply("[red]该地图自带 @nodp，不能通过投票附加 DP。".with())
         }
         voteMap(player!!, map, options)
     }

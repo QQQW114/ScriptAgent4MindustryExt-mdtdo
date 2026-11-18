@@ -28,6 +28,7 @@
 ### 第一块
 
 - 只接受 `[@dp=...]`，不接受 `@cp`、`@nodp` 或任意其它标签。
+- 若目标地图简介自带 `[@nodp]`、`[@nodp=...]`、`[@dp=none]` 或 `[@dp=off]`，命令阶段直接拒绝，避免投票通过的 DP 被地图策略静默忽略。
 - 文件名必须是 `config/scripts/external-cp/` 中实际存在的 CP/DP；校验使用默认目录名，若修改了 `externalCpHotReload` 的目录配置，需要同步调整。
 - 文件名可用单引号或双引号包裹；引号内的空格会保留。
 - 由于地图标签值本身以逗号分隔，文件名内不能包含 `,`、`;`、`[`、`]`、`=`、`|`。
@@ -37,6 +38,7 @@
 
 - 只接受 `[@标签=true]` 或 `[@标签=false]`。
 - 标签必须是服务端已注册的地图标签（查找 `mapScript/tags/<标签名>`，并兼容 `@floodV2`、`@Unlimited` 等别名）。
+- 冷启动时 `TagSupport.fallbackTags` 必须包含 `@Unlimited -> mapScript/tags/unlimited`，否则标签脚本会因大小写路径不一致而不加载。
 - 不能写 `@dp`、`@cp`、`@nodp`；CP 标签只能在第一块以 `@dp` 形式出现。
 - 当前已注册的常用标签包括 `@pure`、`@Unlimited`；`@Unlimited` 通过本插件新增的 `mapScript/tags/unlimited.kts` 注册，本局开启无限资源。
 - 标签只作用于本局，不写回地图文件/地图简介；下一次换图若不传参数，仍按地图自身标签执行。
@@ -60,9 +62,9 @@
 - **DP 失败不回滚换图**：DP 不存在会在命令阶段拒绝；但投票通过后文件被删除/损坏时，DP 加载失败只记录日志，地图仍会切换。
 - **不写回地图**：标签/DP 只影响本局；不会持久化到地图简介。
 - **引号与空格**：命令入口仍按空格分词后再拼接，连续多个空格可能被压成一个；引号内的普通空格可用。文件名含连续空格时建议先改名。
-- **标签大小写**：标签名按服务端注册名匹配；`@Unlimited` 与 `@unlimited` 不等价。
+- **标签大小写**：`@Unlimited` 与 `@unlimited` 都映射到 `mapScript/tags/unlimited`；前者依赖 `TagSupport.fallbackTags` 显式映射，后者走常规路径。
 - **`@Unlimited` 的恢复**：标签脚本记录进入前的 `infiniteResources`，换图时恢复；若其它系统在局中修改该字段，恢复值以进入时为准。
-- **实现压缩**：整套功能只新增/修改 2 个脚本：`voteMap.kts` 与 `unlimited.kts`；没有改 `externalCpHotReload.kts` 或 `TagSupport.kt`。
+- **实现压缩**：2 个插件 `voteMap.kts` 与 `unlimited.kts`；另在 `TagSupport.kt` 的 fallback 增加 1 行 `@Unlimited` 映射，未改 `externalCpHotReload.kts`。
 - **并发换图**：pending 参数只匹配目标地图 ID；期间被管理员换到其它地图时不会误应用，但本次投票的附加参数也不会生效。
 
 ## 未验证风险汇总
