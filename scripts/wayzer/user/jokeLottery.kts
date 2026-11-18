@@ -57,6 +57,7 @@ private val VOUCHER_MDC_3M = 11
 private val VOUCHER_MDC_8M = 22
 private val VOUCHER_MDC_PERMANENT = 66
 private val HEAD_TICKET_CHANCE = 0.005
+private val BUFF_VOUCHER_CHANCE = 0.10
 private val ALL_BUFF_EFFECTS = listOf("fast", "overdrive")
 
 private data class Joke(val id: String, val text: String)
@@ -288,10 +289,10 @@ private val defaultPoolJson = """
 
     {"id":"buff-fast-3","name":"快速 3 分钟","type":"buff","rarity":"common","weight":10,"effect":"fast","duration":180},
     {"id":"buff-fast-8","name":"快速 8 分钟","type":"buff","rarity":"rare","weight":6,"effect":"fast","duration":480},
-    {"id":"buff-fast-perm","name":"快速 永久","type":"buff","rarity":"epic","weight":2,"effect":"fast","duration":-1},
+    {"id":"buff-fast-perm","name":"快速 永久","type":"buff","rarity":"epic","weight":4,"effect":"fast","duration":-1},
     {"id":"buff-overdrive-3","name":"超速 3 分钟","type":"buff","rarity":"common","weight":10,"effect":"overdrive","duration":180},
     {"id":"buff-overdrive-8","name":"超速 8 分钟","type":"buff","rarity":"rare","weight":6,"effect":"overdrive","duration":480},
-    {"id":"buff-overdrive-perm","name":"超速 永久","type":"buff","rarity":"epic","weight":2,"effect":"overdrive","duration":-1},
+    {"id":"buff-overdrive-perm","name":"超速 永久","type":"buff","rarity":"epic","weight":4,"effect":"overdrive","duration":-1},
 
     {"id":"debuff-slow","name":"减速（永久）","type":"debuff","rarity":"rare","weight":5,"effect":"slow","duration":-1},
     {"id":"debuff-wet","name":"潮湿（永久）","type":"debuff","rarity":"rare","weight":5,"effect":"wet","duration":-1},
@@ -589,18 +590,46 @@ private fun nextJokeTx(uid: String): Joke {
     error("题库轮次并发冲突，请重试")
 }
 
+private fun chooseWeighted(prizes: List<Prize>): Prize {
+    val total = prizes.sumOf { it.weight }
+    var roll = Random.nextDouble() * total
+    for (prize in prizes) {
+        roll -= prize.weight
+        if (roll <= 0.0) return prize
+    }
+    return prizes.last()
+}
+
+private fun buffBucket(prize: Prize): Int = when {
+    prize.duration < 0 -> 2
+    prize.duration <= 180 -> 0
+    else -> 1
+}
+
+private fun chooseBuffPrize(prizes: List<Prize>): Prize {
+    val roll = Random.nextDouble()
+    val bucket = when {
+        roll < 0.5 -> 0
+        roll < 0.8 -> 1
+        else -> 2
+    }
+    val candidates = prizes.filter { buffBucket(it) == bucket }
+    return chooseWeighted(candidates.ifEmpty { prizes })
+}
+
 private fun choosePrize(forceHeadTicket: Boolean): Prize {
     if (forceHeadTicket || Random.nextDouble() < HEAD_TICKET_CHANCE) {
         return HEAD_TICKET
     }
     val pool = loadedPool ?: error("奖池未加载")
     if (pool.prizes.isEmpty()) error("没有可抽取的奖品")
-    var roll = Random.nextDouble() * pool.totalWeight
-    for (prize in pool.prizes) {
-        roll -= prize.weight
-        if (roll <= 0.0) return prize
+    val buffPrizes = pool.prizes.filter { it.type == "buff" }
+    if (buffPrizes.isNotEmpty() && Random.nextDouble() < BUFF_VOUCHER_CHANCE) {
+        return chooseBuffPrize(buffPrizes)
     }
-    return pool.prizes.last()
+    val normalPrizes = pool.prizes.filter { it.type != "buff" }
+    if (normalPrizes.isEmpty()) error("没有可抽取的普通奖品")
+    return chooseWeighted(normalPrizes)
 }
 
 private fun effectJsonFor(prize: Prize): String =
@@ -975,7 +1004,7 @@ private suspend fun openBackpack(player: Player) {
         fillScreen = false
         wrapInPane = false
         rootWidth = 620f
-        val vouchers = unusedVouchers(uid)
+        val vouchers = unusedVouchers(uid).sortedByDescending { if (it.kind == "headticket") 1 else 0 }
         val totalCount = vouchers.sumOf { it.count }
         val buffCount = vouchers.filter { it.kind == "buff" }.sumOf { it.count }
         val allBuffCount = vouchers.filter { it.kind == "buff_all" }.sumOf { it.count }
@@ -1175,6 +1204,8 @@ private suspend fun openRules(player: Player) {
             |[gold]头奖
             |[white]普通抽奖不再直接出现头奖。每次抽奖有 0.5% 概率获得“头奖抽奖券”，在背包中使用后从 13 项头奖中随机抽取，所有头奖概率相同。
             |[white]每 $PITY_LIMIT 抽保底一张头奖抽奖券；抽到头奖券后保底计数清零。头奖券不设上限，不占其他奖券的 $MAX_VOUCHERS 张上限。
+            |[white]普通抽奖中 buff 奖券总概率 10%，3 分钟 / 8 分钟 / 永久约为 5 / 3 / 2 张每 100 抽。
+            |[white]背包中头奖券优先显示；没有头奖券时不显示该项。
             |
             |[gold]奖券
             |[white]正面 buff 会存为奖券（不设过期时间）。只在附身普通单位时可用；核心机或无单位状态点击会被拒绝，奖券保留。头奖券不受此限制。
@@ -1284,6 +1315,7 @@ command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
                             "\n[green]题库：${library?.let { "${it.version} / ${it.jokes.size} 条" } ?: "未加载"}" +
                             "\n[green]单抽 $singleCost MDC，十连 $tenCost MDC" +
                             "\n[green]头奖抽奖券概率 0.5%，每 $PITY_LIMIT 抽保底一张；头奖池 ${HEAD_PRIZES.size} 项等概率" +
+                            "\n[green]buff 奖券概率 10%，3 分钟 / 8 分钟 / 永久约 5 / 3 / 2 张每 100 抽" +
                             "\n[green]buff/全增益券上限 $MAX_VOUCHERS，头奖券无上限").with()
                 )
             }
