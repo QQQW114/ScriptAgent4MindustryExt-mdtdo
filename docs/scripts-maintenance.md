@@ -6364,7 +6364,7 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
   - 超过两个大括号、块外多余字符、未知 CP、未知标签都会在发起投票前报错。
 - `scripts/wayzer/cmds/voteMap.kts`：内部实现 `resolveServerCpName` 校验 `config/scripts/external-cp` 默认目录中的 CP 文件名；不再修改 `externalCpHotReload.kts`。
 - `scripts/mapScript/tags/unlimited.kts`：新增 `@Unlimited` 地图标签，启用时设置 `Vars.state.rules.infiniteResources=true`，换图恢复进入前状态。
-- 实现压缩为 2 个脚本：`voteMap.kts` + `unlimited.kts`；`TagSupport.kt` 与 `externalCpHotReload.kts` 保持原样。
+- 实现压缩为 2 个插件：`voteMap.kts` + `unlimited.kts`；`TagSupport.kt` 仅增加 `@Unlimited -> mapScript/tags/unlimited` 的 fallback 映射，`externalCpHotReload.kts` 保持原样。
 - `docs/help-menu.md`、`docs/vote-map-params.md`、`docs/map-scripts.md` 已同步。
 - 冷启动验证：`wayzer/cmds/voteMap`、`mapScript/tags/unlimited` 加载/启用；解析测试覆盖 `@dp`、引号空格文件名、`@Unlimited`/`@pure`、第二块 CP、三块、未知 CP。
 - 已验证：`@Unlimited` 在临时换图中开启 `infiniteResources=true`，换回无标签地图后恢复 `false`。未验证：真实玩家投票后的 DP 实际加载、`@pure=false` 卸载顺序；详见 `docs/vote-map-params-test-plan.md`。

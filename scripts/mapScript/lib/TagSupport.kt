@@ -11,7 +11,10 @@ object TagSupport {
     // tag -> scriptId
     val knownTags = mutableMapOf<String, String>()
     private val fallbackTags = mapOf(
-        "@floodV2" to "mapScript/tags/flood"
+        "@floodV2" to "mapScript/tags/flood",
+        // 文件 id 为小写 unlimited；标签名保持 @Unlimited 时必须显式映射，
+        // 否则冷启动 knownTags 为空时会拼成 mapScript/tags/Unlimited 而找不到。
+        "@Unlimited" to "mapScript/tags/unlimited",
     )
 
     fun findTagScript(tag: String): String? {
