@@ -48,7 +48,7 @@
 
 1. 解析地图 ID 与最多两个大括号；失败时不创建投票。
 2. 校验地图筛选系统、DP 文件存在性、标签注册情况。
-3. 创建普通 51% 换图投票；投票描述中列出本次 DP 与标签变更。
+3. 创建换图投票；无参数/空块保持 51%，带 DP 或标签参数时为 80%；投票描述中列出本次 DP 与标签变更。
 4. 投票通过后，设置一次性 pending 参数，调用 `MapManager.loadMapSync`。
 5. `MapChangeEvent`（优先级 Before）把 `@dp` 和标签变更写入本局 `Rules.tags`；随后现有 `mapDpTags` 读取 `@dp`，在 `MapLoadFinishedEvent` 加载 DP。
 6. 地图脚本模块根据最终 `rules.tags` 加载 `@pure`、`@Unlimited` 等标签脚本。
@@ -57,8 +57,8 @@
 ## 已知限制与风险
 
 - **时序**：`@dp` 不是换图前预加载；地图加载本身依赖 DP 时无法用本命令解决。
-- **投票门槛**：地图投票仍为 51%，低于 `/vote cp` 的 70%；第一块让地图投票可以附带 DP 加载，存在治理绕过风险。若需要更严格，可单独提高带 DP 的地图投票门槛。
-- **标签权限放大**：第二块能开关任意已注册地图标签；标签脚本可能改变规则/技能/资源。当前只做注册表校验和 51% 投票，没有管理员二次确认。
+- **投票门槛**：无参数/空块保持旧 51%；带 DP 或标签参数时提高到 80%，避免 51% 附加 DP/无限资源绕过 `/vote cp` 的严格门槛。
+- **标签权限放大**：第二块能开关任意已注册地图标签；标签脚本可能改变规则/技能/资源。当前只做注册表校验；带参数投票已提高到 80%，仍没有管理员二次确认。
 - **DP 失败不回滚换图**：DP 不存在会在命令阶段拒绝；但投票通过后文件被删除/损坏时，DP 加载失败只记录日志，地图仍会切换。
 - **不写回地图**：标签/DP 只影响本局；不会持久化到地图简介。
 - **引号与空格**：命令入口仍按空格分词后再拼接，连续多个空格可能被压成一个；引号内的普通空格可用。文件名含连续空格时建议先改名。
@@ -75,7 +75,7 @@
 - `@pure=false` 的卸载顺序和旧状态残留。
 - `@Unlimited` 在真实 `/vote map` 投票链路中的生效与恢复。
 - 投票取消、地图筛选、地图加载失败时 pending 参数清理。
-- 带 DP 的投票仍为 51%，低于 `/vote cp` 的 70%。
+- 带 DP/标签的投票为 80%，无参数/空块仍为 51%。
 - CP 校验使用默认 `config/scripts/external-cp` 目录，修改目录配置后需同步。
 - 连续多个空格的 CP 文件名会被压缩。
 - `@Unlimited` 依赖 `unlimited.kts` 正常加载，未加载时会被拒绝。
@@ -93,4 +93,27 @@
 完整实机测试步骤见 [vote-map-params-test-plan.md](vote-map-params-test-plan.md)。
 6. 未知标签、重复标签、第二块 CP 标签均被拒绝。
 7. 投票失败/地图筛选拦截/地图加载失败时 pending 清理。
-8. 51% 门槛与旧行为一致。
+8. 无参数/空块 51% 与旧行为一致；带参数为 80%。
+
+## 后续重构建议（低优先级：别名表双份）
+
+当前 `voteMap.kts` 的 `mapTagScriptAliases` 与 `TagSupport.fallbackTags` 各自维护一份别名，新增别名时容易漏改。建议后续单独提一次小重构：
+
+1. 在 `scripts/coreMindustry/lib/mapTagAliases.kt` 新增中立的别名表与解析函数：
+
+```kotlin
+object MapTagAliases {
+    private val byTag = mapOf(
+        "@floodV2" to "mapScript/tags/flood",
+        "@Unlimited" to "mapScript/tags/unlimited",
+    )
+    fun resolve(tag: String): String? = byTag[tag]
+}
+```
+
+2. `TagSupport.findTagScript` 改为先用 `MapTagAliases.resolve(tag)`，未命中再走 `mapScript/tags/<name>` 约定。
+3. `voteMap.isKnownMapTag` 改为使用同一个 `MapTagAliases.resolve`，不再维护第二份映射。
+4. 不要把这张表放进 `mapScript` 再让 `voteMap` 依赖 `mapScript`；此前该依赖会导致 `voteMap` 在地图加载时被停用。`coreMindustry/lib` 是更安全的中立位置。
+5. 增加一条回归测试：冷启动后分别用 `@floodV2`、`@Unlimited` 触发标签脚本加载，确认不再依赖 `knownTags` 是否已被填充。
+
+本轮先记录方案，不扩大 PR #11 的改动范围。

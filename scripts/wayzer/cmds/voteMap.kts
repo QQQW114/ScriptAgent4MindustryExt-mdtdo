@@ -15,8 +15,10 @@ import wayzer.map.MapFilter
 
 private val mapFilter = contextScript<MapFilter>()
 
-private fun mapVoteRequireNum(all: Int): Int =
-    ((all.coerceAtLeast(1) * 51) + 99) / 100
+private fun mapVoteRequireNum(all: Int, withOptions: Boolean = false): Int {
+    val percent = if (withOptions) 80 else 51
+    return ((all.coerceAtLeast(1) * percent) + 99) / 100
+}
 
 private fun ensureMapAllowedForVote(player: Player, map: MapInfo): Boolean {
     val reason = with(mapFilter) { blockReason(map) }
@@ -321,7 +323,7 @@ fun voteMap(player: Player, map: MapInfo, options: MapVoteOptions) {
                     "[white]地图简介: [lightgrey]${truncate(stripColors(map.description), 100, "...")}[][]" +
                     optionsDescription(options),
             supportSingle = true,
-            requireNum = ::mapVoteRequireNum,
+            requireNum = { all -> mapVoteRequireNum(all, !options.isEmpty) },
         )
         if (!event.awaitResult()) return@launch
         if (!options.isEmpty) pendingMapOptions = PendingMapOptions(map.id, options)
