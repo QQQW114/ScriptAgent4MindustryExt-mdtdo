@@ -986,8 +986,8 @@ private fun applyPrize(player: Player, prepared: PreparedDraw): String {
             val result = soundEffects.playFixedSoundEffect(prize.sound, player.name, ignoreInterval = true)
             if (result.startsWith("[green]")) "[green]服务器音效：[white]${prize.name}" else result
         }
-        "buff" -> "[green]已存入背包：[cyan]${prize.name}[gray]（${durationLabel(prize.duration)}，不设过期时间）"
-        "headticket" -> "[green]已存入背包：[cyan]头奖抽奖券[gray]（在背包中使用后抽取头奖）"
+        "buff" -> "[green]已存入背包：[cyan]${prize.name}"
+        "headticket" -> "[green]已存入背包：[cyan]头奖抽奖券"
         "buff_all" -> "[green]已存入背包：[cyan]无限时长全增益 buff 兑换券"
         "debuff" -> applyStatusPrize(player, prize.effect, -1)
         else -> "[yellow]未知奖品类型：${prize.type}"
