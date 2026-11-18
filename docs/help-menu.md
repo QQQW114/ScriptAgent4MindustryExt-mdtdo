@@ -64,7 +64,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/vote perf`、`/vote xperf`：投票开启/关闭保守/实验性性能优化。
 - `/vote pause`、`/vote resume`：投票暂停/继续当前游戏。
 - `/vote gameOver`、`/vote rollback`、`/vote skipWave`、`/vote clear`、`/vote text`：常用基础投票入口。
-- `/vote map <地图ID> {[@dp=文件名1,文件名2]} {[@标签=true|false]}`：需51%同意；发起立即换图投票，5赞/5反不再通过，需6赞/5反这类超过半数的赞成票。第一块只在“本局”添加 `@dp` 自动加载外部DP，文件名含空格时可用引号；不支持 `@cp`，也不会在换图前预加载。第二块只能开关已注册的地图标签（如 `@pure`、`@Unlimited`），不能写 CP 标签。无大括号或空大括号按旧行为处理；超过两个大括号会报错。
+- `/vote map <地图ID> {[@dp=文件名1,文件名2]} {[@标签=true|false]}`：无参数/空块需51%同意，带 DP 或标签参数需80%同意；发起立即换图投票，5赞/5反不再通过，需6赞/5反这类超过半数的赞成票。第一块只在“本局”添加 `@dp` 自动加载外部DP，文件名含空格时可用引号；不支持 `@cp`，也不会在换图前预加载。第二块只能开关已注册的地图标签（如 `@pure`、`@Unlimited`），不能写 CP 标签。无大括号或空大括号按旧行为处理；超过两个大括号会报错。
 - `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次（70%同意）、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
 - `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON/JSON5 CP 或 v159 Data Assets ZIP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
 - `/vote reactor <on|off|status>`：投票开启/关闭反应堆爆炸或查看当前状态。

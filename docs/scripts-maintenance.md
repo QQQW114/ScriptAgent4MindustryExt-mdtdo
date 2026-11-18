@@ -6393,7 +6393,7 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 
 # 2026-11-18：`/vote map` 双大括号参数与 `@Unlimited`
 
-- `scripts/wayzer/cmds/voteMap.kts`：在保留旧 `/vote map <ID>` 与 51% 门槛的前提下，支持最多两个大括号参数。
+- `scripts/wayzer/cmds/voteMap.kts`：在保留旧 `/vote map <ID>`（无参数/空块 51%）的前提下，支持最多两个大括号参数；带参数投票提高到 80%。
   - 第一块只接受 `[@dp=文件名1,文件名2]`，通过 pending `MapChangeEvent`（`Event.Priority.Before`）写入本局 `rules.tags`，由现有 `mapDpTags` 在 `MapLoadFinishedEvent` 加载；不做换图前预加载，不支持 `@cp`。
   - 第二块只接受 `[@标签=true|false]`；从 `ScriptRegistry` 按 `mapScript/tags/<标签>` 查找已注册标签，添加/移除本局标签；拒绝 `@dp`/`@cp`/未知标签/重复标签。
   - 引号文件名支持；命令入口仍是空格分词后拼接，连续多个空格会被压缩。
@@ -6404,4 +6404,4 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 - `docs/help-menu.md`、`docs/vote-map-params.md`、`docs/map-scripts.md` 已同步。
 - 冷启动验证：`wayzer/cmds/voteMap`、`mapScript/tags/unlimited` 加载/启用；解析测试覆盖 `@dp`、引号空格文件名、`@Unlimited`/`@pure`、第二块 CP、三块、未知 CP。
 - 已验证：`@Unlimited` 在临时换图中开启 `infiniteResources=true`，换回无标签地图后恢复 `false`。未验证：真实玩家投票后的 DP 实际加载、`@pure=false` 卸载顺序；详见 `docs/vote-map-params-test-plan.md`。
-- 风险：带 DP 的地图投票仍为 51%，低于 `/vote cp` 的 70%；DP 加载失败不回滚换图；连续空格文件名会被压缩。
+- 风险：带参数投票为 80%、无参数/空块仍为 51%；DP 加载失败不回滚换图；连续空格文件名会被压缩。
