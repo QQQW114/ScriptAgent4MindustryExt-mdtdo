@@ -178,7 +178,7 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 - `LotteryRounds`：`uid`、`roundNo`、`libraryVersion`、`offset`、`stride`、`cursor`、`total`、`status`；`(uid, roundNo)` 唯一，`uid` 普通索引。
 - `LotteryDraws`：`uid`、`batchId`、奖品快照、`status`、`cost`、`isHead`；`uid` 与 `(uid, status)` 索引；奖券不设过期字段，未使用奖券长期保留。
 - 头奖记录由 `headticket` 使用产生，`batchId` 为 `head:<ticketId>`，`isHead=true`；普通抽奖中的头奖券记录 `isHead=true`，其余普通奖品为 `false`。普通池的旧 `grand` 配置在加载时被忽略。
-- 奖券上限：buff/全增益券合计 100 张；头奖券独立 64 张，不占用 100 张额度。
+- 奖券上限：buff/全增益券合计 100 张；头奖券不设上限，不占用 100 张额度。
 
 删号时插件通过 `MdtStorage.registerSubjectCleanupHook` 注册清理器，在同一事务内删除该 UID 的三表数据；禁用插件时注销。数据库业务开关为 `DatabaseFeature.Lottery`，关闭后玩家抽奖入口、抽奖和奖券使用均拒绝；`/lotteryadmin status|reload` 是维护入口，故意不受该开关限制，仍受管理员权限保护。
 
