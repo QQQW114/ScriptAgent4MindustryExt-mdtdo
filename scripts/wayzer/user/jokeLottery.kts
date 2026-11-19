@@ -392,7 +392,7 @@ private fun loadPool(): Pool {
         val count = node.getInt("count", 1).coerceIn(1, 20)
         val sound = node.getString("sound", "").trim()
         val effect = node.getString("effect", "").trim()
-        val duration = node.getInt("duration", -1)
+        val duration = normalizeStatusDuration(node.getInt("duration", -1))
 
         when (type) {
             "mdc" -> if (amount == 0) return@mapNotNull null
@@ -423,7 +423,7 @@ private fun loadPool(): Pool {
     // 单位池由代码统一维护，外部 pool.json 只负责普通奖品；避免旧配置缺少新单位。
     val merged = prizes.filter { it.type != "unit" } + builtinUnits
     if (merged.isEmpty()) error("奖池没有有效奖品: ${file.absolutePath}")
-    Log.info("[lottery] 已合并 T1-T4 单位 ${builtinUnits.size} 项（T1 5% / T2 3% / T3 2% / T4 1%）")
+    Log.info("[lottery] 已合并 T1-T4 单位 ${builtinUnits.size} 项（单位池总概率 11%；T1 5.5% / T2 3.3% / T3 2.2% / T4 1.1%）")
     val version = root.getString("version", "1")
     return Pool(version, merged)
 }
@@ -700,24 +700,23 @@ private fun choosePrize(forceHeadTicket: Boolean): Prize {
     val pool = loadedPool ?: error("奖池未加载")
     if (pool.prizes.isEmpty()) error("没有可抽取的奖品")
 
-    var roll = Random.nextDouble()
-    if (roll < HEAD_TICKET_CHANCE) return HEAD_TICKET
-    roll -= HEAD_TICKET_CHANCE
-
     val unitPrizes = pool.prizes.filter { it.type == "unit" && it.tier in 1..4 }
-    if (unitPrizes.isNotEmpty()) {
-        if (roll < UNIT_CHANCE) return chooseUnitPrize(unitPrizes)
-        roll -= UNIT_CHANCE
-    }
-
     val buffPrizes = pool.prizes.filter { it.type == "buff" }
-    if (buffPrizes.isNotEmpty()) {
-        if (roll < BUFF_VOUCHER_CHANCE) return chooseBuffPrize(buffPrizes)
-        roll -= BUFF_VOUCHER_CHANCE
-    }
-
     val normalPrizes = pool.prizes.filter { it.type != "buff" && it.type != "unit" }
     if (normalPrizes.isEmpty()) error("没有可抽取的普通奖品")
+
+    // 一次 roll 按累计概率切分，保证这里显示的百分比与真实概率一致。
+    val roll = Random.nextDouble()
+    var cursor = HEAD_TICKET_CHANCE
+    if (roll < cursor) return HEAD_TICKET
+    if (unitPrizes.isNotEmpty()) {
+        cursor += UNIT_CHANCE
+        if (roll < cursor) return chooseUnitPrize(unitPrizes)
+    }
+    if (buffPrizes.isNotEmpty()) {
+        cursor += BUFF_VOUCHER_CHANCE
+        if (roll < cursor) return chooseBuffPrize(buffPrizes)
+    }
     return chooseWeighted(normalPrizes)
 }
 
@@ -856,6 +855,7 @@ private fun prepareHeadDrawTx(uid: String, ticketId: Int): PreparedDraw? = dbRes
 }
 
 private fun drawHeadPrize(player: Player, ticketId: Int): String {
+    pvpVoucherBlockedMessage(player)?.let { return it }
     val uid = PlayerData[player].id
     val prepared = try {
         prepareHeadDrawTx(uid, ticketId)
@@ -888,12 +888,18 @@ private fun drawHeadPrize(player: Player, ticketId: Int): String {
     return line
 }
 
+private fun normalizeStatusDuration(duration: Int): Int = when (duration) {
+    3 -> 180
+    8 -> 480
+    else -> duration
+}
+
 private fun parseEffectJson(raw: String?): Pair<String, Int>? {
     if (raw.isNullOrBlank()) return null
     return runCatching {
         val json = Jval.read(raw)
         val effect = json.getString("effect", "").trim()
-        val duration = json.getInt("duration", -1)
+        val duration = normalizeStatusDuration(json.getInt("duration", -1))
         if (effect.isBlank()) null else effect to duration
     }.getOrNull()
 }
@@ -936,10 +942,11 @@ private fun debuffTarget(player: Player): Unit? =
 private fun applyStatusPrize(player: Player, effectName: String, duration: Int): String {
     val unit = debuffTarget(player) ?: return "[yellow]当前没有可施加状态的单位"
     val effect = findStatusEffect(effectName) ?: return "[red]状态 ${effectName} 不存在"
-    val seconds = if (duration < 0) Float.POSITIVE_INFINITY else duration.toFloat()
+    val normalized = normalizeStatusDuration(duration)
+    val seconds = if (normalized < 0) Float.POSITIVE_INFINITY else normalized.toFloat()
     val applied = skillsCore.applyStackedStatus(unit, effect, seconds, 1)
     return if (applied > 0) {
-        "[green]已对当前单位施加 [cyan]${effect.localizedName}[green]：${durationLabel(duration)}"
+        "[green]已对当前单位施加 [cyan]${effect.localizedName}[green]：${durationLabel(normalized)}"
     } else {
         "[yellow]当前单位免疫 ${effect.localizedName}，本次状态未生效"
     }
@@ -1006,6 +1013,9 @@ private fun lotteryAccessMessage(player: Player): String? = when {
         "[red]抽奖仅对信任等级 3 级及以上玩家开放。"
     else -> null
 }
+
+private fun pvpVoucherBlockedMessage(player: Player): String? =
+    if (Vars.state.rules.pvp) "[yellow]PvP 模式下不能使用奖券。" else null
 
 private fun drawAndShow(player: Player, count: Int) {
     lotteryAccessMessage(player)?.let {
@@ -1170,6 +1180,7 @@ private fun loadVoucher(uid: String, drawId: Int): VoucherDetail? = dbResult {
 }
 
 private fun useAllBuffVoucher(player: Player, drawId: Int, voucher: VoucherDetail): String {
+    pvpVoucherBlockedMessage(player)?.let { return it }
     val uid = PlayerData[player].id
     val unit = player.unit()?.takeIf { it.isValid && !it.dead }
         ?: return "[yellow]当前没有可控单位，奖券已保留。"
@@ -1200,6 +1211,7 @@ private fun useAllBuffVoucher(player: Player, drawId: Int, voucher: VoucherDetai
 
 private fun useVoucher(player: Player, drawId: Int): String {
     lotteryAccessMessage(player)?.let { return it }
+    pvpVoucherBlockedMessage(player)?.let { return it }
     val uid = PlayerData[player].id
     val voucher = loadVoucher(uid, drawId) ?: return "[red]奖券不存在。"
     if (voucher.status != "unused") return "[yellow]该奖券状态为：${statusLabel(voucher.status)}"
@@ -1267,6 +1279,42 @@ private suspend fun openHistory(player: Player) {
     }.send().awaitWithTimeout(120.seconds)
 }
 
+private fun formatChance(chance: Double): String =
+    String.format(java.util.Locale.US, "%.2f%%", chance * 100.0)
+
+private fun prizeChance(pool: Pool, prize: Prize): Double {
+    val unitPrizes = pool.prizes.filter { it.type == "unit" && it.tier in 1..4 }
+    val buffPrizes = pool.prizes.filter { it.type == "buff" }
+    val normalPrizes = pool.prizes.filter { it.type != "buff" && it.type != "unit" }
+    val unitChance = if (unitPrizes.isNotEmpty()) UNIT_CHANCE else 0.0
+    val buffChance = if (buffPrizes.isNotEmpty()) BUFF_VOUCHER_CHANCE else 0.0
+    val normalChance = (1.0 - HEAD_TICKET_CHANCE - unitChance - buffChance).coerceAtLeast(0.0)
+    return when {
+        prize.type == "unit" && prize.tier in 1..4 -> {
+            val tierWeight = UNIT_TIER_WEIGHTS.firstOrNull { it.first == prize.tier }?.second ?: 0
+            val tierTotal = UNIT_TIER_WEIGHTS.sumOf { it.second }
+            val sameTier = unitPrizes.filter { it.tier == prize.tier }
+            val sameTierWeight = sameTier.sumOf { it.weight }
+            if (tierWeight <= 0 || tierTotal <= 0 || sameTierWeight <= 0) 0.0
+            else unitChance * tierWeight.toDouble() / tierTotal * prize.weight.toDouble() / sameTierWeight
+        }
+        prize.type == "buff" -> {
+            val bucket = buffBucket(prize)
+            val bucketChance = when (bucket) {
+                0 -> 0.5
+                1 -> 0.3
+                else -> 0.2
+            }
+            val sameBucket = buffPrizes.filter { buffBucket(it) == bucket }
+            val sameBucketWeight = sameBucket.sumOf { it.weight }
+            if (sameBucketWeight <= 0) 0.0
+            else buffChance * bucketChance * prize.weight.toDouble() / sameBucketWeight
+        }
+        normalPrizes.sumOf { it.weight } <= 0 -> 0.0
+        else -> normalChance * prize.weight.toDouble() / normalPrizes.sumOf { it.weight }
+    }
+}
+
 private suspend fun openPoolPreview(player: Player) {
     val pool = loadedPool
     MenuV3(player) {
@@ -1278,25 +1326,15 @@ private suspend fun openPoolPreview(player: Player) {
         msg = if (pool == null) {
             "[yellow]奖池尚未加载。"
         } else {
-            "[gray]当前奖池 v${pool.version}，共 ${prizes.size} 项；普通奖品按权重，单位按 T1-T4 档位概率。"
+            "[gray]当前奖池 v${pool.version}，共 ${prizes.size} 项；所有奖品按实际出货概率显示。头奖抽奖券 ${formatChance(HEAD_TICKET_CHANCE)}（保底另计）。"
         }
         if (prizes.isEmpty()) {
             option("（奖池为空）") { }
         } else {
+            option("[gold]头奖抽奖券[gray] · ${formatChance(HEAD_TICKET_CHANCE)}（保底另计）") { }
             renderPaged(prizes, prePage = 8, key = "lottery_pool") { prize ->
-                val tier = if (prize.type == "unit" && prize.tier in 1..4) {
-                    val chance = when (prize.tier) {
-                        1 -> "5%"
-                        2 -> "3%"
-                        3 -> "2%"
-                        else -> "1%"
-                    }
-                    " · T${prize.tier}（约 $chance）"
-                } else {
-                    " · 权重 ${prize.weight}"
-                }
                 option(
-                    "[white]${prize.name}[gray] · ${prize.type} · ${prize.rarity}$tier"
+                    "[white]${prize.name}[gray] · ${prize.type} · ${prize.rarity} · ${formatChance(prizeChance(pool!!, prize))}"
                 ) { }
             }
         }
@@ -1322,7 +1360,7 @@ private suspend fun openRules(player: Player) {
             |[white]普通抽奖不再直接出现头奖。每次抽奖有 0.5% 概率获得“头奖抽奖券”，在背包中使用后从 13 项头奖中随机抽取，所有头奖概率相同。
             |[white]每 $PITY_LIMIT 抽保底一张头奖抽奖券；抽到头奖券后保底计数清零。头奖券不设上限，不占其他奖券的 $MAX_VOUCHERS 张上限。
             |[white]普通抽奖中 buff 奖券总概率 10%，3 分钟 / 8 分钟 / 永久约为 5 / 3 / 2 张每 100 抽。
-            |[white]普通抽奖中 T1-T4 单位总概率 11%，T1 / T2 / T3 / T4 约为 5% / 3% / 2% / 1%，均高于头奖券的 0.5%。
+            |[white]普通抽奖中 T1-T4 单位总概率 11%，T1 / T2 / T3 / T4 分别为 5.50% / 3.30% / 2.20% / 1.10%，均高于头奖券的 0.5%。
             |[white]单位奖池覆盖塞普罗/埃里克尔全部 40 个 T1-T4 常规单位，不含核心机、导弹和内部单位。
             |[white]背包中头奖券优先显示；没有头奖券时不显示该项。
             |
@@ -1338,7 +1376,7 @@ private suspend fun openRules(player: Player) {
             |[white]题库和奖池由管理员通过文件更新，执行 /lotteryadmin reload 生效。
             |
             |[gold]限制
-            |[white]PvP 模式默认关闭抽奖；余额不足时不扣费、不发奖。
+            |[white]PvP 模式关闭抽奖，且头奖券、buff 券、全增益券均不可使用；余额不足时不扣费、不发奖。
             |[gray]本页面不显示当前单位状态；背包只显示奖券。
             """.trimMargin(),
             align = "left",
@@ -1433,9 +1471,9 @@ command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
                     ("[green]奖池：${pool?.let { "v${it.version} / ${it.prizes.size} 项" } ?: "未加载"}" +
                             "\n[green]题库：${library?.let { "${it.version} / ${it.jokes.size} 条" } ?: "未加载"}" +
                             "\n[green]单抽 $singleCost MDC，十连 $tenCost MDC" +
-                            "\n[green]头奖抽奖券概率 0.5%，每 $PITY_LIMIT 抽保底一张；头奖池 ${HEAD_PRIZES.size} 项等概率" +
-                            "\n[green]buff 奖券概率 10%，3 分钟 / 8 分钟 / 永久约 5 / 3 / 2 张每 100 抽" +
-                            "\n[green]T1-T4 单位概率 11%，约 5% / 3% / 2% / 1%（共 ${UNIT_TIER_POOL.size} 个常规单位）" +
+                            "\n[green]头奖抽奖券概率 ${formatChance(HEAD_TICKET_CHANCE)}，每 $PITY_LIMIT 抽保底一张；头奖池 ${HEAD_PRIZES.size} 项等概率" +
+                            "\n[green]buff 奖券概率 ${formatChance(BUFF_VOUCHER_CHANCE)}，3 分钟 / 8 分钟 / 永久约 5 / 3 / 2 张每 100 抽" +
+                            "\n[green]T1-T4 单位概率 ${formatChance(UNIT_CHANCE)}，约 ${formatChance(UNIT_CHANCE * 0.5)} / ${formatChance(UNIT_CHANCE * 0.3)} / ${formatChance(UNIT_CHANCE * 0.2)} / ${formatChance(UNIT_CHANCE * 0.1)}（共 ${UNIT_TIER_POOL.size} 个常规单位）" +
                             "\n[green]buff/全增益券上限 $MAX_VOUCHERS，头奖券无上限").with()
                 )
             }
