@@ -1,8 +1,22 @@
 # idleBreakGuard 更新日志
 
 > 插件：`scripts/wayzer/ext/idleBreakGuard.kts`
-> 版本：**V0.1.6**
+> 版本：**V0.1.7**
 > 当前版本维护者：八色 和他的 dsh
+
+## V0.1.7（2026-11-19）
+
+修复自然墙体/矿石误封：有人拆除了正常玩法根本拆不了的自然墙体（如带铅矿石的墙），插件按“建筑物”计数并处罚。
+
+- 新增 `isEnvironmentBlock(block) = !block.hasBuilding()`：
+  - 玩家建筑（墙 `destructible=true`、传送带等 `update=true`）至少一个为 true，照常计数；
+  - 自然墙体（`StaticWall`/`Prop`）、矿石（`OreBlock`/`OverlayFloor`）、地板、悬崖、出生点等环境方块两个都为 false，一律豁免。
+- 误计原因：环境方块本身没有 `tile.build`，只有在 `allowEnvironmentDeconstruct=true` 的地图/沙盒里
+  才会被拆成 `ConstructBuild`，`previous` 指向自然墙体；旧逻辑把它当成真实建筑累加。
+- `handleBatch` 现在：`ConstructBuild.previous` 是环境方块时**不计数、也不置 `monitor.started`**；
+  普通 `build.block` 同理；自动识别，不依赖名单，CP/DP 新增的环境方块同样覆盖。
+- 新增配置 `ignoreEnvironmentBlocks`（默认 `true`），`false` 可回退旧行为。
+- 版本号 `V0.1.7`。
 
 ## V0.1.6（2026-11-16）
 

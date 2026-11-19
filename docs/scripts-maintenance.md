@@ -22,6 +22,42 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-19（第四十批）：idleBreakGuard 自然墙体/矿石等环境方块豁免
+
+类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`，V0.1.7）。
+
+### 1. 问题
+
+用户反馈：有人拆除了正常玩法根本拆不了的自然墙体（例如带铅矿石的墙），插件却按“建筑物”累计并处罚，造成误封。
+
+### 2. 根因
+
+- 自然墙体/矿石/地板等环境方块没有 `tile.build`，正常 `Build.validBreak` 也过不了；
+- 只有 `rules.allowEnvironmentDeconstruct=true` 的地图（测试/沙盒图）里才能被拆，此时 tile 变成 `ConstructBuild`，
+  其 `previous` 指向自然墙体；旧 `handleBatch` 把 `previous` 当真实建筑计数，并且先置 `monitor.started=true`。
+
+### 3. 改动
+
+- 新增 `isEnvironmentBlock(block) = !block.hasBuilding()`：Mindustry 用 `destructible` / `update` 表示方块是否有建筑实体，
+  玩家建筑至少一个为 true，环境方块两个都是 false；自动识别、不依赖名单，CP/DP 新增的环境方块同样覆盖。
+- `handleBatch`：`ConstructBuild.previous` 是环境方块时直接跳过（不计数、不置 `started`）；
+  普通 `build.block` 同理（统一走 `isRealBuildingBlock`）。
+- 新增配置 `ignoreEnvironmentBlocks`（默认 `true`），`false` 回退旧行为。
+- 版本 `V0.1.6` → `V0.1.7`；`docs/idleBreakGuard.md` §2.5、§3.2、配置表与 changelog 同步。
+- 不新增脚本依赖。
+
+### 4. 验证
+
+- 本地测试服：SA 日志 `编译脚本完成 wayzer/ext/idleBreakGuard (耗时 6.641s)`、`启用脚本`；
+  `scriptdiag state wayzer/ext/idleBreakGuard` = `Enabled failReason=无`，`sa listFailed` 为空；
+  运行态 `脚本统计：共170 加载166 启用162 失败0`（该测试服额外装有 lottery 等脚本，数量与仓库基线不同）。
+- 临时探针（验证后已删除）在真实服务端逐个确认 `hasBuilding()`：
+  - 玩家建筑 16 项（传送带/管道/炮塔/各类墙/路由器/核心/接收台/处理器/电池/钻头）全部 `hasBuilding=true`；
+  - 环境方块 18 项（stone-wall/dirt-wall/ice-wall/carbon-wall/beryllic-stone-wall、stone/sand-floor/grass/water/deep-water、
+    ore-lead/ore-copper/ore-thorium/ore-wall-thorium/ore-crystal-thorium、boulder/cliff/spawn）全部 `hasBuilding=false`；
+  - 全量 447 个方块中 165 个 `hasBuilding=false`，名单全部是地板/墙/树/巨石/矿石/装饰等环境方块，无任何玩家建筑。
+- 真实客户端行为（拆自然墙体不再计数、不再触发强制观战）待用户实测。
+
 ## 2026-11-16（第三十九批）：idleBreakGuard 沙盒/编辑器模式豁免
 
 类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`，V0.1.6）。
