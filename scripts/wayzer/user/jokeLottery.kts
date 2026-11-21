@@ -57,6 +57,7 @@ private val VOUCHER_MDC_3M = 11
 private val VOUCHER_MDC_8M = 22
 private val VOUCHER_MDC_PERMANENT = 66
 private val HEAD_TICKET_CHANCE = 0.005
+private val STATUS_TICKS_PER_SECOND = 60f
 private val BUFF_VOUCHER_CHANCE = 0.10
 private val UNIT_CHANCE = 0.11
 private val UNIT_TIER_WEIGHTS = listOf(1 to 50, 2 to 30, 3 to 20, 4 to 10)
@@ -943,8 +944,9 @@ private fun applyStatusPrize(player: Player, effectName: String, duration: Int):
     val unit = debuffTarget(player) ?: return "[yellow]当前没有可施加状态的单位"
     val effect = findStatusEffect(effectName) ?: return "[red]状态 ${effectName} 不存在"
     val normalized = normalizeStatusDuration(duration)
-    val seconds = if (normalized < 0) Float.POSITIVE_INFINITY else normalized.toFloat()
-    val applied = skillsCore.applyStackedStatus(unit, effect, seconds, 1)
+    // Mindustry 状态时间单位是 tick：1 秒 = 60 tick。奖券配置按秒保存。
+    val ticks = if (normalized < 0) Float.POSITIVE_INFINITY else normalized * STATUS_TICKS_PER_SECOND
+    val applied = skillsCore.applyStackedStatus(unit, effect, ticks, 1)
     return if (applied > 0) {
         "[green]已对当前单位施加 [cyan]${effect.localizedName}[green]：${durationLabel(normalized)}"
     } else {
@@ -1235,9 +1237,10 @@ private fun useVoucher(player: Player, drawId: Int): String {
     val effect = findStatusEffect(parsed.first) ?: return "[red]状态 ${parsed.first} 不存在，奖券已保留。"
     if (!claimVoucher(uid, drawId)) return "[yellow]奖券状态已变化，未生效。"
 
-    val seconds = if (parsed.second < 0) Float.POSITIVE_INFINITY else parsed.second.toFloat()
+    // Mindustry 状态时间单位是 tick：1 秒 = 60 tick。奖券配置按秒保存。
+    val ticks = if (parsed.second < 0) Float.POSITIVE_INFINITY else parsed.second * STATUS_TICKS_PER_SECOND
     val applied = try {
-        skillsCore.applyStackedStatus(unit, effect, seconds, 1)
+        skillsCore.applyStackedStatus(unit, effect, ticks, 1)
     } catch (t: Throwable) {
         releaseVoucher(uid, drawId)
         Log.warn("[lottery] 应用奖券效果失败 uid=$uid draw=$drawId", t)
