@@ -6390,3 +6390,89 @@ mdtdo 已完成本轮本地提交（实现 + 文档补记），只本地维护�
 - 每次 `DataManager.load` 前先按当前 Content 修复容量，避免动态内容清理器读取新增物品时自身越界；加载/卸载后默认开启30秒逐tick轻量守护，只扫描活跃建筑并仅在实际修复时限频记录。`contentsTweaker.kts` 的动态物品/液体清理也增加数组边界防御。
 - 本地冷启动结果为155/151/146/0。地图ID24662（废料警戒进攻图）加载真实包后一次性修复1663个物品模块；加载32秒、44秒检查均为 `items=27, empty=27, bad=0`，显式调用4个核心的 `onProximityUpdate()` 正常。
 - 随后卸载成功，1/4/10秒检查均为 `items=22, empty=22, bad=0`；没有 `Index 22`、卸载失败或回滚失败。测试服务端和 `.tmp-dpfix*` 临时日志已清理，正式 `config/logs` 作为本地证据保留；生产部署状态仍待用户确认。
+
+# 2026-11-17：抽奖插件清单修订与 lib 扩展
+
+- 来源：PR #10 `feat/joke-lottery` 的交接清单 v2（基于本轮原子事务提交）。本轮按清单 1–5 修订，并选定第 6 项“奖券满额折算 MDC”。
+- 插件 `scripts/wayzer/user/jokeLottery.kts`：记录查询限制最近 200 条；轮次/记录表补 UID 索引与 `(uid, roundNo)` 唯一约束，cursor 使用条件更新和 Long 索引；奖券使用改为条件抢占；奖券不设过期时间，未使用长期保留；满 100 后 buff 按 3 分钟 11、8 分钟 22、永久 66 MDC 折算；外部效果失败标记 `delivery_failed`；移除事务外余额/券数预检查。
+- lib 变更（需维护者按红线流程批准）：`MdtStorage.kt` 新增 `registerSubjectCleanupHook`/`unregisterSubjectCleanupHook`，删号事务末尾执行插件清理器；新增事务内 `addTrustPointsInTx`/`spendTrustPointsInTx`（本分支已加），`addCurrentTrustPointsInTx` 收回 private。`DatabaseFeatureSettings.kt` 新增 `DatabaseFeature.Lottery`。
+- 插件 `onEnable` 注册三表删号清理，`onDisable` 注销；`lotteryAccessMessage` 检查数据库业务开关与 3 级信任门槛。
+- 文档：新增 `docs/jokeLottery.md`；更新 `docs/jokeLottery-test-plan.md`、`docs/help-menu.md`、`docs/database-system.md`。
+- 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（24 项），题库 v1（10 条）`；`lotteryadmin status` 返回奖池 v1/24、题库 v1/10、单抽 33、十连 264、保底 100。修复过 hook 返回类型 `kotlin.Unit` 与 `LotteryDraws.status` 的 CLOB 索引错误。
+- 未完成：真实玩家单抽/十连/保底/奖券满额折算/删号/开关实测；lib 变更未合入 main，禁止热重载；合并前需维护者批准并做全量冷启动。
+
+# 2026-11-18：抽奖头奖池扩展
+
+- `jokeLottery.kts` 默认奖池新增两个 `grand` 单位头奖：`grand-unit-collaris`（头奖：天帝）、`grand-unit-disrupt`（头奖：瓦解），与 `grand-mdc-1000` 权重均为 1。
+- 第 100 抽保底现在会在三个头奖之间随机；任意 `rarity=grand` 的奖品（自然或保底）都会在同一事务内把 `pityCounter` 清零，十连中多个头奖各自触发清零。
+- 默认测试奖池由 24 项增至 26 项，总权重 180；单个头奖普通概率约 0.56%，任意头奖合计约 1.67%。
+- 已同步 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md`；测试服需删除旧 `config/lottery/pool.json` 或手动补两项后再验证。
+- 冷启动加载结果：奖池 v1/26、题库 v1/10、插件 Enabled、`出错0`；真实客户端头奖生成未实测。
+
+# 2026-11-18：抽奖改为头奖抽奖券
+
+- 按用户要求取消直接头奖与 100 抽保底：普通池加载时过滤 `rarity=grand`，默认普通池 23 项；旧 `pool.json` 的 grand 项只打日志忽略，不需要手动删除。
+- 普通抽奖每次独立 0.5% 概率产出 `headticket`（头奖抽奖券），存入背包；和 buff/全增益券合计占用 100 张总上限。
+- 使用头奖券后从 13 项等概率头奖中抽取：王座 `reign`、死星 `corvus`、天蝎 `toxopid`、领主 `conquer`、天帝 `collaris`、日蚀 `eclipse`、要塞 `oct`、disrupt `disrupt`、发散 `emanate`、起飞的海神 `omura`、起飞的龙王 `navanax`、1000 MDC、无限时长全增益 buff 兑换券。
+- 飞行头奖在单位生成后设置 `elevation=1f; update()`，逻辑复用 `skillsLevel2.kts` 的 `flying` 技能；全增益券使用后对普通单位施加 `fast`/`overdrive`/`shielded` 永久状态。
+- `Prize` 新增 `flying`；`Profile` 去掉保底字段；`LotteryProfiles` 表定义移除 `pityCounter`（旧库残留列不参与逻辑）。新增 `HEAD_TICKET_CHANCE`、`HEAD_TICKET`、`HEAD_PRIZES`、`prepareHeadDrawTx`、`drawHeadPrize`、`validateHeadPrizes`；`Voucher` 增加 `kind`，背包支持头奖券/全增益券/普通 buff 分派。
+- 头奖券使用与头奖记录写入同一事务；普通批次仍为批次级原子事务。外部单位/音效/状态失败标记 `delivery_failed`，不自动退款。
+- 文档：重写 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`；同步 `docs/help-menu.md`、`docs/database-system.md`。
+- 冷启动（临时测试副本）：`共找到168脚本,加载成功164,启用成功159,出错0`；`[lottery] 已加载奖池 v1（23 项），题库 v1（10 条）`；日志确认忽略旧 grand，并出现 `[lottery] 头奖池 13 项校验通过（含起飞单位/全增益券）`；插件 Enabled。
+- 未完成：真实客户端抽头奖券/13 项头奖/飞行单位/全增益券/奖券满额测试；未做最终 KDoc、`git diff --check`、rebase 与 PR 更新。
+
+# 2026-11-18：奖券背包堆叠与总上限
+
+- 背包按 `(kind, effect, duration)` 聚合未使用奖券：相同 buff/时长只显示一项并标注 `×N`，不同效果或时长分开；头奖券、全增益券各自堆叠。
+- `Voucher` 改为持有同组 `ids`，点击一次只 claim 并使用 1 张，数量减 1。
+- 100 张上限改为所有未使用奖券合计（buff + 头奖券 + 全增益券）；`countUnusedVouchersTx` 不再只统计 buff。
+- 满 100 时普通抽奖不再产出新的头奖券；buff 仍按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 在同一事务内折算。
+- 头奖券使用会先释放 1 个槽位，头奖结果中的全增益券仍可正常入包，不会突破 100。
+- 同步 `docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md` 和规则页。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；奖池 v1/23、头奖池 13 项校验通过、插件 Enabled。真实客户端的堆叠数量显示、点击消耗 1 张、总上限 100、满包时头奖券停止产出与 buff 折算仍待实测。
+
+# 2026-11-18：恢复 100 抽保底、头奖券独立 64 张与护盾分档
+
+- 按用户要求恢复 100 抽保底：第 100 抽必得 `headticket`，抽到任意头奖券后 `pityCounter=0`；`LotteryProfiles.pityCounter` 恢复参与逻辑。
+- 头奖券改为独立堆叠上限 **64** 张，不占 buff/全增益券的 **100** 张上限；头奖券 64 张时保底计数停在 99，等使用腾出空间后下一抽补发，不丢失。
+- 普通批次分别读取头奖券数量、buff/全增益数量；满 100 只折算 buff，不再阻止头奖券产出。
+- `shielded` buff 改为使用后给当前普通单位增加护盾，不再施加状态：3 分钟 **25,000**、8 分钟 **100,000**、永久 **500,000**；全增益券为快速/超速永久状态 + 500,000 护盾。
+- 使用头奖券时若头奖结果为全增益券且 buff/全增益已满 100，改抽非全增益头奖，避免突破上限。
+- 文档同步：`docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md`。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；奖池 v1/23、头奖池 13 项校验通过、插件 Enabled。
+- 未完成：真实客户端的保底触发、头奖券 64 上限、护盾数值与全增益券实测。
+
+# 2026-11-18：取消头奖券上限、移除护盾 buff、核心机兼容
+
+- 头奖券取消 64 张独立上限；buff/全增益券仍合计最多 100 张，头奖券不占该额度，也不再限制主页面显示。
+- 移除护盾 buff 奖券：默认池删除 3 个 `shielded` 项，旧 `pool.json` 加载时按效果名过滤并打日志；全增益券只剩快速/超速永久状态。
+- 头奖券使用不再受“核心机不适用”影响：`headticket` 分支在任何单位状态下都可使用；头奖抽到单位时，核心机玩家在玩家位置生成，不再强制要求普通附身单位。
+- 旧护盾奖券保留在数据库但不再生效，使用时提示“护盾 buff 奖券已移除”，避免静默施加护盾状态。
+- 默认普通池由 23 项变为 20 项；保底仍为 100 抽，第 100 抽必得头奖券。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；日志确认 `已加载奖池 v1（20 项）`、`头奖池 13 项校验通过`、插件 Enabled。
+- 未完成：真实客户端核心机使用头奖券、头奖单位生成、无上限堆叠和旧护盾券提示实测。
+
+# 2026-11-18：抽奖背包头奖券优先、buff 奖券概率调整
+
+- `wayzer/user/jokeLottery.kts`：背包奖券列表将头奖券排到最前；无头奖券时不显示头奖券项。
+- 普通抽奖在 0.5% 头奖券判定后，新增独立 **10% buff 奖券**判定；buff 档位固定 3 分钟 50% / 8 分钟 30% / 永久 20%，档内按效果权重选择，期望约 5/3/2 张每 100 抽。
+- 普通奖池选择排除 buff 项，避免 buff 概率叠加；默认永久 buff 权重同步调整为 4/4，使档内权重口径一致。
+- 文档同步：`docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md`。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；奖池 v1/20、头奖池 13 项校验通过、插件 Enabled。
+
+# 2026-11-18：抽奖加入 T1-T4 单位池
+
+- `wayzer/user/jokeLottery.kts` 内置塞普罗/埃里克尔 40 个 T1-T4 常规单位（10/10/10/10），不含核心机、导弹和内部单位。
+- 普通抽奖在 0.5% 头奖券、10% buff 判定之后，独立判定 11% 单位奖池；档位概率 T1 5% / T2 3% / T3 2% / T4 1%，均高于头奖券 0.5%。
+- 单位池由代码统一维护，`pool.json` 只负责普通奖品；加载时过滤旧单位项并合并 40 个内置单位，奖池从 17 项普通奖品变为 57 项。
+- 奖池预览显示 T1-T4 档位与近似概率；规则页、`/lotteryadmin status`、`docs/jokeLottery.md`、`docs/jokeLottery-test-plan.md`、`docs/help-menu.md` 同步。
+- 冷启动通过：`共找到168脚本,加载成功164,启用成功159,出错0`；`已合并 T1-T4 单位 40 项`；奖池 v1/57、头奖池 13 项校验通过、插件 Enabled。
+- 未完成：真实客户端单位档位分布、40 个单位生成和 1000 抽比例实测。
+
+
+## 抽奖插件 PvP 与概率显示修复
+
+- PvP 模式下禁止使用所有奖券（头奖券、buff 券、全增益券），不只禁止抽奖入口。
+- 核心机使用头奖券不经过普通单位检查，允许正常抽取头奖。
+- 奖券时长按秒存储；旧 `duration=3/8` 兼容归一化为 `180/480` 秒。
+- 奖池预览统一显示实际百分比，不再显示权重；单位档位为 5.50% / 3.30% / 2.20% / 1.10%。

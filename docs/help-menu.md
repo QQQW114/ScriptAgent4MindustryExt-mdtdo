@@ -15,7 +15,7 @@
 - **帖子列表**：快捷打开 `/posts`，作为根菜单直接入口。
 - **商店列表**：快捷打开 `/shop`。
 - **技能指令**：快捷打开 `/skill`。
-- **管理指令**：仅显示当前玩家有权限看到的管理项，例如安全风控、服务器功能设置、数据库业务总开关与九个子开关、管理员频道、服务器介绍轮播、服务器小音效、服务器点歌、管理员技能入口、设置脚下方块/地板、区域填充、单位效果、名字后缀标记、击杀/传送选择器单位、封禁账号/IP、最近玩家面板、CP列表/外部CP、世界处理器/静默世界处理器、换图、资源站代理、加载/关闭/查看地图脚本、结束游戏、强制观战、强制观战高人数清理、禁言/禁建、信任等级/资历等级/在线时长/MDC/账号/IP防熊/地区查询/地图筛选/性能优化管理、暂停/继续游戏、上行预算、服务器压力、人数上限、Wiki/帖子保护与回收站、ScriptAgent 脚本控制等。
+- **管理指令**：仅显示当前玩家有权限看到的管理项，例如安全风控、服务器功能设置、数据库业务总开关与子开关（含新增抽奖开关）、管理员频道、服务器介绍轮播、服务器小音效、服务器点歌、管理员技能入口、设置脚下方块/地板、区域填充、单位效果、名字后缀标记、击杀/传送选择器单位、封禁账号/IP、最近玩家面板、CP列表/外部CP、世界处理器/静默世界处理器、换图、资源站代理、加载/关闭/查看地图脚本、结束游戏、强制观战、强制观战高人数清理、禁言/禁建、信任等级/资历等级/在线时长/MDC/账号/IP防熊/地区查询/地图筛选/性能优化管理、暂停/继续游戏、上行预算、服务器压力、人数上限、Wiki/帖子保护与回收站、ScriptAgent 脚本控制等。
 - **其他指令**：点击后动态加载当前可见但尚未纳入固定分区的指令。
 - **Wiki列表**：快捷打开 `/wiki`；如果脚本未加载才会提示暂未开放。
 - **搜索指令**：输入指令名、别名、中文说明、usage 或脚本 ID 关键字，列出当前玩家实际有权查看/使用的匹配项。
@@ -52,6 +52,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 本次已接入：
 
 - `/points`、`/pay`、`/redpacket`、`/grab`：MDC查询、转账与红包；单个红包最多 500 MDC；MDC变动时会私聊提示本人。
+- `/lottery`（别名 `抽奖`/`jokelottery`/`lc`）：仅信任 3 级及以上；单抽 33 MDC、十连 264 MDC；每次普通抽奖 0.5% 概率获得“头奖抽奖券”，在背包使用后从 13 项等概率头奖中抽取（王座/死星/天蝎/领主/天帝/日蚀/要塞/disrupt/发散/起飞的海神/起飞的龙王/1000 MDC/无限时长全增益 buff 兑换券）；保留 100 抽保底（第 100 抽必得头奖券）；buff/全增益券合计最多 100 张，头奖券不设上限、不占 100 张额度；重复奖券在背包堆叠显示；buff 奖券需附身普通单位，不设过期时间；头奖券核心机也可使用；PvP 模式下抽奖与所有奖券均不可使用；护盾 buff 已移除；buff 满 100 后新 buff 按 3 分钟 11 / 8 分钟 22 / 永久 66 MDC 折算；普通抽奖中 buff 奖券总概率 10%，3/8/永久期望约 5/3/2 张每 100 抽；T1-T4 常规单位总概率 11%，档位 5.50%/3.30%/2.20%/1.10%（40 个单位，不含核心机）；背包头奖券优先显示。`/lotteryadmin status|reload` 为管理员入口。
 - `/seniority`、`/资历`、`/playtime`：查看资历等级、累计在线时长与下一资历等级条件。
 - `/captcha`、`/register`、`/login`、`/logout`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、退出登录（结束会话并解除本机自动登录）、改密与注销；登录不需要验证码。
 - `/msg`、`/r`：私聊与回复最近私聊对象。
@@ -106,7 +107,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/serverfeatures`、`/features`、`/serverconfig`：仅4级/admin或控制台可查看服务器功能总览/打开菜单；菜单内已加入数据库业务功能子菜单，旧子指令仍兼容。
 - `/mdcmultiplier`、`/forumtoggle`、`/registerrequirement`、`/socialactions`、`/defaultboundlevel`：拆分后的五个服务器功能管理根指令；分别管理结算MDC倍率、帖子、注册一小时要求、赞踩认可和已绑定玩家默认信任/资历下限。它们会自动被“搜索指令”索引。
 - `/databasefeatures`：查看、打开菜单或统一暂停数据库业务功能；只覆盖可选玩家业务，不关闭数据库连接，也不影响账号、权限、封禁、禁言、IP风控与性能保护。
-- `/playtimerecording`、`/achievementtoggle`、`/wikitoggle`、`/mdctransfertoggle`、`/recentplayerrecording`、`/trustpromotiontoggle`、`/senioritypromotiontoggle`、`/leaderboardtoggle`、`/playerprofilestats`：九个4级数据库业务子开关。全部是根指令，会自动进入权限过滤的“搜索指令”；普通玩家不会看到这些管理项。
+- `/playtimerecording`、`/achievementtoggle`、`/wikitoggle`、`/mdctransfertoggle`、`/recentplayerrecording`、`/trustpromotiontoggle`、`/senioritypromotiontoggle`、`/leaderboardtoggle`、`/playerprofilestats`：九个4级数据库业务子开关；新增的抽奖开关通过 `/databasefeatures` 菜单管理。全部会自动进入权限过滤的“搜索指令”；普通玩家不会看到这些管理项。
 - `/forceobclean`：在线人数过高时清理已登录且被强制观战的普通玩家；3++协管可查看状态/执行单次清理，4级/admin可修改长期开关。
 - `/logicdraw`：管理画布/逻辑显示器/逻辑绘图方块，可用于处理不适当显示内容风险；`roundoff/roundon/roundclear` 为仅本局覆盖。
 - `/blockban ban <方块ID>`、`/blockban unban <方块ID>`、`/blockunban <方块ID>`：管理员本局单独禁用/解禁某个建筑方块。

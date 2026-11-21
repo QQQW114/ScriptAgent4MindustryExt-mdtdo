@@ -37,6 +37,26 @@ fun getTotalTrustPoints(uid: String): Int = MdtStorage.getTotalTrustPoints(uid)
 fun getCachedTrustPoints(uid: String): Int =
     currentPointCache.getOrPut(uid) { MdtStorage.getTrustPoints(uid) }
 
+// 事务内直接改库后调用：重新读取余额、刷新缓存并通知界面。
+fun refreshTrustPoints(uid: String): Int {
+    val points = MdtStorage.getTrustPoints(uid)
+    setCachedTrustPoints(uid, points)
+    emitTrustPointChanged(uid)
+    return points
+}
+
+// 事务内完成正向发放后调用，仅补发统计事件，不重复改余额。
+fun notifyMdcGranted(uid: String, amount: Int, desc: String) {
+    emitMdcGranted(uid, amount, desc)
+}
+
+// 事务内直接扣费后调用，补发聊天提示；缓存与变更事件由 refreshTrustPoints 负责。
+fun notifyMdcSpent(uid: String, amount: Int, desc: String, newPoints: Int) {
+    if (amount <= 0) return
+    setCachedTrustPoints(uid, newPoints)
+    notifyMdcChanged(uid, -amount, desc, newPoints)
+}
+
 private fun emitTrustPointChanged(uid: String) {
     launch { TrustPointChangedEvent(setOf(uid)).emitAsync() }
 }
@@ -68,6 +88,7 @@ private fun mdcChangeReason(desc: String, amount: Int): String {
         fixed.startsWith("RewardBatch") -> "奖励"
         fixed.startsWith("Achievement:") -> "成就奖励"
         fixed.startsWith("Skill:") -> if (amount >= 0) "技能奖励" else "技能消耗"
+        fixed.startsWith("Lottery:") -> if (amount >= 0) "抽奖奖励" else "抽奖消耗"
         fixed.startsWith("Shop:") -> "商店购买"
         fixed.startsWith("RedPacket:send") -> "红包发送"
         fixed.startsWith("RedPacket:grab") -> "红包领取"

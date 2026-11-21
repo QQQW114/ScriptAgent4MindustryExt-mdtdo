@@ -19,6 +19,7 @@ enum class DatabaseFeature(val code: String, val displayName: String) {
     SeniorityPromotion("seniorityPromotion", "资历等级自动调整"),
     Leaderboard("leaderboard", "排行榜"),
     PlayerProfileStats("playerProfileStats", "玩家资料数据显示"),
+    Lottery("lottery", "抽奖系统"),
 }
 
 interface DatabaseFeatureSettings {

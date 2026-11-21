@@ -137,7 +137,7 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 - `MdtSettings`
   - 保存小型全局设置，例如 `account.guestForceObDate`、风险IP `account.ipRisk.index` / `account.ipRisk.<ip>`、同IP小号提示最近身份 `account.ipLast.<ip>`、同IP踢出计数 `account.ipKick.<ip>`、最近玩家面板 `playerInfo.recentPlayers.v1`、`tips.items`、`tips.seeded.v1`、`trafficMonitor.budgetMbps`。
   - 服务器功能键：`serverFeatures.mdcSettlementMultiplier`、`serverFeatures.forumEnabled`、`serverFeatures.registrationOnlineRequirementEnabled`、`serverFeatures.socialActionsEnabled`、`serverFeatures.defaultBoundTrustLevel`。缺失键会按 `1/true/true/true/1` 安全默认值补齐。旧键 `defaultBoundTrustLevel` 保留不改，新语义为信任/资历共同下限；`serverFeatures.defaultBoundLevelSeniorityMigrated` 记录旧数据库是否已完成一次性资历补齐。
-  - 数据库业务子开关：`serverFeatures.database.playTimeRecording.enabled`、`achievement.enabled`、`wiki.enabled`、`mdcTransferAndRedPacket.enabled`、`recentPlayerRecording.enabled`、`trustPromotion.enabled`、`seniorityPromotion.enabled`、`leaderboard.enabled`、`playerProfileStats.enabled`；完整前缀均为 `serverFeatures.database.`，缺失时默认开启。
+  - 数据库业务子开关：`serverFeatures.database.playTimeRecording.enabled`、`achievement.enabled`、`wiki.enabled`、`mdcTransferAndRedPacket.enabled`、`recentPlayerRecording.enabled`、`trustPromotion.enabled`、`seniorityPromotion.enabled`、`leaderboard.enabled`、`playerProfileStats.enabled`、`lottery.enabled`；完整前缀均为 `serverFeatures.database.`，缺失时默认开启。
   - `serverTestMode.enabled` 仅作为遗留兼容键保留；新脚本加载时强制写为 `false`，不再驱动任何账号或MDC逻辑。
 
 账号登录后，业务系统的主体 ID 会从未登录时的游戏 UUID 切换为 `account:<id>`；因此赞踩、MDC、资历/在线时长、称号、成就等数据都会挂在账号主体上。注册新账号成功时，会额外把该游客 UUID 在 `MdtTrustProfiles` 中已落库的当前/累计 MDC 合并到新账号主体，并清理来源 MDC，避免注册前游玩获得的 MDC 丢失。
@@ -155,7 +155,7 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
 
 密码哈希已实现于 `wayzer/user/accountPassword.kts`：使用 JDK 自带 `PBKDF2WithHmacSHA256`、随机盐、`120000` 次迭代，格式类似 `pbkdf2$iterations$salt$hash`。管理员重置密码时输入明文新密码，脚本内部哈希保存；游戏内重置通过输入框收集新密码，避免把明文密码写进聊天/服务器日志。
 
-账号删除/注销会删除 `MdtAccounts`、对应 `MdtAccountBindings`、对应 `MdtIpAccountBindings`，并清空该账号主体 `account:<id>` 及已绑定游戏 UUID 主体下的业务数据，包括MDC、资历/在线时长、赞踩、认可、称号、成就、技能、随机形态、禁言、帖子/评论、红包记录等。
+账号删除/注销会删除 `MdtAccounts`、对应 `MdtAccountBindings`、对应 `MdtIpAccountBindings`，并清空该账号主体 `account:<id>` 及已绑定游戏 UUID 主体下的业务数据，包括MDC、资历/在线时长、赞踩、认可、称号、成就、技能、随机形态、禁言、帖子/评论、红包记录、抽奖档案/轮次/记录等。
 
 ### 信任/MDC
 
@@ -169,6 +169,18 @@ SA 3.4 不应继续把数据库 Provider 放在 `DBApi.kts` 内的旧 `ServiceRe
   - `level_code`：资历等级 `0-4`，自然晋升最高写入 `3`。
   - `level_locked`：是否锁定资历自动调整。
   - `play_millis`：累计在线时长；指令以小时为单位显示/设置。
+
+### 抽奖
+
+由 `wayzer/user/jokeLottery.kts` 通过 `DBApi.registerTable` 注册，表名前缀不是 `Mdt`：
+
+- `LotteryProfiles`：`uid`（唯一）、`totalDraws`、`pityCounter`、`updatedAt`；`pityCounter` 为 100 抽保底计数，抽到头奖券后清零。
+- `LotteryRounds`：`uid`、`roundNo`、`libraryVersion`、`offset`、`stride`、`cursor`、`total`、`status`；`(uid, roundNo)` 唯一，`uid` 普通索引。
+- `LotteryDraws`：`uid`、`batchId`、奖品快照、`status`、`cost`、`isHead`；`uid` 与 `(uid, status)` 索引；奖券不设过期字段，未使用奖券长期保留。
+- 头奖记录由 `headticket` 使用产生，`batchId` 为 `head:<ticketId>`，`isHead=true`；普通抽奖中的头奖券记录 `isHead=true`，其余普通奖品为 `false`。普通池的旧 `grand` 配置在加载时被忽略。
+- 奖券上限：buff/全增益券合计 100 张；头奖券不设上限，不占用 100 张额度。背包显示时头奖券优先，没有头奖券则不显示该项。
+
+删号时插件通过 `MdtStorage.registerSubjectCleanupHook` 注册清理器，在同一事务内删除该 UID 的三表数据；禁用插件时注销。数据库业务开关为 `DatabaseFeature.Lottery`，关闭后玩家抽奖入口、抽奖和奖券使用均拒绝；`/lotteryadmin status|reload` 是维护入口，故意不受该开关限制，仍受管理员权限保护。
 
 ### 赞/踩
 
