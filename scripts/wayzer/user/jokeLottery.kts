@@ -1477,7 +1477,8 @@ command("lotteryadmin", "抽奖管理：重新加载奖池/题库") {
                             "\n[green]头奖抽奖券概率 ${formatChance(HEAD_TICKET_CHANCE)}，每 $PITY_LIMIT 抽保底一张；头奖池 ${HEAD_PRIZES.size} 项等概率" +
                             "\n[green]buff 奖券概率 ${formatChance(BUFF_VOUCHER_CHANCE)}，3 分钟 / 8 分钟 / 永久约 5 / 3 / 2 张每 100 抽" +
                             "\n[green]T1-T4 单位概率 ${formatChance(UNIT_CHANCE)}，约 ${formatChance(UNIT_CHANCE * 0.5)} / ${formatChance(UNIT_CHANCE * 0.3)} / ${formatChance(UNIT_CHANCE * 0.2)} / ${formatChance(UNIT_CHANCE * 0.1)}（共 ${UNIT_TIER_POOL.size} 个常规单位）" +
-                            "\n[green]buff/全增益券上限 $MAX_VOUCHERS，头奖券无上限").with()
+                            "\n[green]buff/全增益券上限 $MAX_VOUCHERS，头奖券无上限" +
+                            "\n[green]状态时长换算：秒 × ${STATUS_TICKS_PER_SECOND.toInt()} tick（3 分钟=10800 tick）").with()
                 )
             }
             else -> returnReply("[yellow]用法：/lotteryadmin <reload|status>".with())
@@ -1497,6 +1498,7 @@ onEnable {
     cleanupHook = hook
     MdtStorage.registerSubjectCleanupHook(hook)
     Log.info("[lottery] ${reloadContent()}")
+    Log.info("[lottery] 状态时长换算：1 秒 = ${STATUS_TICKS_PER_SECOND.toInt()} tick；3 分钟=10800 tick，8 分钟=28800 tick")
 }
 
 onDisable {
