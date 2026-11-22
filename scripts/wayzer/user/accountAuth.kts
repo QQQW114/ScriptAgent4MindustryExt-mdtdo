@@ -8,6 +8,7 @@
 @file:Depends("wayzer/user/trustPromotion", "信任晋升检测")
 @file:Depends("wayzer/user/serverFeatureSettings", "服务器功能设置")
 @file:Depends("wayzer/user/emailBind", "QQ邮箱绑定验证")
+@file:Depends("wayzer/user/trustPoint", "MDC")
 
 package wayzer.user
 
