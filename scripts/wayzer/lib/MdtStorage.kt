@@ -793,6 +793,32 @@ object MdtStorage {
         } > 0
     }
 
+    /**
+     * 管理员重置密码，并吊销该账号名下所有游戏 UUID 的设备自动登录绑定。
+     *
+     * 只清 [PlayerSubjects] 中 `account = 该账号` 的游戏 UUID 行：把 `account` 置空，
+     * 保留 `account:<id>` 主体行与 last_ip/last_usid 等排查元数据；行还在但已无账号归属，
+     * [autoLoginByDevice] 因此不再命中，相关设备下次进服必须手动 /login，
+     * 登录成功时由 [recordAccountLogin] 重新写入绑定。
+     *
+     * 密码更新与绑定吊销在同一事务内完成，避免"密码已改、旧设备凭据未清"的半成功状态。
+     *
+     * @return 吊销的设备绑定数；账号不存在时返回 null。
+     */
+    fun resetAccountPasswordAndRevokeDeviceBindings(accountId: Int, passwordHash: String): Int? = transaction {
+        val updated = Accounts.update({ Accounts.id eq accountId }) {
+            it[Accounts.passwordHash] = passwordHash
+        } > 0
+        if (!updated) return@transaction null
+        val accountEntity = EntityID(accountId, Accounts)
+        val accountSubjectUid = accountSubjectUid(accountId)
+        PlayerSubjects.update({
+            (PlayerSubjects.account eq accountEntity) and (PlayerSubjects.id neq accountSubjectUid)
+        }) {
+            it[PlayerSubjects.account] = null
+        }
+    }
+
     private fun deleteSubjectBusinessDataInTx(subjectUid: String) {
         val ownedTitleCodes = PlayerTitles.selectAll().where { PlayerTitles.uid eq subjectUid }
             .map { it[PlayerTitles.titleCode] }

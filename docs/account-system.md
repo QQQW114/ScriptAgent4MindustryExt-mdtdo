@@ -11,7 +11,7 @@
 - **主服 vs 分服注册校验差异**：
   - **主服 MDT DO（`main` 分支）**：已移除旧 4 位 `/captcha` 注册验证码；注册与老号补绑均通过 QQ 邮箱验证码完成（详见 [account-email-binding.md](account-email-binding.md)），入服 10 秒后若无其他弹窗会显示注册/绑定引导；管理员可用 `/registerrequirement <0~72|on|off>` 配置注册前累计在线小时数（默认 1 小时，0=关闭）。
   - **分服 MDC DO（`mdc-do` 分支）**：不启用邮箱绑定与 `email-service`，保留原有 `/captcha` 4 位验证码注册流程，入服不弹绑定引导。
-- **自动登录**：仅校验游戏 UUID + USID，不校验 IP，避免玩家切换网络后频繁重新登录。
+- **自动登录**：仅校验游戏 UUID + USID，不校验 IP，避免玩家切换网络后频繁重新登录；管理员 `/setpassword` 重置密码时会吊销该账号名下所有设备的自动登录绑定，玩家本人 `/changepassword` 保持原绑定。
 - **密码安全**：使用 JDK `PBKDF2WithHmacSHA256` + 随机盐（120000 迭代）哈希存储，不保存明文；手动 `/login` 无需验证码。
 - **已绑定默认等级**：注册并登录后进入已绑定玩家默认等级下限（默认 `1`，同时作用于信任与资历等级，4 级管理员可通过 `/defaultboundlevel 1|2|3` 调整，只升不降）。
 - **游客 MDC 迁移与封存**：
@@ -41,7 +41,7 @@
 
 | 指令 | 权限 | 说明 |
 |---|---|---|
-| `/setpassword <QQ账号>` | `wayzer.admin.account`（`@admin`） | 重置密码；游戏内弹窗输入避免明文进聊天日志；控制台用 `setpassword <QQ> <新密码> confirm` |
+| `/setpassword <QQ账号>` | `wayzer.admin.account`（`@admin`） | 重置密码并吊销名下所有设备自动登录（在线会话不强制退出）；游戏内弹窗输入，控制台用 `setpassword <QQ> <新密码> confirm` |
 | `/deleteaccount <QQ/3位ID/UUID/account:id> [confirm]` | `wayzer.admin.account` | 删除账号、解除设备绑定并清空关联业务数据（不可逆） |
 | `/accountqq <目标>` | `wayzer.admin.account` | 查询 QQ 号、账号 ID、状态与主体 UID（别名 `/qqof`、`/查qq`、`/queryqq` 等） |
 | `/emailbind <accountId> [reset]`（仅主服） | `wayzer.admin.account` | 查询或清除账号邮箱绑定 |

@@ -570,6 +570,7 @@ private suspend fun confirmAdminPasswordReset(admin: Player, qq: String, passwor
             |[cyan]新密码长度：[white]$passwordLength
             |
             |[yellow]密码将由脚本内部加密保存。
+            |[yellow]重置后该账号名下所有设备的自动登录都会失效，需要重新用新密码 /login 一次。
         """.trimMargin()
         option("确认重置") { confirmed = true }
         option("取消") { }
@@ -592,8 +593,19 @@ private suspend fun adminResetPassword(admin: Player?, qq: String, newPassword: 
         admin.sendMessage("[yellow]已取消重置密码")
         return false
     }
-    MdtStorage.updateAccountPassword(account.id, with(passwordTool) { hashPassword(newPassword) })
-    admin?.sendMessage("[green]已重置 QQ账号 [white]$qq[green] 的密码") ?: logger.info("已重置 QQ账号 $qq 的密码")
+    val revokedDevices = MdtStorage.resetAccountPasswordAndRevokeDeviceBindings(
+        account.id,
+        with(passwordTool) { hashPassword(newPassword) },
+    ) ?: run {
+        admin?.sendMessage("[red]重置密码失败：账号不存在或写入失败：$qq")
+            ?: logger.warning("重置密码失败：账号不存在或写入失败：$qq")
+        return false
+    }
+    val revokedNote = if (revokedDevices > 0)
+        "，并已吊销 [white]$revokedDevices[yellow] 台设备的自动登录；这些设备下次进服需用新密码重新 /login"
+    else ""
+    admin?.sendMessage("[green]已重置 QQ账号 [white]$qq[green] 的密码$revokedNote")
+        ?: logger.info("已重置 QQ账号 $qq 的密码；吊销设备自动登录 $revokedDevices 台")
     return true
 }
 
