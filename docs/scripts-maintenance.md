@@ -22,6 +22,46 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-22（第四十一批）：已绑定账号 UUID 的游客 MDC 封存
+
+类型：脚本修复（`scripts/wayzer/user/trustPoint.kts`、`scripts/wayzer/user/accountAuth.kts`）。
+
+### 1. 问题
+
+已注册账号的玩家，其游戏 UUID 主体（`MdtTrustProfiles` 的纯 UUID 行）仍可能沉淀 MDC（自动登录失败、登录前游玩等）。其他人只要拿到该 UUID，以游客身份进服就能读取/消费这份 MDC；账号绑定本身只在登录时用于自动登录，没有拦住游客态消费。
+
+### 2. 改动
+
+- `trustPoint.kts`：
+  - 新增 `isBoundGameUuid(uid)`：判断 uid 是否为“已绑定账号的游戏 UUID”（`account:<id>` 与未绑定 UUID 返回 false）；
+  - 新增 `sweepBoundUuidMdc(uuid)`：复用 `MdtStorage.migrateTrustPoints`，把已绑定 UUID 的当前/累计 MDC 并回账号，并清缓存、发变更事件；
+  - 在 `spendTrustPoints`、`transferTrustPoints`（fromUid）、`setTrustPoints`、`addTrustPoints`/`addCurrentTrustPoints`（金额为负）入口拒绝已绑定 UUID 的扣款；
+  - `/points`、`/pay`、`/redpacket` 对“已绑定 UUID + 未登录”会话提示先 `/login`；
+  - 新增 `listenTo<ConnectAsyncEvent>`：进服前把已绑定 UUID 的 MDC 并回账号。
+- `accountAuth.kts`：`finishLogin` 在注册迁移逻辑之后补一次 `sweepBoundUuidMdc(player.uuid())`，覆盖“进服后才 /login”的情况；注册路径原有的迁移逻辑不变。
+- 不新增表/列；不修改 `MdtStorage`、`PlayerData` 等 lib。
+
+### 3. 验证
+
+- 本地测试服（测试副本，含测试钩子）：脚本编译/启用通过，`scriptdiag count` 失败 0；服务端钩子验证：
+  - 已绑定 UUID 的 `spendTrustPoints`/`transferTrustPoints`/`addTrustPoints(-)`/`setTrustPoints` 全部拒绝，余额不变；
+  - `sweepBoundUuidMdc`：UUID 1000 → 账号 1000，UUID 清零；
+  - 未绑定账号的游客 UUID 扣款正常；
+  - 客户端实测：重进连接时 5000 并回账号；`/login` 后账号余额包含该 5000；
+  - `/points`、`/pay`、`/redpacket` 的游客提示为代码路径 + 服务端钩子验证，未逐条客户端截图。
+- 真实客户端 + 生产未验证（本 PR 未部署）。
+
+### 4. 边界/风险
+
+- 只保护“已绑定账号的 UUID”；从未注册的纯游客 UUID 仍按原逻辑，不在本修复范围。
+- 依赖现有 `MdtPlayerSubjects` 绑定关系；若绑定被删除（如 `/logout`），保护随之失效。
+- 管理员直接对已绑定 UUID 设置/扣除余额会被拒绝，需要改用 `account:<id>`。
+- 未新增 MDC 流水表，历史已发生的消费无法追溯。
+
+### 5. 未包含
+
+- 测试服脚本、`testHooks/testmdc.kts`、测试账号/数据库、封禁测试数据均未提交。
+
 ## 2026-11-19（第四十批）：idleBreakGuard 自然墙体/矿石等环境方块豁免
 
 类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`，V0.1.7）。
