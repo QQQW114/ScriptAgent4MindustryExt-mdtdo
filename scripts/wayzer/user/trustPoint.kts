@@ -3,6 +3,7 @@
 
 package wayzer.user
 
+import wayzer.lib.ConnectAsyncEvent
 import wayzer.lib.DatabaseFeature
 import wayzer.lib.MdcGrantedEvent
 import wayzer.lib.MdtStorage
@@ -30,12 +31,44 @@ private fun mdcTransferEnabled(): Boolean =
 private fun mdcTransferDisabledMessage(): String =
     "[yellow]MDC转账与红包功能已被管理员关闭，请联系管理员。"
 
+/**
+ * 已绑定账号的游戏 UUID（游客态）不能使用 MDC。
+ * 账号主体 account:<id> 与未绑定账号的游客 UUID 不受影响。
+ */
+private fun isBoundGameUuid(uid: String): Boolean {
+    if (uid.isBlank() || uid.startsWith("account:")) return false
+    return runCatching { MdtStorage.getAccountForGameUuid(uid) != null }.getOrDefault(false)
+}
+
+private fun notifyBoundUuidBlocked(uid: String) {
+    launch(Dispatchers.game) {
+        onlinePlayerByUid(uid)?.sendMessage("[yellow]此设备已绑定账号，请使用 [gold]/login[] 登录后使用 MDC。")
+    }
+}
+
 fun getTrustPoints(uid: String): Int = MdtStorage.getTrustPoints(uid)
 
 fun getTotalTrustPoints(uid: String): Int = MdtStorage.getTotalTrustPoints(uid)
 
 fun getCachedTrustPoints(uid: String): Int =
     currentPointCache.getOrPut(uid) { MdtStorage.getTrustPoints(uid) }
+
+/**
+ * UUID 已绑定账号时，把该 UUID 名下的当前/累计 MDC 并回账号。
+ * null 表示该 UUID 未绑定账号；数据库失败时记录日志并返回 null。
+ */
+fun sweepBoundUuidMdc(gameUuid: String): MdtStorage.TrustPointMigrationResult? {
+    if (gameUuid.isBlank() || gameUuid == "[LOCAL]" || gameUuid.startsWith("account:")) return null
+    val account = runCatching { MdtStorage.getAccountForGameUuid(gameUuid) }.getOrNull() ?: return null
+    val targetUid = MdtStorage.accountSubjectUid(account.id)
+    val result = runCatching { MdtStorage.migrateTrustPoints(gameUuid, targetUid) }
+        .onFailure { logger.warning("[MDC封存] 并回账号失败 uuid=$gameUuid account=$targetUid: ${it.message}") }
+        .getOrNull() ?: return null
+    currentPointCache.remove(gameUuid)
+    currentPointCache.remove(targetUid)
+    if (result.changed) emitTrustPointChanged(setOf(gameUuid, targetUid))
+    return result
+}
 
 private fun emitTrustPointChanged(uid: String) {
     launch { TrustPointChangedEvent(setOf(uid)).emitAsync() }
@@ -95,6 +128,10 @@ private fun setCachedTrustPoints(uid: String, value: Int) {
 
 fun addTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
     if (amount == 0) return getTrustPoints(uid)
+    if (amount < 0 && isBoundGameUuid(uid)) {
+        notifyBoundUuidBlocked(uid)
+        return getTrustPoints(uid)
+    }
     val oldPoints = getCachedTrustPoints(uid)
     val newPoints = MdtStorage.addTrustPoints(uid, amount)
     setCachedTrustPoints(uid, newPoints)
@@ -119,6 +156,10 @@ fun addTrustPointsBatch(rewards: Map<String, Int>, desc: String = ""): Map<Strin
 
 fun addCurrentTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
     if (amount == 0) return getTrustPoints(uid)
+    if (amount < 0 && isBoundGameUuid(uid)) {
+        notifyBoundUuidBlocked(uid)
+        return getTrustPoints(uid)
+    }
     val oldPoints = getCachedTrustPoints(uid)
     val newPoints = MdtStorage.addCurrentTrustPoints(uid, amount)
     setCachedTrustPoints(uid, newPoints)
@@ -129,6 +170,10 @@ fun addCurrentTrustPoints(uid: String, amount: Int, desc: String = ""): Int {
 
 fun spendTrustPoints(uid: String, amount: Int, desc: String = ""): Boolean {
     if (amount <= 0) return true
+    if (isBoundGameUuid(uid)) {
+        notifyBoundUuidBlocked(uid)
+        return false
+    }
     val oldPoints = getCachedTrustPoints(uid)
     val success = MdtStorage.spendTrustPoints(uid, amount)
     if (success) {
@@ -142,6 +187,10 @@ fun spendTrustPoints(uid: String, amount: Int, desc: String = ""): Boolean {
 
 fun transferTrustPoints(fromUid: String, toUid: String, amount: Int, desc: String = ""): Boolean {
     if (!mdcTransferEnabled()) return false
+    if (isBoundGameUuid(fromUid)) {
+        notifyBoundUuidBlocked(fromUid)
+        return false
+    }
     if (amount <= 0 || fromUid == toUid) return false
     val oldFrom = getCachedTrustPoints(fromUid)
     val oldTo = getCachedTrustPoints(toUid)
@@ -160,6 +209,10 @@ fun transferTrustPoints(fromUid: String, toUid: String, amount: Int, desc: Strin
 }
 
 fun setTrustPoints(uid: String, value: Int): Int {
+    if (isBoundGameUuid(uid)) {
+        notifyBoundUuidBlocked(uid)
+        return getTrustPoints(uid)
+    }
     val oldPoints = getCachedTrustPoints(uid)
     val newValue = MdtStorage.setTrustPoints(uid, value)
     setCachedTrustPoints(uid, newValue)
@@ -241,7 +294,11 @@ command("points", "查看自己的MDC余额") {
     aliases = listOf("积分", "mdc", "credit")
     attr(ClientOnly)
     body {
-        val uid = PlayerData[player!!].id
+        val data = PlayerData[player!!]
+        if (!data.authed && isBoundGameUuid(data.id)) {
+            returnReply("[yellow]此设备已绑定账号，请使用 [gold]/login[] 登录后查看/使用 MDC。".with())
+        }
+        val uid = data.id
         val transactionText = if (mdcTransferEnabled()) {
             "[gray]转账：/pay <玩家3位ID> <数量> [留言]\n[gray]红包：/redpacket <总MDC> <份数> [留言]；/grab <红包ID>"
         } else {
@@ -267,6 +324,9 @@ command("pay", "向其他玩家转账MDC") {
         if (arg.size < 2) replyUsage()
         val sender = player!!
         val senderData = PlayerData[sender]
+        if (!senderData.authed && isBoundGameUuid(senderData.id)) {
+            returnReply("[yellow]此设备已绑定账号，请使用 [gold]/login[] 登录后再转账。".with())
+        }
         val targetData = resolveKnownPlayerData(arg[0])
             ?: returnReply("[red]未找到目标玩家，请使用在线/最近玩家的3位ID或UUID".with())
         val amount = positiveIntOrNull(arg[1]) ?: returnReply("[red]数量必须是正整数".with())
@@ -294,7 +354,11 @@ command("redpacket", "发MDC红包") {
         if (!mdcTransferEnabled()) returnReply(mdcTransferDisabledMessage().with())
         if (arg.size < 2) replyUsage()
         val sender = player!!
-        val senderUid = PlayerData[sender].id
+        val senderData = PlayerData[sender]
+        if (!senderData.authed && isBoundGameUuid(senderData.id)) {
+            returnReply("[yellow]此设备已绑定账号，请使用 [gold]/login[] 登录后再发红包。".with())
+        }
+        val senderUid = senderData.id
         val total = positiveIntOrNull(arg[0]) ?: returnReply("[red]总MDC必须是正整数".with())
         val shares = positiveIntOrNull(arg[1]) ?: returnReply("[red]份数必须是正整数".with())
         if (total > MAX_RED_PACKET_TOTAL) returnReply("[red]单个红包最多 ${credit(MAX_RED_PACKET_TOTAL)}".with())
@@ -438,4 +502,13 @@ registerVarForType<Player>().apply {
 listen<EventType.PlayerLeave> {
     currentPointCache.remove(it.player.uuid())
     currentPointCache.remove(PlayerData[it.player].id)
+}
+
+/**
+ * 连接时（进服前）把已绑定 UUID 名下的 MDC 并回账号。
+ * 即使用户 A 顶着用户 B 的 UUID 以游客身份进服，B 的余额也会在 A 能操作之前回到 B 的账号。
+ */
+listenTo<ConnectAsyncEvent> {
+    runCatching { sweepBoundUuidMdc(packet.uuid) }
+        .onFailure { logger.warning("[MDC封存] 连接时并回失败 uuid=${packet.uuid}: ${it.message}") }
 }

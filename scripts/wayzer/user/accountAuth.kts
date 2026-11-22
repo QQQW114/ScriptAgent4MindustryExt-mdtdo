@@ -26,6 +26,7 @@ private val ipGuard = contextScript<AccountIpGuard>()
 private val trustLevel = contextScript<TrustLevel>()
 private val seniorityLevel = contextScript<SeniorityLevel>()
 private val trustPromotion = contextScript<TrustPromotion>()
+private val trustPoint = contextScript<TrustPoint>()
 
 private val QQ_MIN_LENGTH = 5
 private val QQ_MAX_LENGTH = 12
@@ -396,6 +397,9 @@ private fun finishLogin(
                     " 当前账号余额：[gold]${migratedMdc.targetCurrent} MDC"
         )
     }
+    // 已绑定 UUID 的游客余额在登录时也并回账号：覆盖“进服后才 /login”的情况（连接阶段可能还没绑定/已过）。
+    runCatching { with(trustPoint) { sweepBoundUuidMdc(player.uuid()) } }
+        .onFailure { logger.warning("登录时并回游客MDC失败: uuid=${player.uuid()} account=$subjectUid error=${it.message}") }
     with(emailBind) { onAccountLogin(account.id, subjectUid) }
     clearLoginFailure(player)
     return true
