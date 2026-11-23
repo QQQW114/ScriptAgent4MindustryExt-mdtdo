@@ -286,11 +286,11 @@ private fun rememberIpIdentity(player: Player, broadcastAlt: Boolean) {
             previous.uuid == current.uuid
     if (broadcastAlt && altBroadcastEnabled && recentEnough && previous!!.subjectKey != current.subjectKey && !sameGameUuid) {
         broadcast(
-            "[yellow]{player.name}[white]进入了游戏，可能为 [yellow]{previousName}[white] 的小号[gray]（同IP上次身份：UUID={previousUuid}，短ID={previousId}）".with(
+            // 公开广播只显示短 ID，不显示完整游戏 UUID；完整身份仅保留在服务端日志/管理侧。
+            "[yellow]{player.name}[white]进入了游戏，可能为 [yellow]{previousName}[white] 的小号[gray]（同IP上次身份：短ID={previousId}）".with(
                 "player" to player,
                 "previousId" to previous.displayId,
                 "previousName" to previous.name.ifBlank { "未知玩家" },
-                "previousUuid" to previous.uuid.ifBlank { "未知" },
             )
         )
         logger.info(
@@ -339,11 +339,11 @@ private fun rememberIpIdentityAsync(player: Player, broadcastAlt: Boolean) {
             withContext(Dispatchers.game) {
                 val online = Groups.player.find { it.uuid() == playerUuid } ?: return@withContext
                 broadcast(
-                    "[yellow]{player.name}[white]进入了游戏，可能为 [yellow]{previousName}[white] 的小号[gray]（同IP上次身份：UUID={previousUuid}，短ID={previousId}）".with(
+                    // 公开广播只显示短 ID，不显示完整游戏 UUID；完整身份仅保留在服务端日志/管理侧。
+                    "[yellow]{player.name}[white]进入了游戏，可能为 [yellow]{previousName}[white] 的小号[gray]（同IP上次身份：短ID={previousId}）".with(
                         "player" to online,
                         "previousId" to previous.displayId,
                         "previousName" to previous.name.ifBlank { "未知玩家" },
-                        "previousUuid" to previous.uuid.ifBlank { "未知" },
                     )
                 )
                 logger.info(
