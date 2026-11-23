@@ -22,6 +22,27 @@
 >
 > 脚本编写原则（2026-08-13 用户明确）：性能优化相关尽量采取**可靠、侵入小**的改动，减少跟进 JAR 版本后重改脚本逻辑；脚本注重**兼容性、安全性、可靠性**，尽量写能兼容 Mindustry 后续更新的脚本；非特殊情况不添加过多冗余兼容与回退脚本，最多允许到用户要求的同时支持官方 Mindustry 服务端与 MindustryX 服务端。
 
+## 2026-11-23（第四十二批）：同IP小号广播隐藏完整 UUID
+
+类型：隐私修复（`scripts/wayzer/user/accountIpGuard.kts`）。
+
+### 1. 问题
+
+玩家反馈：同 IP 小号提示的全服广播包含上一身份的完整游戏 UUID，属于公开隐私泄露；短 ID 足以提供提示线索。
+
+### 2. 改动
+
+- `rememberIpIdentity` 与 `rememberIpIdentityAsync` 的公开 `broadcast` 文案改为只显示 `短ID`；
+- 删除广播占位参数 `previousUuid`；完整 UUID 仍只写入服务端日志/管理侧，供管理员排查；
+- 不改变小号识别、同 IP 去重、风险 IP、观战/处罚逻辑；
+- `docs/account-system.md`、`docs/security-guard.md` 同步隐私口径。
+
+### 3. 验证
+
+- 冷启动编译/启用 `wayzer/user/accountIpGuard` 通过；
+- 全文件检索确认公开 `broadcast` 不再包含完整 UUID 占位；
+- KDoc 嵌套块注释扫描 0 命中。
+
 ## 2026-11-19（第四十批）：idleBreakGuard 自然墙体/矿石等环境方块豁免
 
 类型：脚本修复（`scripts/wayzer/ext/idleBreakGuard.kts`，V0.1.7）。
