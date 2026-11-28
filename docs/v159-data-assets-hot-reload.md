@@ -53,9 +53,8 @@ ZIP 可以直接以这些目录为根，也允许外层再包一层同名项目�
 
 ## 兼容口径（2026-10-17 最终版，提交 729dff3）
 
-背景：2026-10-16 的兼容改造曾一次性落地，随后脚本命令入口整体消失；2026-10-17 17:00 定位真因是 **SA 编译管线在 KDoc 里
-遇到字面量 `/**` 时静默截断 `.ktc`**（见 [Agent 调试经验](agent-debug-experience.md) 第 9 节），与本节的兼容逻辑无关。
-修掉 KDoc 后按 5 个小步重做，每步 `sa reload` + 控制台 `externalcp` + 嵌套注释扫描器三重验证，全部通过（提交 `729dff3`）。
+背景：2026-10-16 的兼容改造曾因 SA 编译管线在 KDoc 里遇到字面量 `/**` 时静默截断 `.ktc` 导致命令入口丢失（详见 [本地调试与排障](dev-and-debug.md)）。
+修掉 KDoc 后按小步重做并通过 `sa reload`、控制台 `externalcp` 与嵌套注释扫描验证（提交 `729dff3`）。
 最终行为：
 
 | 场景 | 旧行为（2026-10-16 前） | 现在（729dff3） | 实现位置 |
@@ -91,7 +90,7 @@ js contextScript<wayzer.map.ExternalCpHotReload>().loadServerCpAsync("赛克兰�
 - 最大 16384 个 ZIP 文件、单资产 32MB、累计解压 128MB；
 - 最大压缩比 200:1，阻止常见 ZIP 炸弹；
 - 单包最多 4096 个 Data Assets；
-- 贴图按真实文件头校验：`.png` 实为 PNG 时按 PNG magic 与 IHDR 尺寸校验；实为 JPEG（部分模组/转换产物会把 JPEG 数据命名为 .png，参考项目 `DataImagePacker.pack` 用 `new Pixmap(cacheFile)` 按文件头解码，本身支持 JPEG/PNG）时按 `FF D8` 头、`FF D9` 尾与 SOF0~SOF15 标记解析真实尺寸；两者均不得超过 v159 的 2000×2000 上限，文件头与尺寸都合法才放行，否则整包拒绝；
+- 贴图按真实文件头校验：`.png` 实为 PNG 时按 PNG magic 与 IHDR 尺寸校验；实为 JPEG（部分模组/转换产物会把 JPEG 数据命名为 .png，Mindustry 上游 `DataImagePacker.pack` 用 `new Pixmap(cacheFile)` 按文件头解码，本身支持 JPEG/PNG）时按 `FF D8` 头、`FF D9` 尾与 SOF0~SOF15 标记解析真实尺寸；两者均不得超过 v159 的 2000×2000 上限，文件头与尺寸都合法才放行，否则整包拒绝；
 - 不支持的目录或扩展名不会执行，只记录警告；
 - 同一包内重复路径不再判死整包：`bundles/**` 语言包合并（同名键后一份覆盖），其它类型跳过后一份并记警告（2026-10-17 口径，见上一节）；
 - 同一包内同名贴图/同名资产只记警告（同名贴图警告合并成一条），不再硬失败；v159 原生 `generated` 与源图配对仍按原版规则优先 `generated`；
@@ -190,7 +189,7 @@ js contextScript<wayzer.map.ExternalCpHotReload>().loadServerCpAsync("赛克兰�
 - **上游会自动扫描 `config/assets/`**：B509 `ServerControl.loadDataAssets()` 启动时扫描数据目录的 `assets/`
   （`dataAssetDirectory = dataDirectory.child("assets")`，本服 = `mdtserver/config/assets/`），把 `sounds/`、`music/` 等文件
   注册为 DataAsset 并加 **`server-assets/`** 前缀；随后 `Events.on(DataPatchLoadEvent)` 按「同 type + 同 path（忽略大小写）」
-  并入世界资产回合（源码：参考项目 `Mindustry-master/server/src/mindustry/server/ServerControl.java:266-268,403-470,426,386-396`）。
+  并入世界资产回合（Mindustry 上游 `server/src/mindustry/server/ServerControl.java:266-268,403-470`）。
 - **`reloadassets`** 控制台命令（ServerControl:596-598）可重新扫描/重建 `dataAssets` 表，但**只重扫、不推送**在线玩家；
   推送仍要世界资产回合/`sendWorldAndAssets`（见 `v159-network-sync.md`「资产的传输形态」）。实测只输出 `Loaded 1 data asset files.`。
 - **SoundAsset 与 MusicAsset 的可用性差异（2026-10-17 审计结论）**：
@@ -200,5 +199,4 @@ js contextScript<wayzer.map.ExternalCpHotReload>().loadServerCpAsync("赛克兰�
     **可正常播放**（受客户端音乐音量影响、单条、**不可重叠**）。
   - **SoundAsset**：资产能注册/同步，但 `Call.sound` 走 `TypeIO` 的 **short** 声音 id——自定义 id 从 100001 起，客户端读回
     截断为 -31071 → `Sounds.none`，**静默无声**；上游源码注释明确 mod 音频不支持短 id 通道。
-  - 所以"`config/assets` 能预置资产"不等于"自定义音频可走 sound 通道播放"；可重叠音效需客户端/上游协议扩展。
-    详见 [小音效通道审计](sound-effect-channel-audit.md) §2/§3/§5。
+  - 所以"`config/assets` 能预置资产"不等于"自定义音频可走 sound 通道播放"；可重叠音效需客户端/上游协议扩展，当前维持 `Call.playMusic(String)` 方案（详见 [服务端版本兼容记录](official-v159-compat.md) 与 [architecture.md](architecture.md)）。

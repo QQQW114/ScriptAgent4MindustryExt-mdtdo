@@ -1,8 +1,7 @@
 # v159 网络同步与完整重同步
 
-> 当前基线为 **Mindustry 160.3 / MindustryX 预览版 `prerelease-2026.09.13.B495`**（2026-09-13；
-> 上一基线为正式发行版 X37 / v160.1，B491 更早），
-> 160 起实体随世界流传输，见下文"160.1 起：实体随世界流传输"；其余同步不变量沿用。
+> 当前基线：**Mindustry v160.7 / MindustryX `prerelease-2026.10.10.B509`**（参见 [architecture.md](architecture.md)）。
+> v160 起实体随世界流传输，其余同步不变量沿用。
 
 ## 故障模型
 
@@ -26,7 +25,7 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 - **游戏同步上行**：实体、状态、建筑和游戏事件，用于性能优化与单位清理。
 - **世界/资产流**：入服、音乐、CP、杂交同步，只用于网络保护，禁止触发单位清理。
 
-原版 MindustryX B480 的 `SendPacketEvent` 仍未覆盖 v159 批量发送。本项目的 B480 自定义构建已让批量 `Net.send` 发出事件，并增加 `connections`、`targetCount`、`reliable`；`trafficMonitor.kts` 按“包大小 × 实际目标数”统计，并在启动时明确报告批量字段是否可用。游戏同步采用白名单分类，握手、欢迎、插件包和世界/资产流不会进入清单位口径。
+`trafficMonitor.kts` 通过 Windows `netstat -e` 采集宿主机网卡累计出口字节速率（不依赖 MindustryX 包事件补丁，零自定义服务器 JAR 补丁）；总上行用于门控与观测，单位清理仅由 TPS 与游戏同步压力口径驱动，握手、欢迎、世界/资产流不得触发清单位。
 
 ## 不变量
 
@@ -79,8 +78,8 @@ v159 的 `sendWorldAndAssets` 会让客户端清空本地实体、重新协商�
 **B509/v160.7 复核（2026-10-17）**：直接相关的音频类已在 B509 上逐字节核对一致（`TypeIO`/`DataAudioLoader`/`Sounds`/
 `SoundControl`/`NetClient`/`PlayMusicCallPacket`/`SoundCallPacket`/`ServerControl`）；新增一条字节码级事实——
 声音按 **short** 传输（`TypeIO.writeSound → Writes.s`），自定义 SoundAsset id 从 **100001** 起、客户端读回截断为 **-31071**
-→ `Sounds.getSound` 返回 `Sounds.none`，即**自定义音效的 Sound 通道不可用**（实测 2 字节 wire 往返）；music 通道可播但
-**不能重叠**（客户端 `SoundControl` 单 `current` 槽）。详见 [小音效通道审计](sound-effect-channel-audit.md) §2.1/§3.3。
+→ `Sounds.getSound` 返回 `Sounds.none`，即**自定义音效的 Sound 通道不可用**；music 通道可播但
+**不能重叠**（客户端 `SoundControl` 单 `current` 槽）。详见 [official-v159-compat.md](official-v159-compat.md) 与 [architecture.md](architecture.md)。
 资产/世界重同步路径本次**未逐条 diff**，本节其余结论仍以 v160.3 源码为准。
 
 | 环节 | 源码事实 | 后果 |
@@ -108,9 +107,9 @@ image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户�
 附带结论：**没有音频推送通道**（运行期只有 `TextureStream` 这一条推送通道，仅 PNG 且落在 `net-` 前缀区），
 缺音频在客户端表现为"静默无声"。**2026-10-17 B509 复核补充**：声音 id 还按 **short** 序列化，自定义 SoundAsset
 （id 从 100001 起）即使资产已同步，客户端读回也会截断成 `Sounds.none` —— **自定义音效的 sound 通道不可用**；
-音乐走 `PlayMusicCallPacket(String)` 可播但**不重叠**（单 `current` 槽）。证据见 [小音效通道审计](sound-effect-channel-audit.md)。
+音乐走 `PlayMusicCallPacket(String)` 可播但**不重叠**（单 `current` 槽），详见 [official-v159-compat.md](official-v159-compat.md)。
 
-### 唯一存在的"不重载"通道：纹理
+### 内容与音频为何无法跳过重载
 
 - 动态内容（DP/CP 装卸、基因杂交改 `UnitType` 字段）会改变**内容 id 空间**：`DataPatcher.apply(..., reloadContentWorld)` /
   `unapply(...)` 之后要 `fixContentArrays()`（`mod/DataPatcher.java:88-93, 221, 277-303`），客户端也要
@@ -150,12 +149,12 @@ image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户�
 - 逐玩家"已确认拥有当前资产清单"的记账，用来跳过完全不必要的回合
   （只有"清单完全相同"才安全；"少发一部分"因 id 位置化而不安全）。
 
-### 独立复核（只读审计子代理，结论一致）
+### 协议边界补充说明
 
 - **协议里不存在"资产已同步但世界未重发"的合法终态**：`sendWorldAndAssets` 一次性把
   `hasConnected=false / determiningAssets=true / receivingAssets=false`（`NetServer.java:330-339`），
   这四个标志只能由 `connectConfirm`（`:996-1006`）走完；资产相关包穷举只有
-  `AssetRequirementStream / AssetStream / TextureStream / WorldStream`（B495 JAR + `NetClient.java:149/156/168/187`），
+  `AssetRequirementStream / AssetStream / TextureStream / WorldStream`（`NetClient.java:149/156/168/187`），
   **没有 content/patch 包**；MindustryX 对 `DataManager|state.data|sendTexture|AssetStream` 零改动，
   没有独有能力绕过这条链。
 - **协议外 hack 是死路**：在客户端发出 `Call.requestWorld` 之前把 `con.hasConnected` 置回 `true`，
@@ -184,18 +183,3 @@ image / sound / music / bundle **只发 32 字节 sha256**，缺缓存时客户�
 4. **杂交**：短期做法是"服务端改内容 + 不主动重载，等下次自然世界流"（`skillsHybrid.kts` 已有
    `hybridAutoWorldSync` 开关可关掉自动同步）；真正零重载要客户端 Mod。
 5. **图片走纹理流**：`sendTexture` + `net-` UI 菜单可替代 `pixelPicture.kts` 的逐格 `setNet`（省上行、显示更稳）。
-
-## B485 构建与部署
-
-- 基线：MindustryX `prerelease-2026.08.12.B485` / Mindustry `v159.7`。
-- **B485 起不再打 MDT 自定义补丁**：B480 时代的批量发送事件补丁与“可靠自定义实体快照” API 已被上游移除/重构，脚本已相应改为网卡上行统计与 `checkSpawn()` 恢复。
-- JAR：`mdtserver/server-2026.08.12.B485.jar`（官方发行版）。
-- SHA-256：`4C9C8F89251B351C885267C1E2D5BC51DCF3CEC702363AC6A774C390F39009A5`。
-
-### 历史（B480）
-
-- 基线：MindustryX `prerelease-2026.07.20.B480` / Mindustry `v159.7`。
-- 补丁：批量发送事件，以及已编入但不再使用的“可靠自定义实体快照” API。实测确认后者在 TCP 拥塞时会产生延迟旧状态，业务脚本已禁止调用。
-- 构建：`gradle --no-daemon server:dist -x tools:doPack`。
-- JAR：`mdtserver/server-2026.07.20.B480-mdtdo.jar`。
-- SHA-256：`8257C7185BF7915270C396B05A39AD32DD6C6CEC71135CD67A70C4E0906E5ACC`。

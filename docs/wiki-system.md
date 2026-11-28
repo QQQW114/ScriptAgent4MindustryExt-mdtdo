@@ -22,7 +22,7 @@ mdtserver/config/scripts/wayzer/user/wiki.kts
 
 - ID：`linuxdo-guidelines`
 - 标题：`linux do社区准则节选`
-- 来源：用户提供的 `C:\Users\qw114\Desktop\新建 文本文档 (3).txt`
+- 内容：内置预置社区准则节选（首次初始化自动导入一次，可在游戏内编辑或删除）。
 
 Wiki 正文使用分页弹窗显示，每页只保留少量按钮：
 

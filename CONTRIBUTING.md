@@ -1,61 +1,51 @@
 # 贡献指南（CONTRIBUTING）
 
-欢迎参与 MDT 服插件仓库！本仓库是 [way-zer/ScriptAgent4MindustryExt](https://github.com/way-zer/ScriptAgent4MindustryExt)
-的 fork，维护 MDT 服务器的 Game Script Agent（SA）脚本、Web 门户与生产更新器。
+欢迎参与 MDT DO 服务器仓库（`QQQW114/ScriptAgent4MindustryExt-mdtdo`）协作！本仓库基于 [way-zer/ScriptAgent4MindustryExt](https://github.com/way-zer/ScriptAgent4MindustryExt)，统一维护游戏服务端插件脚本、门户 Web、邮件发信服务、生产更新器、开发工具与权威文档。
 
-> **动工前必读**：完整的协作纪律、技术红线、验证要求与文档规范见
-> [`docs/collaboration-discipline.md`](docs/collaboration-discipline.md)。
-> 本文件只是面向 GitHub 的速览版；两者冲突时以完整文档为准。
+> 使用 AI / Vibe Coding 协作前，请务必让模型先读根目录 [`AGENTS.md`](AGENTS.md) 与 [`docs/workflow.md`](docs/workflow.md)。
 
-## 仓库结构
+## 仓库目录
 
-```
-scripts/**     SA 脚本（运行时核心资产，热重载敏感）
-stats-web/**   Web 门户（独立 PowerShell 进程，PS 5.1）
-updater/**     生产自动更新器（严格镜像 + 备份回滚 + 必须停服）
-docs/**        权威文档（行为变更必须同步）
-```
+| 目录 | 说明 |
+|---|---|
+| `scripts/` | ScriptAgent 服务端插件脚本（部署到 `config/scripts/`） |
+| `stats-web/` | 独立门户 Web（Windows PowerShell HttpListener，零外部依赖） |
+| `email-service/` | 主服本地 QQ 邮箱验证码发信服务（`127.0.0.1:40150`，不含密钥） |
+| `updater/` | 生产自动更新器（主服 `main` / 分服 `mdc-do`、支持运行中热更新与回滚） |
+| `tools/` | 本地静态体检、冷启动与热重载调试脚本（`mdt-dev.ps1`） |
+| `docs/` | 现行架构、工作流与各系统规范文档（只记现行事实） |
+| `.scratch/` | 本地临时草稿箱（除 README 外全部 `.gitignore`，放测试计划与排查笔记） |
 
-## 绝对红线（速览）
+## 分支策略
 
-1. **不要改** `scripts/wayzer/vote.lib.kt` 与 `scripts/wayzer/lib/*.kt`（会导致静态单例重复、服务器无法干净重启）；
-   需要扩展行为请新建 `scripts/wayzer/cmds|ext|user/*.kts`。
-2. **块注释内不得出现字面量 `/**`**（SA 编译 bug 会静默截断脚本）；改完跑
-   `pwsh -NoProfile -File "mdtdo\tools\scan-nested-block-comment.ps1"`，必须 0 命中。
-3. **SA 自定义事件用 `listenTo<T>`**，不要用 `listen<T>`。
-4. **`.ps1` 必须 UTF-8 with BOM**。
-5. **不提交**密钥/凭据/生产配置/运行数据（`web-config.json`、`web-data/`、日志、`external-cp/` 内容、数据库等）。
-6. **不操作生产服**（不重启、不杀进程、不做实验）；生产更新走 `updater/` 或维护者流程。
-7. **不改客户端**、不引入外部依赖/遥测。
-8. **不 force-push、不 rebase 已推送的 `main`**、不改写他人提交。
+- **`main`**：主服（MDT DO）主线分支，包含完整功能（含 QQ 邮箱绑定与 `email-service/`）。**所有 PR 默认提向 `main`**，严禁直推。
+- **`mdc-do`**：分服（MDC DO）分支，本质是客制化主服（关闭部分帖子系统、经济倍率宽松、账号系统无邮箱验证与 `email-service/`）。通用功能合入 `main` 后再按 [`docs/mdc-do-sync.md`](docs/mdc-do-sync.md) 同步到 `mdc-do`。
+- **特性/修复分支**：`feat/<topic>`、`fix/<topic>`、`docs/<topic>`、`chore/<topic>`。
 
-## 贡献流程
+## 标准协作流程
 
-1. **分支 + PR**：`feat/<topic>`、`fix/<topic>`、`docs/<topic>`；`main` 只由维护者合并，
-   即使你有仓库写权限也不要直推 `main`。
-2. **PR 必须包含**：改了什么/为什么、影响范围、验证记录（见下）、文档同步清单、风险与未验证项。
-3. **提交信息**：中文，`type(scope): 摘要`，正文写动机/方案/验证；一个 PR 一个主题，不顺手重构。
-4. **review**：至少 1 名维护者 review；仓库无自动化 CI，维护者会本地复跑验证后合并。
+1. **先分大小**：
+   - 小改动（单脚本修复/文案/参数）：直接从 `main` 切分支开发。
+   - 中/大改动（新模块、跨多脚本、修改 `.kt` 核心库、数据库表变更、Web/更新器架构改动）：**先提 GitHub Issue**（使用 `.github/ISSUE_TEMPLATE/feature-task.md`），拆分模块、明确边界，再按模块分 PR 推进并关联 `Refs #N` / `Closes #N`。
+2. **单模块、短会话开发**：每次只做一件事，不顺手重构无关文件；完成后立刻开 PR 并结束当前 AI 会话。
+3. **跑通本地验收门禁**：
+   - 无服务端环境也必须先跑：`pwsh -NoProfile -File tools\mdt-dev.ps1 check`（必须 0 报错）。
+   - 修改 `scripts/` 时配置本机测试服路径（复制 `tools/dev-local.example.json` 为 `tools/dev-local.json`），运行：
+     `pwsh -NoProfile -File tools\mdt-dev.ps1 verify -Mode cold -SyncToServer`（改 `.kt` 库必须加 `-ClearCache`）。
+   - 修改 `stats-web/` 或 `email-service/` 时运行 `smoke-web` / `smoke-email`。
+4. **最小文档同步**：
+   - 行为/配置/指令变化 → 同步修改对应 1 篇 `docs/<系统>.md`（只写现行事实），并在 `CHANGELOG.md` 顶部补充 1 行摘要。
+   - 测试计划、排查记录、过程草稿放 `.scratch/`（不入库）或写在 PR 描述里，**不要提交进 `docs/`**。
+5. **提交信息**：中文，`type(scope): 简明摘要`（`feat` / `fix` / `docs` / `refactor` / `chore` / `perf`），正文写清动机、变更与验证结果。
 
-## 验证要求（提交前）
+## 绝对红线速览
 
-- 脚本：开发服**冷启动**通过（banner `共找到N/加载N/启用N/出错0`）→ `scriptdiag count` 失败 0 →
-  `sa listFailed` 空 → 相关脚本 `Enabled` → KDoc 扫描 0 命中；测完关闭你启动的开发服。
-- Web：本地起服务自测 `/api/health` 与页面功能，`.ps1` BOM 校验。
-- 更新器：临时副本目标跑 `-DryRun`/更新/`-Rollback`，不得用生产目录测试。
-- **冷启动编译失败 = 不合格交付**，不允许"先合并再修"；无法运行时验证的请在 PR 里写明"未验证项"。
+- 不修改 `scripts/wayzer/vote.lib.kt`、`scripts/wayzer/lib/*.kt`（确需修改须先开 Issue + 清缓存冷启动验证）；
+- 块注释内禁止出现字面量 `/*`；SA 自定义事件必须用 `listenTo<T>`；`contextScript<T>()` 必配 `@file:Depends(...)`；
+- `.ps1` 保存为 UTF-8 with BOM（禁全角弯引号）；`.bat`/`.cmd` 保存为纯 ASCII + CRLF；
+- 绝不提交密钥、凭据、生产配置与运行数据（`email-service/config.json`、`web-data/`、`scripts/data/`、`scripts/external-cp/` 等）；
+- 不实现已明确否决的需求（详见 [`AGENTS.md`](AGENTS.md) §3.6 与 [`docs/architecture.md`](docs/architecture.md)）。
 
-## 文档同步
+## AI 辅助开发声明
 
-行为/配置/命令/口径变化必须同 PR 更新 `docs/`：`scripts-maintenance.md`（顶部新增批次）、
-对应设计文档、`current-issues.md`、`help-menu.md`（新指令）等。详见完整纪律文档 §5。
-
-## 已否决需求（勿再提议）
-
-禁言拦截私聊、`/vote text|sc` 过滤、玩家名规范化/冒充检测、IP 风控行为规则扩展、
-音效频道切换、生产调试端口等已被维护者明确否决；如需重开讨论请先联系维护者。
-
-## AI 使用声明
-
-本仓库部分代码/文档由 AI 辅助生成。AI 生成内容视同普通贡献：必须通过冷启动与验证、
-由维护者 review 后合并（详见根 `AGENTS.md` 与 `docs/collaboration-discipline.md` §6）。
+本仓库接受 AI / Vibe Coding 贡献，但与人类代码适用同一质量门槛：必须通过 `tools/mdt-dev.ps1 check` 与对应实机验收，由维护者 review 后合并。

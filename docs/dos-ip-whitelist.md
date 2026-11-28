@@ -1,8 +1,7 @@
 # DOS 黑名单受信任 IP 白名单（`/doswhitelist`）
 
-> 状态：2026-10-24 实现（提交 `15017cc`），已通过两次冷启动编译/加载验证；**功能行为未实测**（用户要求跳过 add/解黑运行时验证，
-> 见 §9/§10）。实现文件：`mdtserver/config/scripts/wayzer/security/dosWhitelist.kts`（约 626 行）。
-> 维护记录见 `scripts-maintenance.md` 第二十八批；帮助入口见 `help-menu.md` 管理分类。
+> 实现文件：`scripts/wayzer/security/dosWhitelist.kts`；帮助入口见 [help-menu.md](help-menu.md) 管理分类。
+> 待首次生产实测事项见 [backlog.md](backlog.md)。
 
 ## 1. 问题背景
 
@@ -108,23 +107,13 @@ SA 配置键全名 = `wayzer.security.dosWhitelist.<键名>`（`sa config get/se
 | `add` 被拒绝 | 检查格式：IPv4/CIDR `/8`~`/32`、非法前缀/IP 会被拒；备注过长会被截断到 120 字符。 |
 | 收不到自动解除通知 | `notifyRemovals` 是否开启、当前是否在线的管理员有该权限；日志仍在 `config/logs`。 |
 
-## 9. 验证记录（2026-10-24）
+## 9. 已知未实测边界
 
-- **两次冷启动（开发服）均通过**：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag count` 失败 0；
-  `sa listFailed` 为空；`scriptdiag state wayzer/security/dosWhitelist` = `Enabled`、`coreMindustry/menu` = `Enabled`；
-  `scriptdiag commands doswhitelist` 命中；KDoc 嵌套注释扫描 **211 文件**干净。
-- **功能行为未实测**（用户要求跳过）：`add`/自动解黑/持久化回读均未做运行时验证。
-
-## 10. 未验证项 / TODO
-
-- **功能链路未实测**：`add`→IP 进入 `dosBlacklist`→自动 `unBlacklistDos`→玩家重连成功；`list/remove/clear/check` 各子命令输出；
-  重启后持久化回读；多管理员通知；大NAT真实场景连坐恢复效果。
-- 需在**首次生产使用时验证**：启用后先加一个测试出口，制造/等待一次 packet spam 触发黑名单，确认 `status/list` 命中并自动解除。
-- 可选增强（未实现）：IPv6 CIDR、按 IP 段统计/告警、与 `securityGuard` 的联动说明、白名单变更审计日志。
+- 功能链路（`add` → IP 进入 `dosBlacklist` → 自动 `unBlacklistDos` → 重连恢复、持久化跨重启回读）待首次生产演练确认（见 [backlog.md](backlog.md)）。
+- 暂不支持 IPv6 CIDR、按 IP 段告警及白名单变更审计日志。
 
 ## 相关文档
 
-- [脚本维护总览](scripts-maintenance.md)（第二十八批）
 - [帮助菜单](help-menu.md)
 - [安全风控](security-guard.md)
-- 上游参考：`参考项目/MindustryX-main/work/core/src/mindustry/net/ArcNetProvider.java:130-131`、`Administration.java:549`
+- 上游机制：MindustryX/Arc 内核 `mindustry/net/ArcNetProvider.java:130-131`、`mindustry/net/Administration.java:549`

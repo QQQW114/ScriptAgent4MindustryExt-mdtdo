@@ -33,7 +33,7 @@
 - 玩家指令/管理指令固定分区的标题已加入颜色辅助阅读：`[cyan]` 偏核心/安全入口，`[pink]` 偏内容/社区展示，`[green]` 偏地图/服务器运维与状态，`[yellow]` 偏等级/资料/经济，`[red]` 偏处罚或危险操作，`[light_gray]` 偏底层低频工具。
 - 权限判断在单次页面构建中按权限节点缓存，减少同一页刷新时的重复权限检查开销。
 - 如果后续添加新的长文本/大列表菜单，应优先分页、懒加载，不要在游戏主线程一次性生成所有内容。
-- 新增指令一律要进对应分区并分类（用户口径，2026-09-12）：本轮新增的 `/quickops` 放在**管理指令**分区首位；
+- 新增指令一律要进对应分区并分类：`/quickops` 放在**管理指令**分区首位；
   `/votestartban`（禁止发起投票）、`/voteunban`（解除禁止投票）、`/votelist`（禁止投票名单）放在管理分区
   禁封相关条目附近；`/vote sc` 的条目在**投票指令**分区，用法行已更新为 `[文字] [秒数]`。
 
@@ -53,7 +53,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 
 - `/points`、`/pay`、`/redpacket`、`/grab`：MDC查询、转账与红包；单个红包最多 500 MDC；MDC变动时会私聊提示本人。
 - `/seniority`、`/资历`、`/playtime`：查看资历等级、累计在线时长与下一资历等级条件。
-- `/captcha`、`/register`、`/login`、`/logout`、`/changepassword`、`/deleteownaccount`：注册验证码、注册、登录、退出登录（结束会话并解除本机自动登录）、改密与注销；登录不需要验证码。
+- `/register`、`/login`、`/bindemail`、`/logout`、`/changepassword`、`/deleteownaccount`：主服注册与老号补绑使用 QQ 邮箱验证码（已移除 `/captcha`，登录无需验证码）；分服 `mdc-do` 不部署邮箱绑定，保留 `/captcha`。
 - `/msg`、`/r`：私聊与回复最近私聊对象。
 - `/rank`：排行榜入口，查看MDC、帖子、赞踩、认可排行。
 - `/tips`：玩家随机 Tips。

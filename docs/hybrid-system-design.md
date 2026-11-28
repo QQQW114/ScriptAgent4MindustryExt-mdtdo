@@ -1,6 +1,6 @@
-# 杂交单位系统临时设计（2026-06-22）
+# 杂交单位系统设计
 
-> 用于本轮“玩家附身单位杂交”技能开发。实现完成后同步到 `docs/skill-system.md` 与 `docs/scripts-maintenance.md`。
+> 本文件记录玩家附身单位杂交技能与地图标签 `@hybrid` 的规则；技能总入口见 [skill-system.md](skill-system.md)，炮塔与基因抽取细节见 [advanced-hybrid-turrets.md](advanced-hybrid-turrets.md)。
 
 ## 技能定位
 

@@ -11,11 +11,11 @@
 - 清缓存变体：先清空脚本编译缓存，再严格镜像更新插件（必须停服）；
 - **主服快速同步**：`update-mainserver` = 插件 `scripts`（分支 `main`，可运行中热重载）+ `email-service`；
 - **分服快速同步**：`update-subserver` = 只同步插件 `scripts`（默认分支 `mdc-do`，
-  **不部署 email-service / 账号系统**，保持分服原有基线）。
+  **不部署 `email-service` 与邮箱验证脚本**，保留分服原有账号与玩法配置）。
 
-> 两个服的分支约定（分支由 Lead 统一维护，更新器只按分支名下载 zip，**不会切/改任何 git 分支**）：
-> **主服 MDT DO = `main`**（跟进账号/邮箱验证系统）；**分服 MDC DO = `mdc-do`**（不含账号系统，保持原有）。
-> 详见 [§2.1](#21-主服--分服分支策略与快速同步2026-11-02-新增)。
+> 两个服的分支约定（分支由维护者统一维护，更新器只按分支名下载 zip，**不会切/改任何 git 分支**）：
+> **主服 MDT DO = `main`**（包含 QQ 邮箱验证与 `email-service`）；**分服 MDC DO = `mdc-do`**（不含邮箱验证与 `email-service`，与 `main` 同步通用功能与修复）。
+> 详见 [§2.1](#21-主服--分服分支策略与快速同步)。
 
 零 git 依赖、自带代理支持、出问题可一键回滚，下载/校验失败**绝不改动目标目录**。
 
@@ -85,7 +85,7 @@ update-mainserver-scripts.bat
 update-subserver.bat
 ```
 
-> 分支名、`main` / `mdc-do` 的用途与完整注意事项见 [§2.1](#21-主服--分服分支策略与快速同步2026-11-02-新增)。
+> 分支名、`main` / `mdc-do` 的用途与完整注意事项见 [§2.1](#21-主服--分服分支策略与快速同步)。
 > 只想同步其中一项时：主服用 `-NoEmailService`（只更新插件）/ `-NoScripts`（只更新邮件服务）。
 
 ---
@@ -112,19 +112,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
 > 双击运行时窗口会暂停等待回车，方便看结果；带参数运行或设置环境变量 `MDT_UPDATER_NO_PAUSE=1`
 > 时不暂停（便于计划任务/自动化调用）。
 
-### 2.1 主服 / 分服分支策略与快速同步（2026-11-02 新增）
+### 2.1 主服 / 分服分支策略与快速同步
 
 #### 分支用途
 
 | 服务器 | 用途 | Git 分支 | 同步脚本 | 部署内容 |
 |---|---|---|---|---|
-| **主服 MDT DO** | 功能最全的正式服，**跟进账号/邮箱验证系统** | `main`（Lead 把账号/邮箱系统合并进 `main` 后） | `update-mainserver.bat` | 插件 `scripts/**` + `email-service/**` |
-| **分服 MDC DO** | 保持原有玩法基线，**不跟进账号系统** | `mdc-do`（当前 main 基线，不含账号系统） | `update-subserver.bat` | 只部署插件 `scripts/**`（无 email-service、无账号系统） |
+| **主服 MDT DO** | 功能最全的正式服，包含账号与 QQ 邮箱验证系统 | `main` | `update-mainserver.bat` | 插件 `scripts/**` + `email-service/**` |
+| **分服 MDC DO** | 客制化经济自由分服（不部署邮箱验证与 `email-service`，同步通用功能） | `mdc-do` | `update-subserver.bat` | 只部署插件 `scripts/**`（不含 `email-service` 与邮箱验证脚本） |
 
 要点：
 
 - 更新器**只按分支名下载 zip**，**不会**在服务器上 `git checkout`/`merge`/切换任何分支；
-  分支的创建/合并/推送由 Lead 统一负责（当前约定：主服 `main`、分服 `mdc-do`）。
+  分支的创建/合并/推送由维护者统一负责（当前约定：主服 `main`、分服 `mdc-do`）。
 - 分服默认分支 `mdc-do` 可通过 `-Branch <分支名>` 覆盖（例如临时演练另一个基线的分支）；
   主服默认 `main`，同样可覆盖。**分服不要用 `main`**，否则会把账号/邮箱系统带过去。
 - 两个服的 updater 各自独立部署、各自复制一份 `updater\`，`config.json` 填本机路径；
@@ -388,8 +388,8 @@ update-subserver.bat -Rollback
   （有 removed 时开始广播复用阶段一的 socket 会话；没有 removed 时在镜像前单独连接一次发开始广播；
   结束广播复用阶段二的会话——都是同一种 console socket 通道。）
   best-effort，发送失败只记 WARN，不影响更新退出码。
-- **socket 写法（关键）**：命令一律以**原始 UTF-8 字节 + `\n`** 写入 NetworkStream（等价于
-  `.agents/sa-cmd.ps1` 的验证写法），**不用 StreamWriter/WriteLine**（`\r\n`/BOM 会破坏 SA 的行解析，
+- **socket 写法（关键）**：命令一律以**原始 UTF-8 字节 + `\n`** 写入 NetworkStream（与
+  `tools/mdt-dev.ps1 cmd` 一致），**不用 StreamWriter/WriteLine**（`\r\n`/BOM 会破坏 SA 的行解析，
   实测会导致 server console socket 卡死、后续命令不再执行）。探测/单独 say 等短会话用完立即在 finally 中关闭。
 
 ### 10.2 执行流程（`update-plugins`，服务器运行中）
@@ -596,12 +596,12 @@ A：`.\update-plugins.bat -Rollback`（或 `-RollbackTo <备份目录名>`）。
 **Q：主服和分服分别用哪个脚本、哪个分支？**
 A：主服 MDT DO 用 `update-mainserver.bat`（默认分支 `main`，同步 plugins + email-service）；
 分服 MDC DO 用 `update-subserver.bat`（默认分支 `mdc-do`，只同步 plugins）。
-分支由 Lead 维护，更新器只下载 zip、不切分支；分服用 `-Branch` 可临时覆盖，但**不要**长期指向 `main`
-（会把账号/邮箱系统带过去）。详见 §2.1。
+分支由维护者统一维护，更新器只下载 zip、不切分支；分服用 `-Branch` 可临时覆盖，但**不要**长期指向 `main`
+（会把邮箱绑定脚本带过去）。详见 §2.1。
 
-**Q：分服会不会被带上账号/账号系统？**
+**Q：分服会不会被带上邮箱绑定服务？**
 A：不会。分服脚本 `update-subserver.bat` 只部署仓库 `scripts/**`，且默认从 `mdc-do` 分支下载
-（该分支保持原基线、不含账号系统）；它也不同步 `email-service/`，不部署任何邮件/账号服务。
+（该分支不包含邮箱验证脚本，保留原有验证码体系）；它也不同步 `email-service/`。
 
 **Q：email-service 更新后要做什么？`config.json` 会被覆盖吗？**
 A：`config.json` 在 `protectedEmailFiles` 里（默认），**永远不会**被仓库内容覆盖/删除，
@@ -650,9 +650,7 @@ A：可以（设置环境变量 `MDT_UPDATER_NO_PAUSE=1` 避免 pause 卡住）�
   - **真实 GitHub DryRun（2026-11-02）**：`update-mainserver.ps1 -DryRun` 从 `main` 真实下载成功（远端
     `b85a07c`，scripts 220 文件/212 个 .kt·.kts、email-service 9 文件），两阶段预览退出码 0；
     `update-subserver.ps1 -DryRun` 从 `mdc-do` 真实下载成功、日志记录分支 `mdc-do`（当前两分支同一提交）。
-  - **未实测**：真实生产路径 `E:\...` 的正式更新、代理下载、真实邮件服务进程重启、真实运行中
-    socket 热重载（本次只验证参数透传与拒绝路径；热重载机制本身由 2026-11-01 的 125/79/60/18 项断言覆盖）。
-    备注：主服 `main` 当前尚未合并账号/邮箱系统，Lead 合并后**无需改脚本**，直接 `update-mainserver.bat` 即同步新分支内容。
+  - **未实测**：真实生产路径 `E:\...` 的正式更新、代理下载、真实邮件服务进程重启（热重载机制本身已通过自动化测试覆盖）。
 - **旧功能回归**（2026-10-18）：`-DryRun` 预览、严格镜像更新（新增/覆盖/删除）、保护目录/文件不被改动、
   备份生成与保留份数、`-Rollback`/`-RollbackTo`、`-NoBackup`、`-SourceZip` 离线模式、代理下载、
   非法仓库/分支失败不破坏目标、运行中服务器被正确拒绝执行；

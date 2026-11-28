@@ -1,0 +1,7 @@
+{
+  "_comment": "协作者本机调试配置模板：复制为 tools/dev-local.json 后填写本机测试服路径（dev-local.json 已被 .gitignore 忽略，绝不入库）。在 server/mdtdo/ 主工作区内无需此文件，工具会自动识别 ../mdtserver。",
+  "serverDir": "D:\\mdtserver",
+  "socketHost": "127.0.0.1",
+  "socketPort": 6859,
+  "gamePort": 6567
+}

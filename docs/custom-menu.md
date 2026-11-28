@@ -21,8 +21,7 @@
 > - **目标菜单各加一行**：`if (MenuNav.peek(player) != null) option("返回") { MenuNav.take(player)?.let { it.action() } }`
 >   —— 已接入：技能菜单、商店列表、帮助菜单的条目列表页（后者优先回上一页、否则维持旧口径回帮助首页）。
 > - **不要**在共享菜单库（`menu.lib.kt`）里做"给所有旧式菜单统一追加返回"的全局改造：曾试过一次，
->   因把脚本作用域的 `launch` 写进模块库导致 `coreMindustry` 编译失败并级联到全部依赖脚本（详见
->   `scripts-maintenance.md` 第九批第 8 节）。共享库只放通用能力，跨菜单导航这类需要脚本作用域的东西留在 `.kts`。
+>   因把脚本作用域的 `launch` 写进模块库导致 `coreMindustry` 编译失败并级联到全部依赖脚本。共享库只放通用能力，跨菜单导航这类需要脚本作用域的东西留在 `.kts`。
 >
 > **⚠️ 两个已踩的坑（2026-09-19 用户实测）**：
 > 1. **从旧式聊天菜单跳进 MenuV3 页面时，旧菜单不会自动收掉**：旧式 `MenuBuilder.sendTo` 是在回调返回后才
@@ -47,10 +46,7 @@
 >    2026-09-19 实测中招的是 `wiki.kts` 阅读页的"最近修改"；论坛各入口此前已写 `close()` 所以没露出。
 
 
-> 状态：**方向未死**。2026-09-12 的手写实现已回退（按钮缩放/界面适配/缺失贴图）；
-> 2026-09-13 拿到第三方参考实现 `MenuV3`（带布局引擎），已落地为 `coreMindustry/lib/menuV3.kt` 并通过编译验证，
-> **尚未接入任何业务菜单**（等选定试点页面）。
-> 本文档保留"为什么回退"、实现期踩点，以及 `MenuV3` 的机制/落地要点。
+> **现行状态**：`MenuV3`（`coreMindustry/lib/menuV3.kt`）与跨菜单导航 `MenuNav`（`coreMindustry/lib/menuNav.kt`）已稳定投入使用，当前已接入成就页、Wiki 阅读/列表页与帖子系统（详见下方「已接入的页面」）。本文档记录设计要点、原版协议约束与踩坑经验。
 
 ## 结论（2026-09-13 更新）
 
@@ -77,7 +73,7 @@
 ## 上游能力（留档）
 
 - **这是 v160 原版能力**：`mindustry/ui/builder/*`（`MenuBuilder`/`MenuResult`/`UiBuilder`/`UiTreeBuilder`/`UiDslParser`/
-  `UiHotReload`/`UiKey`/`UiStyleLookup`）在**官方 Anuken 仓库**里就存在（`参考项目/Mindustry-master` 已核对），
+  `UiHotReload`/`UiKey`/`UiStyleLookup`）在**官方 Mindustry 仓库**里就存在，
   MindustryX 的 `patches/` 也没有改它 → 任何 **v160+ 客户端**都能渲染，不需要装 Mod。
 - 下发：`Call.menuBuilder(con, menuId, token, title, hideOnClick, hideExisting, fillScreen, NodeBuilder)`
 - 组件：`UiBuilder` 静态工厂 `table()/label()/button()/imageButton()/field()/check()/slider()/space()/buttonTable()/pane()/stack()`
@@ -170,7 +166,7 @@
 | 文件放模块根目录 + 探针 | ❌ `Unresolved reference 'MenuV3'`（证明根目录 `.kt` 对无元数据依赖的脚本不可见） |
 | 文件移到 `lib/` + coreMindustry 探针 | ✅ `158/154/149/出错0` |
 | 再加 wayzer 模块探针（跨模块使用） | ✅ `159/155/150/出错0` |
-| 去掉探针、真实脚本集全量重编译 | 见 `scripts-maintenance.md` 2026-09-13（第二批）条目 |
+| 去掉探针、真实脚本集全量重编译 | ✅ 全量编译加载出错 0 |
 
 未覆盖边界：**真实客户端的观感（缩放/适配/图标是否齐全）必须由玩家侧实测**，
 本轮只做到"编译通过 + 机制有源码依据"。
@@ -206,7 +202,7 @@
 
 1. `Menus.menuBuilder` 执行的是 `UiTreeBuilder.build(dialog.cont, 根节点)`——它把根节点的**子项直接加进 `dialog.cont`**，
    根节点自己的属性只会走 `applyTableProp`，而该方法**只认 `background` / `margin` / `align`**
-   （`参考项目/Mindustry-master/core/src/mindustry/ui/builder/UiTreeBuilder.java` 第 40-75、270-277 行）。
+   （Mindustry 官方源码 `core/src/mindustry/ui/builder/UiTreeBuilder.java` 第 40-75、270-277 行）。
    → **写在根节点上的 `width()` / `fillX()` / `growX()` 全部被静默丢弃**；第一轮"去掉根表 fillX"的改动因此毫无效果。
 2. `fillScreen=true` → `Menus` 里 `dialog.setFillParent(true)` → 对话框 = 整个窗口；于是每行 `growX()` 被撑到窗口宽，
    单列按钮（`growX`）变成整屏宽按钮，而显式 `width()` 的按钮（多列行）不受影响、由行的默认居中排布——
@@ -271,7 +267,7 @@
 
 ### 根因（客户端替换对话框 + 服务端 token 路由）
 
-1. **客户端**：`参考项目/MindustryX-main/work/core/src/mindustry/ui/Menus.java` 的 `menuBuilder` 在 `hidePrevious=true`
+1. **客户端**：Mindustry 上游源码 `core/src/mindustry/ui/Menus.java` 的 `menuBuilder` 在 `hidePrevious=true`
    （默认）替换同 id 对话框时执行 `dialog.show(Core.scene, null); oldDialog.hide(null);`；旧对话框的 `hidden` 监听
    （约 L66-74）发现 `dialog.wasHidden == false`（不是玩家点关闭）时，会以**旧 token** 回传一个"取消"事件
    （`MenuResult.result = null`，约 L90-98）。
@@ -298,5 +294,5 @@
 
 - 冷启动验证（开发服）：banner `共找到164脚本,加载成功160,启用成功155,出错0`；`scriptdiag` 失败 0；`sa listFailed` 空；
   `wiki`/`forumPosts`/`achievement` 均 `Enabled`；KDoc **211 文件**干净。
-- **运行时翻页未实测**（需真实客户端点击，开发机无真人）：验证清单见 `current-issues.md` 新增待办。
+- **运行时翻页待实机确认**：需真实客户端点击验证，详见 [backlog.md](backlog.md)。
 - 代码位置：`mdtserver/config/scripts/coreMindustry/lib/menuV3.kt` 的 `send()`（约 L394-424，含 2026-10-24 修复注释）。

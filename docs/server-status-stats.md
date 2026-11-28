@@ -1,7 +1,7 @@
 # 服务器状态统计与 Web 展示
 
-> 更新记录：2026-08-22 首次实现；**2026-09-11 改版为 schema 2**（移除 MDC 发放统计、新增 14 天/24 小时曲线与社区互动、游玩时长、峰值在线；对应脚本维护记录见 `scripts-maintenance.md` 同日条目）；
-> **2026-10-17 `stats-web/` 升级为服务器门户**（状态/事件流/上传审核/管理后台，见 [web-portal.md](web-portal.md)），统计 JSON（schema 2）本身未变。
+> 当前数据格式为 **schema 2**（包含 14 天/24 小时曲线、社区互动、游玩时长、峰值在线，已移除 MDC 发放统计）。
+> 门户 Web 完整设计见 [web-portal.md](web-portal.md)。
 
 ## 概述
 
@@ -188,7 +188,7 @@ JSON 文件；独立 Web（`stats-web/`）只读该文件做展示。两者**可
   默认只监听本机。**默认管理员密码必须在首次部署后立即修改**（启动横幅会警告；也支持 `-GenPasswordHash` 生成哈希）；
 - **事件流**：`GET /api/events?afterTs=&limit=` 读取游戏侧 `wayzer/ext/liveEventFeed.kts` 写入的
   `mdtserver\config\stats\live-events.jsonl`（聊天/加入离开/投票/换图/系统事件，`text` 保留颜色标记原文；文件缺失返回空列表）；
-- **投稿审核**：`upload.html` 公开投稿 DP/地图（单文件 ≤10MB、每种待审队列 ≤10，满返回 `QUEUE_FULL`；审核通过才落盘：
+- **投稿审核**：`upload.html` 公开投稿 DP/地图（DP 单文件 ≤30MB、地图 ≤10MB，每种待审队列 ≤10，满返回 `QUEUE_FULL`；审核通过才落盘：
   DP → `external-cp/`、地图 → `config/maps/`）；`admin.html` 登录后审核/拒绝/移除，地图审核通过默认控制台 `maps` 刷新列表、
   DP 热重载默认关（详见 web-portal §6）；上传/审核/删除动作记 `web-data/audit.log`；
 - **API 一览**：公开 `GET /api/status|events|catalog|health`；认证 `POST /api/login|logout`；公开上传 `POST /api/upload`；
@@ -215,8 +215,7 @@ JSON 文件；独立 Web（`stats-web/`）只读该文件做展示。两者**可
   旧文件改名 `web-config.ps1.bak-<时间>` 备份（幂等/失败回退/CLI 覆盖）；**生产升级不要把仓库默认 `web-config.json` 整目录覆盖**
   （否则不会迁移、监听退回默认 `127.0.0.1:8090`），详见 web-portal §3.4；
 - **分发复制**：保持 `stats-web/` 整个目录一起复制（`index.html`/`upload.html`/`admin.html`/`assets/`/`server/`/`start-web.ps1`/
-  `start-web.bat`/`web-config.json`；`web-data/` 为运行数据不复制）；旧的「四件套」单独复制方式不再适用，
-  旧分发包 `复制插件用\stats-web.zip` 已过期。
+  `start-web.bat`/`web-config.json`；`web-data/` 为运行数据不复制），推荐使用 `updater/update-web.bat` 自动同步。
 
 ## 已知边界与后续注意
 
