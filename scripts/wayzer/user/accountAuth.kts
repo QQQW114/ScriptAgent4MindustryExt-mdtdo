@@ -557,12 +557,45 @@ suspend fun changePasswordFlow(player: Player) {
         return
     }
     val newPassword = askNewPasswordTwice(player, "修改密码") ?: return
-    MdtStorage.updateAccountPassword(account.id, with(passwordTool) { hashPassword(newPassword) })
-    player.sendMessage("[green]密码修改成功，请牢记新密码")
+    // 弹窗等待期间若会话已被强制退出或密码已被管理员重置，必须拒绝继续改密。
+    val latestAccount = currentAccount(player)
+    if (!PlayerData[player].authed || latestAccount == null || latestAccount.id != account.id) {
+        player.sendMessage("[red]登录状态已失效，请重新登录后再修改密码")
+        return
+    }
+    if (!with(passwordTool) { verifyPassword(oldPassword, latestAccount.passwordHash) }) {
+        player.sendMessage("[red]当前密码校验已失效，请确认账号密码后重试")
+        return
+    }
+    val revokedOthers = MdtStorage.resetAccountPasswordAndRevokeDeviceBindings(
+        latestAccount.id,
+        with(passwordTool) { hashPassword(newPassword) },
+        keepGameUuid = player.uuid(),
+    ) ?: run {
+        player.sendMessage("[red]修改密码失败：账号不存在或已注销")
+        return
+    }
+    logoutAccountSessions(
+        latestAccount.id,
+        "[yellow]QQ账号 [white]${latestAccount.qq}[yellow] 已修改密码，当前会话已退出登录；请使用新密码重新 [gold]/login[]",
+        except = player,
+    )
+    val revokedNote = if (revokedOthers > 0)
+        "；已吊销其他 [white]$revokedOthers[green] 台设备的自动登录（本机保留）"
+    else ""
+    player.sendMessage("[green]密码修改成功，请牢记新密码$revokedNote")
 }
 
-private suspend fun confirmAdminPasswordReset(admin: Player, qq: String, passwordLength: Int): Boolean {
+private suspend fun confirmAdminPasswordReset(
+    admin: Player,
+    qq: String,
+    passwordLength: Int,
+    onlineHolderName: String? = null,
+): Boolean {
     var confirmed = false
+    val onlineNote = onlineHolderName?.let {
+        "\n[yellow]当前在线会话：[white]$it[yellow]（重置后将立即退出登录，不踢出服务器）"
+    }.orEmpty()
     MenuBuilder<Unit>("确认重置密码") {
         msg = """
             |[red]确认要重置此账号密码吗？
@@ -570,6 +603,7 @@ private suspend fun confirmAdminPasswordReset(admin: Player, qq: String, passwor
             |[cyan]新密码长度：[white]$passwordLength
             |
             |[yellow]密码将由脚本内部加密保存。
+            |[yellow]重置后该账号名下所有设备的自动登录都会失效，且当前在线会话会立即退出登录，需要重新用新密码 /login 一次。$onlineNote
         """.trimMargin()
         option("确认重置") { confirmed = true }
         option("取消") { }
@@ -588,12 +622,32 @@ private suspend fun adminResetPassword(admin: Player?, qq: String, newPassword: 
         admin?.sendMessage("[red]账号不存在：$qq") ?: logger.warning("账号不存在：$qq")
         return false
     }
-    if (admin != null && !confirmAdminPasswordReset(admin, qq, newPassword.length)) {
+    val onlineHolder = onlinePlayerBySubject(MdtStorage.accountSubjectUid(account.id))
+    if (admin != null && !confirmAdminPasswordReset(admin, qq, newPassword.length, onlineHolder?.plainName())) {
         admin.sendMessage("[yellow]已取消重置密码")
         return false
     }
-    MdtStorage.updateAccountPassword(account.id, with(passwordTool) { hashPassword(newPassword) })
-    admin?.sendMessage("[green]已重置 QQ账号 [white]$qq[green] 的密码") ?: logger.info("已重置 QQ账号 $qq 的密码")
+    val revokedDevices = MdtStorage.resetAccountPasswordAndRevokeDeviceBindings(
+        account.id,
+        with(passwordTool) { hashPassword(newPassword) },
+    ) ?: run {
+        admin?.sendMessage("[red]重置密码失败：账号不存在或写入失败：$qq")
+            ?: logger.warning("重置密码失败：账号不存在或写入失败：$qq")
+        return false
+    }
+    val loggedOutSessions = logoutAccountSessions(
+        account.id,
+        "[yellow]QQ账号 [white]$qq[yellow] 已被管理员重置密码，当前会话已退出登录；请使用新密码重新 [gold]/login[]",
+    )
+    val notes = buildList {
+        if (revokedDevices > 0) add("已吊销 [white]$revokedDevices[green] 台设备的自动登录")
+        if (loggedOutSessions > 0) add("已退出 [white]$loggedOutSessions[green] 个在线会话（未踢出服务器）")
+    }
+    val detailNote = if (notes.isNotEmpty()) {
+        "，" + notes.joinToString("，") + "；相关设备需用新密码重新 /login"
+    } else ""
+    admin?.sendMessage("[green]已重置 QQ账号 [white]$qq[green] 的密码$detailNote")
+        ?: logger.info("已重置 QQ账号 $qq 的密码；吊销设备自动登录 $revokedDevices 台，退出在线会话 $loggedOutSessions 个")
     return true
 }
 
@@ -612,21 +666,43 @@ private suspend fun confirmAccountDeletion(operator: Player, qq: String, title: 
     return confirmed
 }
 
-private fun logoutDeletedAccount(accountId: Int, qq: String, reason: String) {
+private fun downgradeOnlineSessionToGuest(online: Player, subjectUid: String) {
+    val data = PlayerData[online]
+    val oldLevel = with(trustLevel) { getTrustLevelCode(data.id, online) }
+    val oldSeniorityLevel = with(seniorityLevel) { getSeniorityLevelCode(data.id, online) }
+    data.removeId(subjectUid)
+    val newLevel = with(trustLevel) { getTrustLevelCode(data.id, online) }
+    val newSeniorityLevel = with(seniorityLevel) { getSeniorityLevelCode(data.id, online) }
+    if (oldLevel != newLevel) {
+        with(trustLevel) { emitTrustLevelChanged(data.id, oldLevel, newLevel) }
+    }
+    if (oldSeniorityLevel != newSeniorityLevel) {
+        with(seniorityLevel) { emitSeniorityLevelChanged(data.id, oldSeniorityLevel, newSeniorityLevel) }
+    }
+    with(trustPromotion) { checkTrustLevel(data.id) }
+}
+
+private fun logoutAccountSessions(
+    accountId: Int,
+    message: String,
+    except: Player? = null,
+): Int {
     val subjectUid = MdtStorage.accountSubjectUid(accountId)
+    var loggedOut = 0
     Groups.player.forEach { online ->
+        if (online === except) return@forEach
         val data = PlayerData[online]
         if (data.id == subjectUid || subjectUid in data.ids) {
-            val oldLevel = with(trustLevel) { getTrustLevelCode(data.id, online) }
-            data.removeId(subjectUid)
-            val newLevel = with(trustLevel) { getTrustLevelCode(data.id, online) }
-            if (oldLevel != newLevel) {
-                with(trustLevel) { emitTrustLevelChanged(data.id, oldLevel, newLevel) }
-            }
-            with(trustPromotion) { checkTrustLevel(data.id) }
-            online.sendMessage("[yellow]QQ账号 [white]$qq[yellow] 已被${reason}，当前会话已退出登录")
+            downgradeOnlineSessionToGuest(online, subjectUid)
+            online.sendMessage(message.with())
+            loggedOut++
         }
     }
+    return loggedOut
+}
+
+private fun logoutDeletedAccount(accountId: Int, qq: String, reason: String) {
+    logoutAccountSessions(accountId, "[yellow]QQ账号 [white]$qq[yellow] 已被${reason}，当前会话已退出登录")
 }
 
 private suspend fun adminDeleteAccount(operator: Player?, target: String, confirmedByConsole: Boolean = false): Boolean {
@@ -670,12 +746,19 @@ suspend fun deleteOwnAccountFlow(player: Player) {
         player.sendMessage("[yellow]已取消注销账号")
         return
     }
-    val deleted = MdtStorage.deleteAccount(account.id)
+    val latestAccount = currentAccount(player)
+    if (!PlayerData[player].authed || latestAccount == null || latestAccount.id != account.id ||
+        !with(passwordTool) { verifyPassword(password, latestAccount.passwordHash) }
+    ) {
+        player.sendMessage("[red]登录状态或密码校验已失效，请重新登录后再注销账号")
+        return
+    }
+    val deleted = MdtStorage.deleteAccount(latestAccount.id)
     if (!deleted) {
         player.sendMessage("[red]注销账号失败，请联系管理员")
         return
     }
-    logoutDeletedAccount(account.id, account.qq, "注销")
+    logoutDeletedAccount(latestAccount.id, latestAccount.qq, "注销")
 }
 
 suspend fun logoutAccountFlow(player: Player) {
@@ -684,16 +767,9 @@ suspend fun logoutAccountFlow(player: Player) {
         player.sendMessage("[red]你尚未登录账号，无需退出")
         return
     }
-    val data = PlayerData[player]
     val subjectUid = MdtStorage.accountSubjectUid(account.id)
-    val oldLevel = with(trustLevel) { getTrustLevelCode(data.id, player) }
-    data.removeId(subjectUid)
+    downgradeOnlineSessionToGuest(player, subjectUid)
     MdtStorage.logoutDevice(player.uuid())
-    val newLevel = with(trustLevel) { getTrustLevelCode(data.id, player) }
-    if (oldLevel != newLevel) {
-        with(trustLevel) { emitTrustLevelChanged(data.id, oldLevel, newLevel) }
-    }
-    with(trustPromotion) { checkTrustLevel(data.id) }
     player.sendMessage(
         "[green]已退出登录 QQ 账号 [white]${account.qq}[green]。\n[gray]本机已解除自动登录，下次进服需手动 [gold]/login[gray]。".with()
     )

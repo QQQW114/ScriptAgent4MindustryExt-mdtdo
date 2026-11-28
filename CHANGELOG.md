@@ -5,6 +5,7 @@
 
 ## Unreleased
 
+- **密码重置与改密设备吊销**：管理员 `/setpassword` 重置密码时在同一事务内吊销名下所有设备的自动登录绑定并安全退出在线会话（不踢人）；玩家自助 `/changepassword` 保留本机绑定并吊销其他设备的自动登录。
 - **文档与工程规范重构**：精简重组 `docs/` 为四层现行文档（`architecture.md` / `workflow.md` / `dev-and-debug.md` / `deployment.md` / `backlog.md`），建立 Issue 驱动大改动、`.scratch/` 临时草稿箱与 `CHANGELOG.md` 分层体系，移除历史流水账与会话黑话文档。
 - **入库开发调试工具链**：新增统一脚本 `tools/mdt-dev.ps1`（静态体检含 KDoc/`listenTo`/`@file:Depends`/文档防退化 Linter、无头冷启动、Socket 控制、热重载验收、Web/Email 隔离冒烟），并在本地主工作区新增双仓同步脚本 `tools/sync-repo.ps1`。
 - **启动器 Socket 竞态修复**：`mdtserver/start-server.ps1` 先关闭 `socketInput` 再配置端口与地址后启用，消除 `Trigger.socketConfigChanged` 连续重启监听线程导致的 6859 绑定竞态；新增 `-Once` / `-Headless` / `-PidFile` 参数。

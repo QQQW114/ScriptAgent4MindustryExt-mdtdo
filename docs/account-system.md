@@ -11,7 +11,7 @@
 - **主服 vs 分服注册校验差异**：
   - **主服 MDT DO（`main` 分支）**：已移除旧 4 位 `/captcha` 注册验证码；注册与老号补绑均通过 QQ 邮箱验证码完成（详见 [account-email-binding.md](account-email-binding.md)），入服 10 秒后若无其他弹窗会显示注册/绑定引导；管理员可用 `/registerrequirement <0~72|on|off>` 配置注册前累计在线小时数（默认 1 小时，0=关闭）。
   - **分服 MDC DO（`mdc-do` 分支）**：不启用邮箱绑定与 `email-service`，保留原有 `/captcha` 4 位验证码注册流程，入服不弹绑定引导。
-- **自动登录**：仅校验游戏 UUID + USID，不校验 IP，避免玩家切换网络后频繁重新登录。
+- **自动登录**：仅校验游戏 UUID + USID，不校验 IP，避免玩家切换网络后频繁重新登录；管理员 `/setpassword` 重置密码时会吊销该账号名下所有设备的自动登录绑定并让当前在线会话安全退出登录态（不踢出服务器，需用新密码重新 `/login`），玩家本人 `/changepassword` 保留本机绑定并吊销其他设备的自动登录。
 - **密码安全**：使用 JDK `PBKDF2WithHmacSHA256` + 随机盐（120000 迭代）哈希存储，不保存明文；手动 `/login` 无需验证码。
 - **已绑定默认等级**：注册并登录后进入已绑定玩家默认等级下限（默认 `1`，同时作用于信任与资历等级，4 级管理员可通过 `/defaultboundlevel 1|2|3` 调整，只升不降）。
 - **游客 MDC 迁移与封存**：
@@ -28,7 +28,7 @@
 | `/register` | `/注册` | 注册 QQ 账号并自动登录（主服走 QQ 邮箱验证码；分服需先 `/captcha`） |
 | `/login` | `/登录` | 登录已有 QQ 账号 |
 | `/logout` | `/退出登录`、`/登出` | 结束当前登录会话并解除本机自动登录（不影响账号数据） |
-| `/changepassword` | `/passwd`、`/改密`、`/修改密码` | 修改当前登录账号密码 |
+| `/changepassword` | `/passwd`、`/改密`、`/修改密码` | 修改当前登录账号密码（保留本机自动登录，吊销其他设备自动登录） |
 | `/deleteownaccount` | `/注销账号`、`/账号注销` | 校验当前密码并二次确认后永久注销当前账号与关联业务数据 |
 | `/bindemail`（仅主服） | `/绑定邮箱`、`/emailbindme` | 绑定或补绑 QQ 邮箱 |
 | `/captcha`（仅分服） | `/验证码` | 获取 4 位注册验证码 |
@@ -41,7 +41,7 @@
 
 | 指令 | 权限 | 说明 |
 |---|---|---|
-| `/setpassword <QQ账号>` | `wayzer.admin.account`（`@admin`） | 重置密码；游戏内弹窗输入避免明文进聊天日志；控制台用 `setpassword <QQ> <新密码> confirm` |
+| `/setpassword <QQ账号>` | `wayzer.admin.account`（`@admin`） | 重置密码、吊销名下所有设备自动登录并退出当前在线会话（不踢人）；游戏内弹窗输入，控制台用 `setpassword <QQ> <新密码> confirm` |
 | `/deleteaccount <QQ/3位ID/UUID/account:id> [confirm]` | `wayzer.admin.account` | 删除账号、解除设备绑定并清空关联业务数据（不可逆） |
 | `/accountqq <目标>` | `wayzer.admin.account` | 查询 QQ 号、账号 ID、状态与主体 UID（别名 `/qqof`、`/查qq`、`/queryqq` 等） |
 | `/emailbind <accountId> [reset]`（仅主服） | `wayzer.admin.account` | 查询或清除账号邮箱绑定 |
