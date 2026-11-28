@@ -9,6 +9,8 @@ import cf.wayzer.scriptAgent.emitAsync
 import cf.wayzer.scriptAgent.thisContextScript
 import coreLibrary.lib.config
 import coreLibrary.lib.with
+import coreMindustry.lib.MapLaunchOptions
+import coreMindustry.lib.MapTagRegistry
 import coreMindustry.lib.broadcast
 import coreMindustry.lib.game
 import coreMindustry.lib.nextTick
@@ -33,16 +35,18 @@ class MapChangeEvent(
     val info: MapInfo,
     val map: Map,
     val rules: Rules = map.applyRules(info.mode),
+    val launchOptions: MapLaunchOptions = MapLaunchOptions.EMPTY,
 ) :
     Event, Event.Cancellable {
     /** Should call other load*/
     override var cancelled: Boolean = false
+    internal var effectiveLaunchOptions: MapLaunchOptions = launchOptions
     @Deprecated("modify rules directly", ReplaceWith("rules.block()"))
     fun modifyRule(block: RuleModifier) {
         rules.block()
     }
 
-        companion object : Event.Handler()
+    companion object : Event.Handler()
 }
 
 class MapLoadFinishedEvent(
@@ -60,16 +64,22 @@ object MapManager {
         MapInfo(MapRegistry.SaveProvider, Vars.state.rules.idInTag, Vars.state.rules.mode(), Vars.state.map)
         private set
     internal var tmpVarSet: (() -> Unit)? = null
+    internal var pendingPostRulesSync: (() -> Unit)? = null
 
     data class PendingAutoRotateMap(
         val target: MapInfo,
         val requestedBy: String,
+        val options: MapLaunchOptions = MapLaunchOptions.EMPTY,
     )
 
     private var pendingAutoRotateMap: PendingAutoRotateMap? = null
 
-    fun setPendingAutoRotateMap(target: MapInfo, requestedBy: String) {
-        pendingAutoRotateMap = PendingAutoRotateMap(target, requestedBy)
+    fun setPendingAutoRotateMap(
+        target: MapInfo,
+        requestedBy: String,
+        options: MapLaunchOptions = MapLaunchOptions.EMPTY,
+    ) {
+        pendingAutoRotateMap = PendingAutoRotateMap(target, requestedBy, options)
     }
 
     fun getPendingAutoRotateMap(): PendingAutoRotateMap? =
@@ -85,23 +95,32 @@ object MapManager {
         pendingAutoRotateMap = null
     }
 
-    @Deprecated("old", level = DeprecationLevel.HIDDEN)
-    fun loadMap(info: MapInfo? = null, isSave: Boolean = false) {
-        loadMap(info)
+    /** 预检地图是否禁止附加外部 DP（检查简介与已加载 `.msav` 内嵌规则标签）。 */
+    fun mapForbidsDp(info: MapInfo): Boolean {
+        if (MapTagRegistry.descriptionForbidsDp(info.description)) return true
+        val loaded = info.map ?: return false
+        if (MapTagRegistry.descriptionForbidsDp(loaded.description())) return true
+        val rules = runCatching { loaded.rules() }.getOrNull() ?: return false
+        return MapTagRegistry.rulesForbidDp(rules.tags)
     }
 
-    fun loadMap(info: MapInfo? = null) {
+    @Deprecated("old", level = DeprecationLevel.HIDDEN)
+    fun loadMap(info: MapInfo? = null, isSave: Boolean = false) {
+        loadMap(info, MapLaunchOptions.EMPTY)
+    }
+
+    fun loadMap(info: MapInfo? = null, options: MapLaunchOptions = MapLaunchOptions.EMPTY) {
         thisContextScript().launch(Dispatchers.game) {
-            loadMapSync(info)
+            loadMapSync(info, options)
         }
     }
 
-    suspend fun loadMapSync(info: MapInfo? = null): Boolean {
+    suspend fun loadMapSync(info: MapInfo? = null, options: MapLaunchOptions = MapLaunchOptions.EMPTY): Boolean {
         @Suppress("NAME_SHADOWING") var info: MapInfo? = info
         try {
             info = info ?: MapRegistry.nextMapInfo()
             val map = info.loadMap().copyWithDisplayMeta(info)
-            return loadMapSync(info, map)
+            return loadMapSync(info, map, options)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             broadcast(
@@ -118,12 +137,28 @@ object MapManager {
         }
     }
 
-    suspend fun loadMapSync(info: MapInfo, map: Map): Boolean {
-        val event = MapChangeEvent(info, map).apply {
+    suspend fun loadMapSync(info: MapInfo, map: Map, options: MapLaunchOptions = MapLaunchOptions.EMPTY): Boolean {
+        val event = MapChangeEvent(info, map, launchOptions = options).apply {
             rules.idInTag = info.id
             applyDescriptionTags(rules, map.description())
             if (info.description != map.description()) {
                 applyDescriptionTags(rules, info.description)
+            }
+            if (!options.isEmpty) {
+                val effective = if (options.dpTargets.isNotEmpty() && MapTagRegistry.rulesForbidDp(rules.tags)) {
+                    thisContextScript().logger.warning(
+                        "地图 ${info.id}(${info.name}) 内嵌 @nodp 限制，已跳过本次附加 DP: ${options.dpTargets.joinToString(",")}"
+                    )
+                    broadcast("[yellow]目标地图自带 @nodp 限制，已自动跳过本次附加 DP。".with())
+                    options.copy(dpTargets = emptyList())
+                } else {
+                    options
+                }
+                effective.applyTo(rules)
+                effectiveLaunchOptions = effective
+                if (!effective.isEmpty) {
+                    thisContextScript().logger.info("换图启动参数已应用: map=${info.id}, ${effective.compactSummary()}")
+                }
             }
         }
         if (event.emitAsync().cancelled) return false
@@ -139,6 +174,20 @@ object MapManager {
 
         current = info
         try {
+            val finalizeRules = {
+                if (map != MapRegistry.GeneratorMap) {
+                    // SaveVersion.readMeta may restore state.map from mapname in the .msav metadata.
+                    // Some resource-site maps keep "Editor Playtesting"/Unknown in the file while the
+                    // correct display name/author only exists in MapInfo.meta, so force the enriched map
+                    // back after loading as a final display-state guard.
+                    Vars.state.map = map
+                }
+                restoreModeFlags(info, event.rules, Vars.state.rules)
+                mergeRuleTags(event.rules, Vars.state.rules)
+                if (!event.effectiveLaunchOptions.isEmpty) {
+                    event.effectiveLaunchOptions.applyTo(Vars.state.rules)
+                }
+            }
             tmpVarSet = block@{
                 if (map == MapRegistry.GeneratorMap) {
                     Vars.state.rules.idInTag = info.id
@@ -147,20 +196,11 @@ object MapManager {
                 Vars.state.map = map
                 Vars.state.rules = event.rules
             }
-            info.provider.loadMap(info) // EventType.ResetEvent
-            // EventType.WorldLoadBeginEvent : do set state.rules
-            // EventType.WorldLoadEndEvent
-            // EventType.WorldLoadEvent
-            // Not generator: EventType.SaveLoadEvent
-            if (map != MapRegistry.GeneratorMap) {
-                // SaveVersion.readMeta may restore state.map from mapname in the .msav metadata.
-                // Some resource-site maps keep "Editor Playtesting"/Unknown in the file while the
-                // correct display name/author only exists in MapInfo.meta, so force the enriched map
-                // back after loading as a final display-state guard.
-                Vars.state.map = map
-            }
-            restoreModeFlags(info, event.rules, Vars.state.rules)
-            mergeRuleTags(event.rules, Vars.state.rules)
+            // 在 SaveVersion.readRules 之后、WorldLoadEvent 之前同步最终规则与标签移除，
+            // 确保 mapScript/module.kts 在 WorldLoadEvent 按最终标签启停脚本。
+            pendingPostRulesSync = finalizeRules
+            info.provider.loadMap(info) // EventType.ResetEvent -> DataPatchLoadEvent -> readRules -> WorldLoadBeginEvent -> WorldLoadEvent
+            finalizeRules()
             thisContextScript().logger.info(
                 "loadMap rules: infoMode=${info.mode}, rulesMode=${Vars.state.rules.mode()}, pvp=${Vars.state.rules.pvp}, activeTeams=${
                     Vars.state.teams.getActive().filter { it.hasCore() }.joinToString(",") { it.team.name }
@@ -168,9 +208,11 @@ object MapManager {
             )
             MapLoadFinishedEvent(info, Vars.state.map, Vars.state.rules).emitAsync()
         } catch (e: Throwable) {
-            tmpVarSet = null
             players.forEach { it.add() }
             throw e
+        } finally {
+            tmpVarSet = null
+            pendingPostRulesSync = null
         }
 
 

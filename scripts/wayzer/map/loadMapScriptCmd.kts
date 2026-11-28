@@ -7,7 +7,7 @@ name = "手动加载地图脚本"
 private val funRules = contextScript<wayzer.map.FunRuleModes>()
 
 command("loadmapscript", "管理指令：手动加载某个地图脚本") {
-    usage = "<mapId|mapScript路径>"
+    usage = "<mapId|mapScript路径|@标签>"
     aliases = listOf("loadMapScript", "加载地图脚本")
     permission = "wayzer.map.loadMapScript"
     body {
@@ -27,7 +27,7 @@ command("loadmapscript", "管理指令：手动加载某个地图脚本") {
 }
 
 command("unloadmapscript", "管理指令：手动关闭某个地图脚本/地图模式") {
-    usage = "<mapId|mapScript路径>"
+    usage = "<mapId|mapScript路径|@标签>"
     aliases = listOf("disablemapscript", "closemapscript", "unloadMapScript", "关闭地图脚本", "关闭地图模式")
     permission = "wayzer.map.loadMapScript"
     body {

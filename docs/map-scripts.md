@@ -8,22 +8,23 @@ Mindustry 159/B477 后只继续维护少量明确需要的地图玩法脚本。�
 |---|---|---|
 | `mapScript/14668.kts` | Lord of War | 地图ID、`/loadmapscript 14668`、管理员技能 |
 | `mapScript/15450.kts` | TankWars | 地图ID、`/loadmapscript 15450` |
-| `mapScript/tags/hybrid.kts` | 地图特色杂交 | 地图标签 `[@hybrid]`、`/loadmapscript tags/hybrid` |
-| `mapScript/tags/flood.kts` | 洪水模式兼容版 | `[@flood]` / `[@floodV2]`、`/loadmapscript tags/flood` |
-| `mapScript/tags/pure.kts` | 地图纯净模式 | 地图简介标签 `[@pure]`、`/loadmapscript tags/pure` |
+| `mapScript/tags/hybrid.kts` | 地图特色杂交 | 地图标签 `[@hybrid]`、`/loadmapscript @hybrid` |
+| `mapScript/tags/flood.kts` | 洪水模式兼容版 | `[@flood]` / `[@floodV2]`、`/loadmapscript @flood` |
+| `mapScript/tags/pure.kts` | 地图纯净模式 | 地图简介标签 `[@pure]`、`/loadmapscript @pure` |
+| `mapScript/tags/unlimited.kts` | 地图无限资源 | 地图标签 `[@Unlimited]`、`/loadmapscript @Unlimited`；启用本局无限资源并同步规则，换图恢复 |
 
 同时保留地图脚本框架文件：
 
 - `mapScript/module.kts`
 - `mapScript/lib/ContentExt.kt`
 - `mapScript/lib/ScriptMapGenerator.kt`
-- `mapScript/lib/TagSupport.kt`
+- `mapScript/lib/TagSupport.kt`（委托中立注册表 `coreMindustry/lib/mapTags.kt` 做大小写不敏感与别名解析）
 - `mapScript/lib/util.kt`
 
 管理员入口：
 
-- `/loadmapscript <ID或路径>`
-- `/unloadmapscript <ID或路径>`
+- `/loadmapscript <ID|路径|@标签>`
+- `/unloadmapscript <ID|路径|@标签>`
 - `/mapscripts`
 - `/mapcmd <地图脚本指令>`
 

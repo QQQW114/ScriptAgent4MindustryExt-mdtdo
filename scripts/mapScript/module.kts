@@ -123,24 +123,25 @@ fun hintMapScriptCommands(loadedScripts: List<ScriptInfo>) {
 
 fun loadCurrentMapScripts() {
     //load scripts
-    val toLoad = getToLoadMapScripts()
+    val toLoad = getToLoadMapScripts().distinctBy { it.id }
     if (toLoad.isEmpty()) return
     val key = "${MapManager.current.provider}:${MapManager.current.id}"
-    if (loadedMapScriptKey == key) return
     val previousKey = loadedMapScriptKey
     if (previousKey != null && previousKey != key) {
         // 正常换图会先触发 ResetEvent 卸载旧地图脚本；这里是兜底，防止异常加载流程导致新旧地图脚本/CP 同时启用。
         disableCurrentMapScripts("before-load:$previousKey->$key")
     }
     loadedMapScriptKey = key
+    val pending = toLoad.filterNot { it.enabled }
+    if (pending.isEmpty()) return
     val startedAt = System.currentTimeMillis()
     MindustryDispatcher.safeBlocking {
-        ScriptManager.transactionV2 { enable(toLoad) }.printResult()
+        ScriptManager.transactionV2 { enable(pending) }.printResult()
     }
     val cost = System.currentTimeMillis() - startedAt
-    if (cost >= 250L) logger.warning("地图脚本加载耗时 ${cost}ms: ${toLoad.joinToString { it.id }}")
-    toLoad.forEach { checkEnabled(it) }
-    hintMapScriptCommands(toLoad)
+    if (cost >= 250L) logger.warning("地图脚本加载耗时 ${cost}ms: ${pending.joinToString { it.id }}")
+    pending.forEach { checkEnabled(it) }
+    hintMapScriptCommands(pending)
 }
 
 private fun memberValue(target: Any?, name: String): Any? {

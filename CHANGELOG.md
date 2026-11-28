@@ -5,6 +5,7 @@
 
 ## Unreleased
 
+- **通用命令词法底座与换图启动参数/标签体系**：新增 Minecraft 风格 `@target[k=v,...]` 词法解析底座（`coreMindustry/lib/selectorSyntax.kt`）与中立地图标签注册表（`coreMindustry/lib/mapTags.kt`），支持 `/vote map`、`/vote nextmap`（无参 51% / 带参 80%）与 `/host` 附加 `@map[dp=...,unlimited=true,pure=false]`（别名 `@opt[...]`），新增 `@Unlimited` 标签脚本与 `/loadmapscript @标签` 支持，并修复换图规则加载与标签移除时序。
 - **密码重置与改密设备吊销**：管理员 `/setpassword` 重置密码时在同一事务内吊销名下所有设备的自动登录绑定并安全退出在线会话（不踢人）；玩家自助 `/changepassword` 保留本机绑定并吊销其他设备的自动登录。
 - **文档与工程规范重构**：精简重组 `docs/` 为四层现行文档（`architecture.md` / `workflow.md` / `dev-and-debug.md` / `deployment.md` / `backlog.md`），建立 Issue 驱动大改动、`.scratch/` 临时草稿箱与 `CHANGELOG.md` 分层体系，移除历史流水账与会话黑话文档。
 - **入库开发调试工具链**：新增统一脚本 `tools/mdt-dev.ps1`（静态体检含 KDoc/`listenTo`/`@file:Depends`/文档防退化 Linter、无头冷启动、Socket 控制、热重载验收、Web/Email 隔离冒烟），并在本地主工作区新增双仓同步脚本 `tools/sync-repo.ps1`。
