@@ -60,11 +60,11 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/playerinfo`、`/pinfo`：打开玩家信息/交互面板。直接强制未登录游客观战由信任2级提高到3级；非管理员成功操作后默认120秒冷却，且只能解除自己通过面板施加的记录。
 - `/music`、`/点歌`、`/bgm`：服务器点歌菜单；`/music vote <网易云歌曲/DJ ID或分享链接>` 或直接输入ID/链接会发起60秒点歌投票，点歌投票期间会阻止其他普通投票发起；玩家像标准投票一样直接在聊天发送单个 `1` / `.` / `0` 表示同意/中立/拒绝（也兼容 `/music yes|neutral|no`）。只有同意者进入排队同步队列，同步完成后才播放。点歌冷却的同意率只按已经明确表态的玩家计算，未表态玩家单独显示但不进入分母。`/music stop` 停止自己的当前音乐；3++可使用 `/music stopall|cancel` 停止全服音乐/取消投票，仅4级/admin可 `/music limit size|duration|cache <值>` 修改限制。
 - `/tipadmin`：管理 Tips 内容。
-- `/vote nextmap <地图ID>`：需51%同意；投票通过后在下一次自动轮换地图时换到指定地图；期间手动换图不会清空该计划。
+- `/vote nextmap <地图ID> [@map[...]]`：无参需51%同意，带 DP/标签参数需80%同意；投票通过后在下一次自动轮换地图时换到指定地图并应用所选启动参数；期间手动换图不会清空该计划。
 - `/vote perf`、`/vote xperf`：投票开启/关闭保守/实验性性能优化。
 - `/vote pause`、`/vote resume`：投票暂停/继续当前游戏。
 - `/vote gameOver`、`/vote rollback`、`/vote skipWave`、`/vote clear`、`/vote text`：常用基础投票入口。
-- `/vote map <地图ID>`：需51%同意；发起立即换图投票，5赞/5反不再通过，需6赞/5反这类超过半数的赞成票。
+- `/vote map <地图ID> [@map[dp=...,unlimited=true,pure=false]]`：无参/空块需51%同意（5赞/5反不通过，需超过半数），带 DP 或标签参数需80%同意；采用 Minecraft 风格 `@map[...]`（别名 `@opt[...]`）指定本局外部 DP（编号/文件名，含空格可加引号）与地图标签开关（`pure`/`unlimited`/`flood`/`hybrid`/`noSkills` 等，支持 `!标签` 取反，详见 `docs/map-dp-tags.md`）。
 - `/vote pauseWave [秒数]`、`/vote setWave <波次>`、`/vote resumeWave`：投票暂停波次（70%同意）、调整当前波次或取消暂停波次；PVP 模式禁用波次控制。
 - `/vote cp load <文件名|编号>`、`/vote cp unload <文件名|编号|all>`：投票加载/热重载或卸载 `scripts/external-cp/` 下的外部 JSON/HJSON/JSON5 CP 或 v159 Data Assets ZIP，加载/卸载均需 70% 同意；超过慢同步阈值的大文件会拉长分批同步间隔而非直接拒绝。
 - `/vote reactor <on|off|status>`：投票开启/关闭反应堆爆炸或查看当前状态。
@@ -127,7 +127,7 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/mapcmd <地图脚本指令>`：打开当前地图脚本提供的特定指令，例如地图脚本 `/shop` 与服务器商店冲突时可用 `/mapcmd shop`。
 - `/team [队伍ID] [玩家ID]`：3++级/4级可调整自己的队伍，指定他人仍需管理员权限；自换队也会全服广播，列队伍/切队伍不再受地图 `@banTeam` 标签限制。
 - `/pvpteam [队伍ID]`（别名 `换队`/`pvp换队`）：3+级及以上仅PVP模式切换自己的队伍；队伍取活跃且有核心、且未被 `@banTeam` 禁用的队伍（参考原版 SA betterTeam 换队指令）。
-- `/host [地图ID]`、`/gameover [队伍]`：3++/4级/admin强制换图或结束对局；3++需在15秒内重复输入确认，成功后共享5分钟冷却。
+- `/host [地图ID] [@map[...]]`、`/gameover [队伍]`：3++/4级/admin强制换图（可选附加 `@map[...]` 启动参数）或结束对局；3++需在15秒内重复输入确认，成功后共享5分钟冷却。
 - `/banX <3位ID> <分钟> <原因>`、`/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`：3++/4级封禁/解封玩家账号主体；3++只能处理低于3++的玩家（目标分层边界），可解除任意操作人的封禁，封禁时长不受限。
 - `/banip <在线玩家3位ID/#游戏ID/名字> [分钟] [原因]`：3++/4级按在线玩家封禁其当前 IP；3++目标边界与 `/banX` 相同，时长不受限。
 - `/banips`、`/unbanip <ip>`：查看当前 IP 封禁列表（含 UUID/玩家名）并解除 IP 封禁；3++可解除任意操作人的IP封禁。
@@ -140,8 +140,8 @@ mdtserver/config/scripts/coreMindustry/menu.kts
 - `/adaptiveplayerlimit`：查看/管理自适应人数上限；默认从服务端启动时人数上限开始，接近满员且上行压力低时每轮扩容，回收带缓冲防止抖动，原生管理员也不再超员插队。
 - `/diskwarmup [status|on|off|now|interval <分钟>]`：管理H2云服磁盘预热/保活，减少磁盘或块存储休眠后首次数据库读写卡顿；不是TPS优化器。
 - `/ScriptAgent` 及 `/ScriptAgent scan|list|load|hotReload|enable|disable|unload|config|permission|vars`：已归入管理指令高级区；此前这些控制项不是根指令，菜单快捷入口已改为正确的 `/ScriptAgent ...` 子指令形式。
-- `/loadmapscript`：管理员手动尝试加载 `scripts/mapScript/<id>.kts`，例如 `/loadmapscript 14668`。
-- `/unloadmapscript`、`/mapscripts`：管理员手动关闭指定地图脚本/模式，或列出当前启用的地图脚本。关闭时会显式创建 ScriptAgent 事务、检查最终状态，且不额外扫描磁盘；已实测 `tags/flood` 与 `14668` 可加载后再正常停用。
+- `/loadmapscript <ID|路径|@标签>`：管理员手动尝试加载 `scripts/mapScript/<id>.kts` 或标签脚本（例如 `/loadmapscript 14668`、`/loadmapscript @Unlimited`）。
+- `/unloadmapscript <ID|路径|@标签>`、`/mapscripts`：管理员手动关闭指定地图脚本/模式（同样支持 `@标签`），或列出当前启用的地图脚本。关闭时会显式创建 ScriptAgent 事务、检查最终状态，且不额外扫描磁盘；已实测 `tags/flood` 与 `14668` 可加载后再正常停用。
 - `/posts`、`/posts trash`：帖子管理/回收站快捷入口；保护锁在帖子详情页内设置或解除。
 - `/wikiadmin`、`/wikiadmin trash`：Wiki 管理/回收站快捷入口；保护锁在 Wiki 页面或管理页内设置或解除。
 - `/serverstats [status|on|off]`：服务器状态统计；`status` 所有人可查看；`on`/`off`（别名 `统计`/`状态统计`）仅4级/admin或控制台。统计 Web 见 `docs/server-status-stats.md`。

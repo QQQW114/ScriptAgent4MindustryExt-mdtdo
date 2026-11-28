@@ -502,7 +502,7 @@ class VoteEvent(
 object VoteService {
     private fun requirementHint(primaryAlias: String): String = when (primaryAlias.lowercase()) {
         "cp", "externalcp", "ecp" -> "[gray]（需70%同意）"
-        "map", "nextmap" -> "[gray]（需51%同意）"
+        "map", "nextmap" -> "[gray]（默认51%，带参数80%）"
         "gameover" -> "[gray]（默认50%；PVP同队80%）"
         "clear" -> "[gray]（同队40%）"
         "sc" -> "[gray]（直接发送）"

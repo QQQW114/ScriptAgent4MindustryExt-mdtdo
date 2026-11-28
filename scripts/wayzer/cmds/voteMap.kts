@@ -11,8 +11,10 @@ import wayzer.map.MapFilter
 
 private val mapFilter = contextScript<MapFilter>()
 
-private fun mapVoteRequireNum(all: Int): Int =
-    ((all.coerceAtLeast(1) * 51) + 99) / 100
+private fun mapVoteRequireNum(all: Int, withOptions: Boolean = false): Int {
+    val percent = if (withOptions) 80 else 51
+    return ((all.coerceAtLeast(1) * percent) + 99) / 100
+}
 
 private fun ensureMapAllowedForVote(player: Player, map: MapInfo): Boolean {
     val reason = with(mapFilter) { blockReason(map) }
@@ -23,28 +25,35 @@ private fun ensureMapAllowedForVote(player: Player, map: MapInfo): Boolean {
     return true
 }
 
-fun voteMap(player: Player, map: MapInfo) {
+fun voteMap(player: Player, map: MapInfo) = voteMap(player, map, MapLaunchOptions.EMPTY)
+
+fun voteMap(player: Player, map: MapInfo, options: MapLaunchOptions) {
     launch(Dispatchers.game) {
         if (!ensureMapAllowedForVote(player, map)) return@launch
         val event = VoteEvent(
             this, player,
             "换图([green]{nextMap.id}[]: [green]{nextMap.name}[yellow]|[green]{nextMap.mode}[])".with("nextMap" to map),
             extDesc = "[white]地图作者: [lightgrey]${stripColors(map.author)}[][]\n" +
-                    "[white]地图简介: [lightgrey]${truncate(stripColors(map.description), 100, "...")}[][]",
+                    "[white]地图简介: [lightgrey]${truncate(stripColors(map.description), 100, "...")}[][]" +
+                    options.describeLines(),
             supportSingle = true,
-            requireNum = ::mapVoteRequireNum,
+            requireNum = { all -> mapVoteRequireNum(all, !options.isEmpty) },
         )
         if (!event.awaitResult()) return@launch
         broadcast("[yellow]异步加载地图中，请耐心等待".with())
-        if (MapManager.loadMapSync(map))
-            broadcast("[green]换图成功,当前地图[yellow]{map.name}[green](id: {map.id})".with())
+        if (MapManager.loadMapSync(map, options)) {
+            val optSuffix = if (options.isEmpty) "" else "[gray]（${options.compactSummary()}）"
+            broadcast("[green]换图成功,当前地图[yellow]{map.name}[green](id: {map.id})$optSuffix".with())
+        }
     }
 }
 
-fun voteNextAutoMap(player: Player, map: MapInfo) {
+fun voteNextAutoMap(player: Player, map: MapInfo) = voteNextAutoMap(player, map, MapLaunchOptions.EMPTY)
+
+fun voteNextAutoMap(player: Player, map: MapInfo, options: MapLaunchOptions) {
     launch(Dispatchers.game) {
         if (!ensureMapAllowedForVote(player, map)) return@launch
-        if (map == MapManager.current) {
+        if (map == MapManager.current && options.isEmpty) {
             player.sendMessage("[yellow]目标地图已经是当前地图，不建议设置为下次自动轮换地图。".with())
             return@launch
         }
@@ -57,17 +66,19 @@ fun voteNextAutoMap(player: Player, map: MapInfo) {
                 append("[gray]如果期间被管理员或其他机制手动换图，本计划仍会保留，直到下一次自动轮换时生效。[][]\n")
                 append("[white]地图作者: [lightgrey]${stripColors(map.author)}[][]\n")
                 append("[white]地图简介: [lightgrey]${truncate(stripColors(map.description), 100, "...")}[][]")
+                append(options.describeLines())
                 if (pending != null) {
                     append("\n[yellow]当前已有计划：${pending.target.id} ${stripColors(pending.target.name)}，通过后会被本次投票覆盖。")
                 }
             },
             supportSingle = true,
-            requireNum = ::mapVoteRequireNum,
+            requireNum = { all -> mapVoteRequireNum(all, !options.isEmpty) },
         )
         if (!event.awaitResult()) return@launch
-        MapManager.setPendingAutoRotateMap(map, player.plainName())
+        MapManager.setPendingAutoRotateMap(map, player.plainName(), options)
+        val optSuffix = if (options.isEmpty) "" else "[gray]（${options.compactSummary()}）"
         broadcast(
-            "[green]投票通过：下次自动轮换地图将换到 [yellow]{nextMap.name}[green](id: {nextMap.id})，发起人：[white]{player.name}".with(
+            "[green]投票通过：下次自动轮换地图将换到 [yellow]{nextMap.name}[green](id: {nextMap.id})$optSuffix[green]，发起人：[white]{player.name}".with(
                 "nextMap" to map,
                 "player" to player,
             )
@@ -76,19 +87,35 @@ fun voteNextAutoMap(player: Player, map: MapInfo) {
 }
 
 fun VoteService.register() {
-    addSubVote("立即投票换图", "<地图ID>", "map", "换图") {
+    addSubVote("立即投票换图", "<地图ID> [@map[dp=...,unlimited=true,pure=false]]", "map", "换图") {
         if (arg.isEmpty())
             returnReply("[red]请输入地图序号".with())
         val map = arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
             ?: returnReply("[red]地图序号错误,可以通过/maps查询".with())
-        voteMap(player!!, map)
+        val options = try {
+            MapLaunchOptions.parse(arg.drop(1).joinToString(" "), requireVotable = true)
+        } catch (e: SelectorSyntaxException) {
+            returnReply("[red]${e.message}".with())
+        }
+        if (options.dpTargets.isNotEmpty() && MapManager.mapForbidsDp(map)) {
+            returnReply("[red]该地图自带 @nodp，不能通过投票附加 DP。".with())
+        }
+        voteMap(player!!, map, options)
     }
-    addSubVote("指定下次轮换地图", "<地图ID>", "nextmap", "endmap", "aftermap", "下局换图", "结束后换图") {
+    addSubVote("指定下次轮换地图", "<地图ID> [@map[dp=...,unlimited=true,pure=false]]", "nextmap", "endmap", "aftermap", "下局换图", "结束后换图") {
         if (arg.isEmpty())
             returnReply("[red]请输入地图序号".with())
         val map = arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
             ?: returnReply("[red]地图序号错误,可以通过/maps查询".with())
-        voteNextAutoMap(player!!, map)
+        val options = try {
+            MapLaunchOptions.parse(arg.drop(1).joinToString(" "), requireVotable = true)
+        } catch (e: SelectorSyntaxException) {
+            returnReply("[red]${e.message}".with())
+        }
+        if (options.dpTargets.isNotEmpty() && MapManager.mapForbidsDp(map)) {
+            returnReply("[red]该地图自带 @nodp，不能通过投票附加 DP。".with())
+        }
+        voteNextAutoMap(player!!, map, options)
     }
     addSubVote("回滚存档（/slots查看）", "<存档ID>", "rollback", "load", "回档") {
         val save = arg.firstOrNull()?.toIntOrNull()

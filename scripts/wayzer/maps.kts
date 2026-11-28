@@ -156,11 +156,13 @@ listen<EventType.GameOverEvent> { event ->
             MapManager.current,
             if (nextSameMode) MapManager.current.mode else Gamemode.survival
         )
+        val launchOptions = pendingNextMap?.options ?: MapLaunchOptions.EMPTY
         if (state.map != now) return@launch//已经通过其他方式换图
         val winnerMsg: Any =
             if (isPvpGame) "[YELLOW] {team.colorizeName} 队胜利![]".with("team" to event.winner) else ""
         val pendingMsg: Any = pendingNextMap?.let {
-            "[accent]下次自动轮换地图投票指定，发起人：[white]${it.requestedBy}[]"
+            val optText = if (it.options.isEmpty) "" else " [gray]（参数：${it.options.compactSummary()}）"
+            "[accent]下次自动轮换地图投票指定，发起人：[white]${it.requestedBy}[]$optText"
         } ?: ""
         val msg = """
                 | [SCARLET]游戏结束![]"
@@ -177,12 +179,16 @@ listen<EventType.GameOverEvent> { event ->
 
         delay(waitingTime.toMillis())
         if (state.map != now) return@launch//已经通过其他方式换图
-        MapManager.loadMap(map)
+        MapManager.loadMap(map, launchOptions)
     }
 }
 fun applyPendingMapState() {
     MapManager.tmpVarSet?.invoke()
     MapManager.tmpVarSet = null
+}
+
+fun applyPendingPostRulesSync() {
+    MapManager.pendingPostRulesSync?.invoke()
 }
 
 private fun registerPatchLoadApplyHook(eventSimpleName: String) {
@@ -194,10 +200,11 @@ private fun registerPatchLoadApplyHook(eventSimpleName: String) {
     patchLoadHooks += typedClass to listener
 }
 
-// 旧版 ContentPatchLoadEvent 与 159 DataPatchLoadEvent 会尽量提前应用；WorldLoadBeginEvent 继续兜底。
-// applyPendingMapState 通过 tmpVarSet=null 保证只应用一次。
+// 旧版 ContentPatchLoadEvent 与 159 DataPatchLoadEvent 会尽量提前应用；
+// WorldLoadBeginEvent 在 SaveVersion.readRules 之后、WorldLoadEvent 之前触发，此时再次同步最终规则与启动参数（含标签移除）。
 listen<WorldLoadBeginEvent>(insert = true) {
     applyPendingMapState()
+    applyPendingPostRulesSync()
 }
 
 onDisable {
@@ -212,17 +219,33 @@ onDisable {
     }
     patchLoadHooks.clear()
 }
-command("host", "管理指令: 换图") {
-    usage = "[mapId]"
+command("host", "管理指令: 换图（可选 @map[...] 参数）") {
+    usage = "[mapId] [@map[dp=...,unlimited=true,pure=false]]"
     permission = "wayzer.maps.host"
     body {
-        val map = if (arg.isEmpty()) MapRegistry.nextMapInfo(MapManager.current)
-        else arg[0].toIntOrNull()?.let { MapRegistry.findById(it, reply) }
-            ?: returnReply("[red]请输入正确的地图ID".with())
-        val commandText = if (arg.isEmpty()) "/host" else "/host ${arg[0]}"
-        if (!requirePluginAdminMapActionConfirmation(player, "host:${map.provider}:${map.id}", commandText)) return@body
-        if (MapManager.loadMapSync(map)) {
-            broadcast("[green]强制换图为{info}".with("info" to map))
+        val firstArg = arg.firstOrNull()?.trim().orEmpty()
+        val hasExplicitMapId = firstArg.isNotEmpty() && !SelectorSyntax.isSelectorToken(firstArg)
+        val map = if (!hasExplicitMapId) {
+            MapRegistry.nextMapInfo(MapManager.current)
+        } else {
+            firstArg.toIntOrNull()?.let { MapRegistry.findById(it, reply) }
+                ?: returnReply("[red]请输入正确的地图ID".with())
+        }
+        val optionRaw = if (hasExplicitMapId) arg.drop(1).joinToString(" ") else arg.joinToString(" ")
+        val options = try {
+            MapLaunchOptions.parse(optionRaw, requireVotable = false)
+        } catch (e: SelectorSyntaxException) {
+            returnReply("[red]${e.message}".with())
+        }
+        if (options.dpTargets.isNotEmpty() && MapManager.mapForbidsDp(map)) {
+            returnReply("[red]该地图自带 @nodp，不能通过换图参数附加 DP。".with())
+        }
+        val commandText = if (arg.isEmpty()) "/host" else "/host ${arg.joinToString(" ")}"
+        val confirmKey = "host:${map.provider}:${map.id}:${options.compactSummary()}"
+        if (!requirePluginAdminMapActionConfirmation(player, confirmKey, commandText)) return@body
+        if (MapManager.loadMapSync(map, options)) {
+            val optSuffix = if (options.isEmpty) "" else "[gray]（${options.compactSummary()}）"
+            broadcast("[green]强制换图为{info}$optSuffix".with("info" to map))
             markPluginAdminMapActionSuccess(player, commandText)
         }
     }

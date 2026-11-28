@@ -1432,6 +1432,9 @@ private fun loadedExternalCpText(): String {
 /** 供 /cp 快捷入口复用，避免绕过外部CP系统的校验、互斥、回滚与串行重同步。 */
 fun serverCpFileListText(): String = externalCpListText()
 
+/** 只读解析外部 CP/DP 规范文件名（支持列表编号、无后缀显示名与完整文件名）。 */
+fun resolveServerCpName(input: String): String? = resolveExternalCpFile(input)?.name
+
 /** 地图标签策略：blockAll=true 禁止本局所有DP；allowedTargets=null 表示不限制，非空集合只允许匹配的DP。 */
 fun setMapDpPolicy(blockAll: Boolean, allowedTargets: Collection<String>?, source: String) {
     mapDpBlockAll = blockAll
@@ -1802,10 +1805,12 @@ listen<EventType.ResetEvent> {
 
 onEnable {
     ensureExternalCpDir()
+    MapDpResolverBridge.register(::resolveServerCpName)
     VoteService.registerExternalCpVote()
 }
 
 onDisable {
+    MapDpResolverBridge.clear()
     flushContentModuleGuardRepairs()
     contentModuleGuardUntilMillis = 0L
     contentModuleGuardReason = ""

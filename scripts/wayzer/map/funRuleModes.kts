@@ -86,7 +86,11 @@ private fun setOptionalBooleanField(target: Any, fieldName: String, value: Boole
 }
 
 fun normalizeMapScriptId(raw: String): String? {
-    var fixed = raw.trim()
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("@")) {
+        return MapTagRegistry.findScriptId(trimmed)
+    }
+    var fixed = trimmed
         .replace('\\', '/')
         .removeSuffix(".kts")
         .removePrefix("scripts/")
@@ -116,7 +120,7 @@ private suspend fun disableMapScriptOnly(info: ScriptInfo): List<String> {
 
 suspend fun setMapScriptEnabled(raw: String, enabled: Boolean): ManualMapScriptResult {
     val scriptId = normalizeMapScriptId(raw)
-        ?: return ManualMapScriptResult(raw, false, "脚本ID不合法，只允许 mapScript 下的相对路径")
+        ?: return ManualMapScriptResult(raw, false, "脚本ID不合法或未知地图标签，支持 mapScript 路径或 @标签（如 @pure、@Unlimited）")
 
     // 只有加载时才扫描磁盘，允许运维刚复制脚本后直接启用。
     // 关闭已在注册表中的脚本不应额外触发磁盘扫描，避免云服IO卡顿。
