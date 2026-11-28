@@ -11,7 +11,7 @@
 ## 快速启动
 
 ```powershell
-cd mdtdo\stats-web
+cd stats-web
 
 # 最简单：双击 start-web.bat，或命令行启动（默认 http://127.0.0.1:8090/）
 .\start-web.ps1
@@ -74,7 +74,7 @@ cd mdtdo\stats-web
   `wayzer/ext/serverStats.kts` 输出的 `mdtserver\config\stats\server-status.json`（口径见
   [`../docs/server-status-stats.md`](../docs/server-status-stats.md)）。
 - **DP 语义**：外部 CP/数据资产包格式与热重载机制见 [`../docs/v159-data-assets-hot-reload.md`](../docs/v159-data-assets-hot-reload.md)。
-- 前端资源版本 **`20261018b`**（改 `assets/**` 后需手工 bump `?v=`）。
+- 前端资源版本 **`20261101a`**（改 `assets/**` 后需手工 bump `?v=`）。
 
 ## 文件说明
 
@@ -92,9 +92,8 @@ cd mdtdo\stats-web
 
 ## 分发 / 复制到其它机器
 
-- **⚠ 旧分发包 `复制插件用\stats-web.zip` 已过期，请勿再使用**：它只包含旧的「单文件静态状态页」，
-  缺少门户后端（`server/`）、前端资源（`assets/`、`upload.html`、`admin.html`）与新配置，复制过去无法运行。
-- 现在请**整目录复制**以下内容到目标机器的同一目录（缺一不可）：
+- 生产同步推荐直接使用 `updater/update-web.bat`（自动镜像并保护 `web-config.json` 与 `web-data/`）。
+- 如需手工部署，请**整目录复制**以下内容到目标机器的同一目录（缺一不可）：
 
   ```
   stats-web\
@@ -106,13 +105,12 @@ cd mdtdo\stats-web
   ```
 
   不要在分发内容里包含 `web-data\`（运行数据）。
-- **第二期起**分发内容还包含 `server/portal-logs.ps1`/`portal-history.ps1`/`portal-metrics.ps1` 与 `web-config.json` 的
+- 分发内容包含 `server/portal-logs.ps1`/`portal-history.ps1`/`portal-metrics.ps1` 与 `web-config.json` 的
   `logs`/`bandwidth`/`events` 三段；**旧配置文件缺这些段会自动用默认值**（升级后重启 Web 生效），但升级仍不要用仓库
   默认 `web-config.json` 覆盖生产配置。
-- PowerShell 打包示例（在 `mdtdo` 目录执行；先暂存并排除运行数据，产物解压后顶层就是 `stats-web\`）：
+- PowerShell 打包示例（在仓库根目录执行；先暂存并排除运行数据，产物解压后顶层就是 `stats-web\`）：
 
   ```powershell
-  cd mdtdo
   # 1) 暂存一份干净副本（robocopy 排除 web-data；退出码 1 表示"已复制"属正常）
   $stage = Join-Path $env:TEMP 'stats-web-pkg'
   Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue

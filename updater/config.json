@@ -7,6 +7,8 @@
   "_comment_protectedEmailDirs": "邮件服务目录中受保护的子目录（相对路径）：不复制、不备份、不删除。默认 logs（运行日志，必须保留）与 dist（本地打包产物）。",
   "_comment_protectedEmailFiles": "邮件服务目录中受保护的文件：默认 config.json（生产密钥/发件配置，绝不能被仓库里的 config.example.json 或默认配置覆盖）。",
   "_comment_emailServicePruneDeleted": "邮件服务是否严格镜像（删除目标目录中仓库没有的文件）：false（默认）= 只新增/更新、保留本地额外文件；true = 与插件 scripts/ 相同的严格镜像语义。",
+  "_comment_emailServiceTaskName": "email-service 的计划任务名（默认 MDT Email Service）。更新完邮件服务后，更新器会尝试重启该任务使新代码生效；未安装任务时只提示手动重启。",
+  "_comment_restartEmailServiceAfterUpdate": "同步 email-service 成功后是否自动重启上述计划任务（默认 true）。设为 false 只落盘，不重启。",
   "_comment_proxy": "下载代理，例如 http://127.0.0.1:7897。留空 = 直连；若系统设置了环境变量 HTTPS_PROXY 也会自动使用。",
   "_comment_proxyPort": "本机代理端口快捷方式（只监听 127.0.0.1）。proxy 与 proxyPort 同时存在时以 proxy 为准。",
   "_comment_proxyFallbackDirect": "代理失败后是否自动回退直连（true/false）。",
@@ -58,6 +60,8 @@
     "config.json"
   ],
   "emailServicePruneDeleted": false,
+  "emailServiceTaskName": "MDT Email Service",
+  "restartEmailServiceAfterUpdate": true,
   "cachePath": "",
   "hotReloadMode": "socket",
   "consoleSocketHost": "127.0.0.1",

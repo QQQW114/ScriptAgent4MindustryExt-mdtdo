@@ -7,15 +7,15 @@
   **console socket 逐个 `sa load`/`sa unload` 热重载**，并尾随脚本加载日志确认完成；首次部署 socket 需停服一次）；
 - 服务器门户 Web：仓库 `stats-web/**` → `statsWebPath`（更新后需重启 Web 进程）；
 - 邮件服务（主服 MDT DO）：仓库 `email-service/**` → `emailServicePath`（只新增/更新，
-  **保护生产 `config.json` 与 `logs\`/`dist\`**，更新后需重启邮件服务进程）；
+  **保护生产 `config.json` 与 `logs\`/`dist\`**，更新成功后自动重启计划任务 `MDT Email Service` 使新代码生效）；
 - 清缓存变体：先清空脚本编译缓存，再严格镜像更新插件（必须停服）；
 - **主服快速同步**：`update-mainserver` = 插件 `scripts`（分支 `main`，可运行中热重载）+ `email-service`；
 - **分服快速同步**：`update-subserver` = 只同步插件 `scripts`（默认分支 `mdc-do`，
-  **不部署 email-service / 账号系统**，保持分服原有基线）。
+  **不部署 `email-service` 与邮箱验证脚本**，保留分服原有账号与玩法配置）。
 
-> 两个服的分支约定（分支由 Lead 统一维护，更新器只按分支名下载 zip，**不会切/改任何 git 分支**）：
-> **主服 MDT DO = `main`**（跟进账号/邮箱验证系统）；**分服 MDC DO = `mdc-do`**（不含账号系统，保持原有）。
-> 详见 [§2.1](#21-主服--分服分支策略与快速同步2026-11-02-新增)。
+> 两个服的分支约定（分支由维护者统一维护，更新器只按分支名下载 zip，**不会切/改任何 git 分支**）：
+> **主服 MDT DO = `main`**（包含 QQ 邮箱验证与 `email-service`）；**分服 MDC DO = `mdc-do`**（不含邮箱验证与 `email-service`，与 `main` 同步通用功能与修复）。
+> 详见 [§2.1](#21-主服--分服分支策略与快速同步)。
 
 零 git 依赖、自带代理支持、出问题可一键回滚，下载/校验失败**绝不改动目标目录**。
 
@@ -24,6 +24,7 @@ updater/
 ├─ config.json                          # 唯一需要改的文件（绝对路径 + 仓库/代理/保护规则）
 ├─ UpdateCommon.ps1                     # 公共实现（各入口脚本共用；一般不用改）
 ├─ update-mainserver.ps1 / .bat         # ★ 主服（MDT DO）快速同步：scripts(main) + email-service
+├─ update-mainserver-scripts.bat         # ★ 主服只更新 scripts(main)，不检查/不更新 email-service
 ├─ update-subserver.ps1 / .bat          # ★ 分服（MDC DO）快速同步：只 scripts(默认 mdc-do)
 ├─ update-email-service.ps1 / .bat      # ★ 只同步 email-service（保护 config.json / logs）
 ├─ update-plugins.ps1 / .bat            # ① 严格镜像更新服务器插件脚本（运行中可 console socket 逐个热重载）
@@ -70,18 +71,21 @@ updater/
 | 服务器 | 命令 | 同步内容 | 分支 |
 |---|---|---|---|
 | **主服 MDT DO** | `update-mainserver.bat` | 插件 `scripts/**`（严格镜像 + 可选热重载）+ `email-service/**`（只增改，保护 `config.json`/`logs`） | `main` |
+| **主服仅插件** | `update-mainserver-scripts.bat` | 只同步 `scripts/**`（严格镜像 + 热重载），完全不检查/不更新 email-service | `main` |
 | **分服 MDC DO** | `update-subserver.bat` | 只同步插件 `scripts/**`（严格镜像 + 可选热重载），不部署 email-service/账号系统 | `mdc-do`（`-Branch` 可覆盖） |
 
 ```bat
 :: 第一次使用先预览（零风险，不改任何文件）
 update-mainserver.bat -DryRun
+update-mainserver-scripts.bat -DryRun
 update-subserver.bat  -DryRun
 :: 正式更新
 update-mainserver.bat
+update-mainserver-scripts.bat
 update-subserver.bat
 ```
 
-> 分支名、`main` / `mdc-do` 的用途与完整注意事项见 [§2.1](#21-主服--分服分支策略与快速同步2026-11-02-新增)。
+> 分支名、`main` / `mdc-do` 的用途与完整注意事项见 [§2.1](#21-主服--分服分支策略与快速同步)。
 > 只想同步其中一项时：主服用 `-NoEmailService`（只更新插件）/ `-NoScripts`（只更新邮件服务）。
 
 ---
@@ -91,8 +95,9 @@ update-subserver.bat
 | 脚本 | 作用 | 需要停游戏服 | 受保护内容（默认） | 更新后要做什么 |
 |---|---|---|---|---|
 | `update-mainserver.bat` | **主服一键**：`scripts/**`（严格镜像 + 运行中逐个热重载）+ `email-service/**`（只新增/更新） | 插件部分同 `update-plugins`；email-service 不需要停游戏服 | `data\`、`external-cp\`、`cache\`；`email-service` 的 `config.json`、`logs\`、`dist\` | 邮件服务如正在运行需**重启**；游戏服无需重启 |
+| `update-mainserver-scripts.bat` | **主服仅插件**：只同步 `scripts/**`（`main`，严格镜像 + 运行中逐个热重载），不检查/不更新 email-service | 同 `update-plugins`（socket 可用时逐个热重载） | `data\`、`external-cp\`、`cache\` | 无（服务器未运行则手动启动验证） |
 | `update-subserver.bat` | **分服一键**：只严格镜像 `scripts/**`（默认分支 `mdc-do`，不含账号系统） | 同 `update-plugins`（socket 可用时热重载） | `data\`、`external-cp\`、`cache\` | 无（服务器未运行则手动启动验证） |
-| `update-email-service.bat` | 只同步 `email-service/**`（默认只新增/更新、不删除本地文件） | 否 | `config.json`、`logs\`、`dist\` | **重启邮件服务进程** |
+| `update-email-service.bat` | 只同步 `email-service/**`（默认只新增/更新、不删除本地文件） | 否 | `config.json`、`logs\`、`dist\` | 更新后自动重启计划任务（`-NoRestartEmailService` 可关闭） |
 | `update-plugins.bat` | 严格镜像 `scripts/**` → `serverScriptsPath`；服务器运行中时通过 console socket **逐个**热重载变更脚本 | **否**（socket 可用时逐个热重载；首次部署 socket 需停服一次） | `data\`、`external-cp\`、`cache\`（不碰不备份不删） | 无（服务器未运行则手动启动验证） |
 | `update-web.bat` | 严格镜像 `stats-web/**` → `statsWebPath` | 否 | `web-data\`、`web-config.json`、`web-config.ps1` | **重启 Web 进程** |
 | `update-plugins-clear-cache.bat` | **显式清空**编译缓存（默认 `<serverScriptsPath>\cache`）后再严格镜像 `scripts/**` | **是** | 同 `update-plugins`（但会先清空 cache 内容） | 手动启动服务器（首次会全量重新编译，较慢属正常） |
@@ -107,19 +112,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update-plugins.ps1 -Dr
 > 双击运行时窗口会暂停等待回车，方便看结果；带参数运行或设置环境变量 `MDT_UPDATER_NO_PAUSE=1`
 > 时不暂停（便于计划任务/自动化调用）。
 
-### 2.1 主服 / 分服分支策略与快速同步（2026-11-02 新增）
+### 2.1 主服 / 分服分支策略与快速同步
 
 #### 分支用途
 
 | 服务器 | 用途 | Git 分支 | 同步脚本 | 部署内容 |
 |---|---|---|---|---|
-| **主服 MDT DO** | 功能最全的正式服，**跟进账号/邮箱验证系统** | `main`（Lead 把账号/邮箱系统合并进 `main` 后） | `update-mainserver.bat` | 插件 `scripts/**` + `email-service/**` |
-| **分服 MDC DO** | 保持原有玩法基线，**不跟进账号系统** | `mdc-do`（当前 main 基线，不含账号系统） | `update-subserver.bat` | 只部署插件 `scripts/**`（无 email-service、无账号系统） |
+| **主服 MDT DO** | 功能最全的正式服，包含账号与 QQ 邮箱验证系统 | `main` | `update-mainserver.bat` | 插件 `scripts/**` + `email-service/**` |
+| **分服 MDC DO** | 客制化经济自由分服（不部署邮箱验证与 `email-service`，同步通用功能） | `mdc-do` | `update-subserver.bat` | 只部署插件 `scripts/**`（不含 `email-service` 与邮箱验证脚本） |
 
 要点：
 
 - 更新器**只按分支名下载 zip**，**不会**在服务器上 `git checkout`/`merge`/切换任何分支；
-  分支的创建/合并/推送由 Lead 统一负责（当前约定：主服 `main`、分服 `mdc-do`）。
+  分支的创建/合并/推送由维护者统一负责（当前约定：主服 `main`、分服 `mdc-do`）。
 - 分服默认分支 `mdc-do` 可通过 `-Branch <分支名>` 覆盖（例如临时演练另一个基线的分支）；
   主服默认 `main`，同样可覆盖。**分服不要用 `main`**，否则会把账号/邮箱系统带过去。
 - 两个服的 updater 各自独立部署、各自复制一份 `updater\`，`config.json` 填本机路径；
@@ -146,8 +151,8 @@ update-email-service.bat -Rollback
   - 默认**保护** `config.json`（生产密钥/发件配置）、`logs\`（运行日志）、`dist\`（本地打包产物）：
     不复制、不备份、不删除——**仓库里的默认配置绝不会覆盖生产密钥**；
   - 仓库 `email-service/` 里没有 `config.json`（已被 `.gitignore` 排除）；若哪天误提交，更新器只警告、不会复制到生产；
-  - 更新器**不会重启邮件服务**：更新完请结束旧进程/停止计划任务后重新运行
-    `email-service\start-email-service.bat`（或由计划任务重跑）；输出会列出检测到的邮件服务进程 PID。
+  - 更新器会**自动重启计划任务** `MDT Email Service`，让新 `server.ps1` 立即生效；可用 `-NoRestartEmailService`
+    或配置 `restartEmailServiceAfterUpdate=false` 关闭。未安装任务时只提示手动重启；输出会列出检测到的邮件服务 PID。
   - 仓库新增了配置字段时，更新器不会改生产 `config.json`：请对照 `config.example.json` 手工补字段。
 - 主服脚本在**改动任何文件之前**会预检 email-service：`config.json` 的 `emailServicePath` 必须已配置且目录存在，
   否则直接退出码 2（插件阶段也不会动）——避免「插件更新完才发现邮件服务没配置」的半更新状态。
@@ -193,6 +198,7 @@ update-subserver.bat -Rollback
 | `-DryRun` | 只下载、校验并显示将「新增/修改/删除」的文件清单与运行中热重载计划（含「将逐个执行哪些 sa 命令 / 将拒绝」），**不备份、不改目标、不清缓存、不发任何 sa 命令、不写版本标记**。 |
 | `-NoEmailService` ★ | （仅 `update-mainserver`）只同步插件 `scripts`，跳过 email-service 阶段。 |
 | `-NoScripts` ★ | （仅 `update-mainserver`）只同步 email-service，跳过插件 `scripts` 阶段。 |
+| `-NoRestartEmailService` ★ | （`update-mainserver` / `update-email-service`）同步邮件服务后不自动重启计划任务。 |
 | `-NoHotReload` | 关闭运行中热重载（等同 `-HotReload off`）：服务器运行中时按 `requireServerStopped` 处理（默认拒绝，退出码 2）。首次部署 console socket 或只想停服更新时使用。 |
 | `-HotReload <mode>` | 覆盖 `config.json` 的 `hotReloadMode`：`socket`（默认，socket 可用则逐个热重载）\| `auto`（同 socket，不可用时按 `requireServerStopped` 回退）\| `off`（等同 `-NoHotReload`）。 |
 | `-Force` | 忽略「已是最新」判断，强制重新下载并执行严格镜像（用于本地被手改、版本标记异常等）。 |
@@ -235,6 +241,8 @@ update-subserver.bat -Rollback
 | `protectedEmailDirs` | `["logs","dist"]` | 邮件服务目录中受保护的子目录：不复制、不备份、不删除（`logs` 运行日志、`dist` 本地打包产物）。 |
 | `protectedEmailFiles` | `["config.json"]` | 邮件服务目录中受保护的文件：**生产密钥/发件配置绝不能被仓库里的默认配置覆盖**。 |
 | `emailServicePruneDeleted` | `false` | 邮件服务是否严格镜像：`false`（默认）= 只新增/更新、保留目标目录里仓库没有的本地文件；`true` = 与插件 `scripts/` 相同的严格镜像（会删除多余文件）。 |
+| `emailServiceTaskName` | `MDT Email Service` | 邮件服务计划任务名；email-service 更新成功后自动重启它。 |
+| `restartEmailServiceAfterUpdate` | `true` | email-service 同步成功后是否自动重启上述计划任务；`false` = 只落盘不重启。 |
 | `cachePath` | `""` | 编译缓存目录；空 = 自动 `<serverScriptsPath>\cache`。仅 `update-plugins-clear-cache` 会**显式清空**它（cache 默认在受保护列表里，普通更新不碰）。 |
 | `hotReloadMode` | `"socket"` | 运行中热更新模式：`socket`（默认，socket 可用则逐个热重载；不可用时按 `requireServerStopped` 回退）\| `auto`（语义同 socket，保留兼容）\| `off`（关闭热重载，服务器运行中按 `requireServerStopped` 处理即拒绝）。 |
 | `consoleSocketHost` | `"127.0.0.1"` | SA console socket 地址，需与 `server.properties` 的 `socketInputAddress` 一致；生产建议只绑 localhost。 |
@@ -301,7 +309,7 @@ update-subserver.bat -Rollback
   回滚会：把备份文件恢复回目标目录 + 删除「那次更新新增、备份里不存在」的文件；
   受保护内容不动。服务器运行中且热重载可用时，回滚后也会按同规则逐个热重载被恢复/删除的脚本；
   否则回滚后插件需手动启动服务器、Web 需重启 Web 进程。
-  邮件服务回滚用 `update-email-service.bat -Rollback`（回滚后重启邮件服务进程）；
+  邮件服务回滚用 `update-email-service.bat -Rollback`（回滚成功后会自动重启计划任务，可用 `-NoRestartEmailService` 关闭）；
   `update-mainserver.bat -Rollback` 只回滚插件 scripts（不回滚 email-service）。
 - 若某次更新失败（复制/校验异常），更新器会自动用刚创建的备份恢复目标目录，并在日志里说明。
 - 本地版本标记：`<backupPath>\plugins\.last-version` / `<backupPath>\web\.last-version` /
@@ -345,8 +353,8 @@ update-subserver.bat -Rollback
 - 检测到服务器运行中时不再直接拒绝，而是先检查热重载是否可用（1.1 起的行为变化）；
 - `-DryRun` 不改文件、不发任何 sa 命令（只做 socket 只读探测与日志路径检查）；
 - Web 更新不需要关闭游戏服：`update-web.bat` 只动 Web 目录，更新后**重启 Web 进程**即可；
-- **email-service 不需要停游戏服**：它不依赖游戏进程；文件更新后需要**重启邮件服务进程**
-  （结束旧窗口/停止计划任务后重新运行 `email-service\start-email-service.bat`）才会生效；
+- **email-service 不需要停游戏服**：它不依赖游戏进程；文件更新后更新器会自动重启计划任务
+  `MDT Email Service`（`-NoRestartEmailService` 可关闭；未安装任务时提示手动重启）；
 - **主服/分服快速同步脚本**的停服规则与上面完全一致：只有插件 `scripts` 阶段涉及游戏服；
   `update-mainserver.bat` 里 email-service 阶段不要求停服，分服 `update-subserver.bat` 只有插件阶段。
 
@@ -380,8 +388,8 @@ update-subserver.bat -Rollback
   （有 removed 时开始广播复用阶段一的 socket 会话；没有 removed 时在镜像前单独连接一次发开始广播；
   结束广播复用阶段二的会话——都是同一种 console socket 通道。）
   best-effort，发送失败只记 WARN，不影响更新退出码。
-- **socket 写法（关键）**：命令一律以**原始 UTF-8 字节 + `\n`** 写入 NetworkStream（等价于
-  `.agents/sa-cmd.ps1` 的验证写法），**不用 StreamWriter/WriteLine**（`\r\n`/BOM 会破坏 SA 的行解析，
+- **socket 写法（关键）**：命令一律以**原始 UTF-8 字节 + `\n`** 写入 NetworkStream（与
+  `tools/mdt-dev.ps1 cmd` 一致），**不用 StreamWriter/WriteLine**（`\r\n`/BOM 会破坏 SA 的行解析，
   实测会导致 server console socket 卡死、后续命令不再执行）。探测/单独 say 等短会话用完立即在 finally 中关闭。
 
 ### 10.2 执行流程（`update-plugins`，服务器运行中）
@@ -588,17 +596,17 @@ A：`.\update-plugins.bat -Rollback`（或 `-RollbackTo <备份目录名>`）。
 **Q：主服和分服分别用哪个脚本、哪个分支？**
 A：主服 MDT DO 用 `update-mainserver.bat`（默认分支 `main`，同步 plugins + email-service）；
 分服 MDC DO 用 `update-subserver.bat`（默认分支 `mdc-do`，只同步 plugins）。
-分支由 Lead 维护，更新器只下载 zip、不切分支；分服用 `-Branch` 可临时覆盖，但**不要**长期指向 `main`
-（会把账号/邮箱系统带过去）。详见 §2.1。
+分支由维护者统一维护，更新器只下载 zip、不切分支；分服用 `-Branch` 可临时覆盖，但**不要**长期指向 `main`
+（会把邮箱绑定脚本带过去）。详见 §2.1。
 
-**Q：分服会不会被带上账号/账号系统？**
+**Q：分服会不会被带上邮箱绑定服务？**
 A：不会。分服脚本 `update-subserver.bat` 只部署仓库 `scripts/**`，且默认从 `mdc-do` 分支下载
-（该分支保持原基线、不含账号系统）；它也不同步 `email-service/`，不部署任何邮件/账号服务。
+（该分支不包含邮箱验证脚本，保留原有验证码体系）；它也不同步 `email-service/`。
 
 **Q：email-service 更新后要做什么？`config.json` 会被覆盖吗？**
 A：`config.json` 在 `protectedEmailFiles` 里（默认），**永远不会**被仓库内容覆盖/删除，
-`logs\`、`dist\` 同样受保护。更新完需**重启邮件服务进程**（结束旧窗口/停止计划任务 → 重新运行
-`email-service\start-email-service.bat`）；输出会列出检测到的邮件服务进程 PID 作为提示。
+`logs\`、`dist\` 同样受保护。更新成功后更新器会尝试**自动重启计划任务** `MDT Email Service`
+（`-NoRestartEmailService` 可关闭）；未安装任务时需手动重启 `email-service\start-email-service.bat`。
 
 **Q：email-service 目录里我自己放的文件会被删吗？**
 A：默认不会：邮件服务是「只新增/更新、不删除」（`emailServicePruneDeleted=false`），
@@ -642,9 +650,7 @@ A：可以（设置环境变量 `MDT_UPDATER_NO_PAUSE=1` 避免 pause 卡住）�
   - **真实 GitHub DryRun（2026-11-02）**：`update-mainserver.ps1 -DryRun` 从 `main` 真实下载成功（远端
     `b85a07c`，scripts 220 文件/212 个 .kt·.kts、email-service 9 文件），两阶段预览退出码 0；
     `update-subserver.ps1 -DryRun` 从 `mdc-do` 真实下载成功、日志记录分支 `mdc-do`（当前两分支同一提交）。
-  - **未实测**：真实生产路径 `E:\...` 的正式更新、代理下载、真实邮件服务进程重启、真实运行中
-    socket 热重载（本次只验证参数透传与拒绝路径；热重载机制本身由 2026-11-01 的 125/79/60/18 项断言覆盖）。
-    备注：主服 `main` 当前尚未合并账号/邮箱系统，Lead 合并后**无需改脚本**，直接 `update-mainserver.bat` 即同步新分支内容。
+  - **未实测**：真实生产路径 `E:\...` 的正式更新、代理下载、真实邮件服务进程重启（热重载机制本身已通过自动化测试覆盖）。
 - **旧功能回归**（2026-10-18）：`-DryRun` 预览、严格镜像更新（新增/覆盖/删除）、保护目录/文件不被改动、
   备份生成与保留份数、`-Rollback`/`-RollbackTo`、`-NoBackup`、`-SourceZip` 离线模式、代理下载、
   非法仓库/分支失败不破坏目标、运行中服务器被正确拒绝执行；

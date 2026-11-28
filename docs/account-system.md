@@ -1,201 +1,80 @@
 # MDT 账号系统说明
 
-## 概览
+> 相关脚本：`scripts/wayzer/user/accountAuth.kts`、`accountPassword.kts`、`serverFeatureSettings.kts`、`accountGuestControl.kts`、`accountIpGuard.kts`、`wayzer/lib/MdtStorage.kt`。  
+> 主服（`main`）QQ 邮箱绑定细节另见 [account-email-binding.md](account-email-binding.md)。
 
-当前已用 MDT 自建账号系统替换旧的 mindustry.top 统一登录/白名单逻辑。
+---
 
-核心规则：
+## 1. 核心规则与主分服差异
 
-- QQ 号是唯一账号名。
-- 注册成功会立即登录，并使玩家进入“已绑定玩家默认等级”的基础状态；默认值为 `1`，同时作为信任等级和资历等级的下限，4级管理员可在 `1/2/3` 中调整。
-- 默认情况下，未登录玩家仍可游玩；可通过投票开启“今日未登录玩家强制观战”。风险 IP 上的未登录玩家例外，会被临时观战+禁言。
-- 自动登录只检查游戏 UUID + USID，不再检查 IP，避免玩家换网络后频繁重新登录。
-- 手动 `/login` 不需要验证码；默认情况下，手动 `/register` 前需要本次服务端启动后该 UUID 累计在线满 1 小时，再输入 `/captcha` 获取 4 位注册验证码并在注册弹窗中填写。管理员可关闭“一小时在线要求”；关闭后仍需验证码，但可立即获取。验证码默认 5 分钟有效。
-- 未登录游客在注册前已经获得并落库的 MDC，会在注册成功后合并到新账号主体；来源 UUID 的 MDC 会清零或删除，避免重复使用。
-- 玩家加入时不再自动弹出登录窗口，只发送登录/注册提示，避免误触弹窗和刷菜单。
-- 密码不明文落盘，脚本内部使用 PBKDF2-HMAC-SHA256 + 随机盐保存。
+- **账号唯一标识**：QQ 号作为唯一账号名；登录成功后业务主体由设备 UUID 切换为 `account:<id>`。
+- **主服 vs 分服注册校验差异**：
+  - **主服 MDT DO（`main` 分支）**：已移除旧 4 位 `/captcha` 注册验证码；注册与老号补绑均通过 QQ 邮箱验证码完成（详见 [account-email-binding.md](account-email-binding.md)），入服 10 秒后若无其他弹窗会显示注册/绑定引导；管理员可用 `/registerrequirement <0~72|on|off>` 配置注册前累计在线小时数（默认 1 小时，0=关闭）。
+  - **分服 MDC DO（`mdc-do` 分支）**：不启用邮箱绑定与 `email-service`，保留原有 `/captcha` 4 位验证码注册流程，入服不弹绑定引导。
+- **自动登录**：仅校验游戏 UUID + USID，不校验 IP，避免玩家切换网络后频繁重新登录。
+- **密码安全**：使用 JDK `PBKDF2WithHmacSHA256` + 随机盐（120000 迭代）哈希存储，不保存明文；手动 `/login` 无需验证码。
+- **已绑定默认等级**：注册并登录后进入已绑定玩家默认等级下限（默认 `1`，同时作用于信任与资历等级，4 级管理员可通过 `/defaultboundlevel 1|2|3` 调整，只升不降）。
+- **游客 MDC 迁移与封存**：
+  - 新注册成功时，该游客 UUID 名下已落库的当前/累计 MDC 自动并入新账号并清零来源游客数据；
+  - 若设备 UUID 已绑定账号但当前会话未登录（游客态），其 MDC 会被封存禁止消费，在连接或 `/login` 时自动并回所属账号。
 
-## 相关脚本
+---
 
-- `mdtserver/config/scripts/wayzer/user/accountPassword.kts`
-  - 密码哈希与校验工具。
-- `mdtserver/config/scripts/wayzer/user/accountAuth.kts`
-  - 注册、登录、自动登录、修改密码、管理员重置密码。
-- `mdtserver/config/scripts/wayzer/user/serverFeatureSettings.kts`
-  - 服务器功能设置：管理结算 MDC 倍率、帖子总开关、注册一小时要求、点赞/点踩/认可开关和已绑定玩家默认信任/资历等级；设置写入 `MdtSettings`。
-- `mdtserver/config/scripts/wayzer/user/accountGuestControl.kts`
-  - 未登录玩家强制观战/解除强制观战的投票与管理控制。
-- `mdtserver/config/scripts/wayzer/user/accountIpGuard.kts`
-  - IP防熊：允许单IP多账号；同IP换账号/UUID入服会广播可能小号提示；管理禁封会立即标记风险IP，投票踢出按“同IP 24小时内2次”触发风险IP，随后限制该IP注册新账号，并让该IP的未登录玩家强制观战+禁言。
-  - **2026-10-17 审计补充**：上述「2 次/24h」阈值路径在生产日志窗口内**从未实际触发**，且风险期会被「被封账号重连」反复刷新 `now+24h`（可无限续期）；`/login` 登录已被封禁账号不校验封禁、登录成功还会解除风险观战（静态推导，日志未证被利用）。完整证据见 [IP 风控审计报告](ip-risk-control-report.md) §6/§7；用户决策为方案 C（只留报告、不改代码），见该报告 §11。
-- `mdtserver/config/scripts/wayzer/user/ext/whiteList.kts`
-  - 旧白名单兼容入口；不再实现外部统一登录，也不再注册 `/login`。
-- `mdtserver/config/scripts/wayzer/lib/MdtStorage.kt`
-  - 账号相关数据库表与读写函数。
+## 2. 玩家指令
 
-## 玩家指令
+| 指令 | 别名 | 说明 |
+|---|---|---|
+| `/account` | `/账号` | 打开账号菜单 |
+| `/register` | `/注册` | 注册 QQ 账号并自动登录（主服走 QQ 邮箱验证码；分服需先 `/captcha`） |
+| `/login` | `/登录` | 登录已有 QQ 账号 |
+| `/logout` | `/退出登录`、`/登出` | 结束当前登录会话并解除本机自动登录（不影响账号数据） |
+| `/changepassword` | `/passwd`、`/改密`、`/修改密码` | 修改当前登录账号密码 |
+| `/deleteownaccount` | `/注销账号`、`/账号注销` | 校验当前密码并二次确认后永久注销当前账号与关联业务数据 |
+| `/bindemail`（仅主服） | `/绑定邮箱`、`/emailbindme` | 绑定或补绑 QQ 邮箱 |
+| `/captcha`（仅分服） | `/验证码` | 获取 4 位注册验证码 |
 
-- `/account` / `/账号`
-  - 打开账号菜单。
-- `/captcha` / `/验证码`
-  - 获取注册用的 4 位验证码。
-  - 默认要求本次服务端启动后该 UUID 累计在线满 1 小时；该在线时长只保存在内存中，不写入数据库。
-  - 若管理员关闭注册一小时要求，可立即获取验证码；若要求开启且在线时长不足，会明确显示当前累计在线多久、还需多久。
-  - 获取后再执行 `/register`；已有账号可直接 `/login`。
-- `/register` / `/注册`
-  - 注册 QQ 账号并自动登录。
-  - 若该游客 UUID 之前已有当前/累计 MDC，注册成功后会迁移到新账号并给玩家发送保留提示。
-- `/login` / `/登录`
-  - 登录已有 QQ 账号。
-- `/logout` / `/退出登录` / `/登出`
-  - 退出登录当前账号：结束当前会话的登录态，并解除本机自动登录（下次进服需手动 `/login`）。不影响账号数据。
-- `/changepassword` / `/passwd` / `/改密` / `/修改密码`
-  - 修改当前登录账号的密码。
-- `/deleteownaccount` / `/注销账号` / `/账号注销`
-  - 注销当前登录账号。
-  - 需要输入当前密码，并在确认菜单中二次确认。
-  - 注销后会删除账号登录记录、解除设备绑定，清空该账号相关业务数据，并让当前在线会话退出登录。
+---
 
-注册提示会告知玩家：请加入 QQ 群并牢记账号密码；没有 QQ 信息时，后续清理账号、误封申诉、找回密码都可能无法处理。
+## 3. 管理指令
 
-## 管理指令
+账号与风控管理指令除声明权限节点外，指令体内均会二次校验已登录玩家等级（控制台始终可用）：
 
-账号/MDC/IP 防熊相关管理指令除了声明权限节点外，指令体内也会二次检查当前玩家会话权限；控制台仍可按对应控制台用法执行。
+| 指令 | 权限 | 说明 |
+|---|---|---|
+| `/setpassword <QQ账号>` | `wayzer.admin.account`（`@admin`） | 重置密码；游戏内弹窗输入避免明文进聊天日志；控制台用 `setpassword <QQ> <新密码> confirm` |
+| `/deleteaccount <QQ/3位ID/UUID/account:id> [confirm]` | `wayzer.admin.account` | 删除账号、解除设备绑定并清空关联业务数据（不可逆） |
+| `/accountqq <目标>` | `wayzer.admin.account` | 查询 QQ 号、账号 ID、状态与主体 UID（别名 `/qqof`、`/查qq`、`/queryqq` 等） |
+| `/emailbind <accountId> [reset]`（仅主服） | `wayzer.admin.account` | 查询或清除账号邮箱绑定 |
+| `/migrateaccount <accountId> <newQq> [--clear-email]`（仅主服） | `wayzer.admin.account` | 迁移旧账号用户名/QQ 绑定 |
+| `/banX <3位ID> <分钟> <原因>` / `/unbanX <目标>` / `/banlist` | `wayzer.admin.ban` / `unban` | 封禁、解封与统一封禁列表（含账号封禁与 IP 封禁） |
+| `/guestob [on\|off\|status\|release]` | `wayzer.admin.account` | 管理“今日未登录玩家强制观战”；`release` 尝试释放观战残留 |
+| `/ipguard status\|check\|risk\|unrisk\|release\|unbind` | `wayzer.admin.ipguard` | 管理风险 IP 与同 IP 记录（`unblock` 为 `unrisk` 别名） |
+| `/serverfeatures [status\|menu]` | `wayzer.admin.serverFeatures`（4 级） | 服务器功能设置总览菜单 |
+| `/mdcmultiplier [0~20]` | 4 级 | 贡献结算 MDC 倍率（默认 `1`，最多两位小数） |
+| `/forumtoggle [on\|off]` | 4 级 | 帖子系统总开关 |
+| `/registerrequirement [0~72\|on\|off]` | 4 级 | 注册前在线时长要求（主服支持 0~72 小时） |
+| `/socialactions [on\|off]` | 4 级 | 点赞、点踩与认可开关 |
+| `/defaultboundlevel [1\|2\|3]` | 4 级 | 已绑定玩家默认信任与资历等级下限 |
 
-- `/setpassword <QQ账号>`
-  - 权限：`wayzer.admin.account`，默认 `@admin`。
-  - 玩家管理员使用时：会弹出输入框；提交后会出现确认菜单。
-  - 不建议、也不需要在游戏聊天指令中填写新密码，避免明文密码进入聊天/服务器日志。
-  - 控制台使用时：`setpassword <QQ账号> <新密码> confirm`。
-  - 管理员输入的是明文新密码，脚本会在内部哈希后保存；不需要、也不应该手动输入哈希值。
-- `/deleteaccount <QQ账号/玩家3位ID/UUID/account:id> [confirm]`
-  - 权限：`wayzer.admin.account`，默认 `@admin`。
-  - 玩家管理员使用时：会出现确认菜单。
-  - 控制台使用时：`deleteaccount <QQ账号/玩家UUID/account:id> confirm`。
-  - 玩家管理员可直接使用在线玩家或最近离线玩家的 3 位 ID 查找其 QQ 账号并删除。
-  - 删除账号登录记录、解除设备绑定，并清空该账号主体与已绑定游戏 UUID 主体下的业务数据；如果该账号在线，会使对应在线玩家退出登录状态。
-- `/accountqq <玩家3位ID/UUID/account:id/QQ账号>`
-  - 权限：`wayzer.admin.account`，默认 `@admin`。
-  - 查询玩家/账号对应的 QQ 号、账号 ID、账号状态、主体 UID 等信息。
-  - 别名：`/qqof`、`/查qq`、`/查询qq`、`/账号查询`、`/queryqq`。
-- `/banX <玩家3位ID> <分钟> <原因>` / `/unbanX <玩家3位ID/UUID/账号UID|封禁ID>`
-  - 权限：`wayzer.admin.ban` / `wayzer.admin.unban`，默认 `@admin`。
-  - 封禁记录会保存玩家当前主体 UID 与已知游戏 UUID；`/unbanX` 优先按玩家3位ID、完整 UUID 或账号主体 UID 查找未过期封禁并解除。
-  - `/banlist`（别名 `/bans`、`/封禁列表`）会将未到期的账号封禁与安全风控 IP 封禁合并为一个管理菜单，显示原因、剩余时间、操作人和关联标识，并支持快速解封。
-  - 旧的封禁记录数字 ID 仍可作为兼容输入；如果输入正好是 3 位数字，优先按玩家短 ID 处理。
-- `/guestob [on|off|status|release]`
-  - 权限：`wayzer.admin.account`。
-  - 查看/手动设置“今日未登录玩家强制观战”。
-  - `release` 可用于尝试释放未登录观战残留；如果安全风控、风险IP、投票强制观战仍生效，会被重新切回观战。
-- `/ipguard status|check <ip>|risk <ip> [原因]|unrisk <ip>|unblock <ip>|unbind <ip>`
-  - 权限：`wayzer.admin.ipguard`，默认 `@admin`。
-  - 查看IP防熊状态、检查某IP最近身份/风险状态、手动标记或解除风险IP。
-  - `unblock` 是 `unrisk` 的兼容别名；`unbind` 只用于清理旧版 `1IP=1账号` 绑定记录。
-  - `/ipguard release <ip>` 可在风险已解除后手动释放该 IP 的观战残留；风险仍生效时需先 `unrisk`，否则会被重新观战。
-- `/serverfeatures [status|menu]`
-  - 权限：`wayzer.admin.serverFeatures`，默认 `@admin`；指令体再次确认操作者为已登录4级玩家，控制台可用。
-  - 不带参数时，游戏内打开设置菜单；控制台显示状态。旧子指令仍保留兼容，新运维脚本建议使用下列独立根指令。
-- `/mdcmultiplier [0~20]`：查看/修改服务器贡献结算 MDC 倍率，默认 `1`，最多两位小数；每局结算均使用该持久化倍率，并与本局管理员技能的额外 `×2` 叠乘。
-- `/forumtoggle [on|off]`：查看/开关帖子系统；关闭后打开 `/post`/`/posts` 只显示“帖子系统已被关闭，请联系管理员”。
-- `/registerrequirement [on|off]`：查看/开关注册前一小时在线要求；关闭后仍需注册验证码。
-- `/socialactions [on|off]`：查看/开关玩家点赞、点踩和认可；关闭后底层操作会拒绝，相关玩家菜单按钮也不显示。
-- `/defaultboundlevel [1|2|3]`：查看/设置已绑定玩家默认信任与资历等级下限。修改时同时处理 `MdtTrustProfiles` 与 `MdtSeniorityProfiles`，只升不降，不会授予信任 `3+/3++/4` 或资历 `4`；未锁定资历的自动检测不会再降到该下限以下。
+---
 
-## 投票
+## 4. 游客强制观战投票与密码限制
 
-- `/vote guestOb`
-- `/vote 游客观战`
-- `/vote 未登录观战`
+- **今日游客强制观战投票**：`/vote guestOb`（别名 `游客观战`、`未登录观战`）仅限已登录玩家发起与投票，通过后当天未登录玩家会被强制观战，次日自动失效；`/vote guestObOff`（别名 `解除游客观战`）可提前解除（仅释放本脚本记录的观战）。
+- **密码与防爆破**：密码长度 `6~64` 位、不含空格换行；同 UUID 或同 IP 连续登录失败 `5` 次冷却 `60` 秒；一个 QQ 仅对应一个账号；已绑定账号的设备 UUID 不可直接登录/注册其他账号；同一账号不可多端同时在线。
 
-投票通过后，运行时缓存会立即设置为当天日期，并异步写入 `account.guestForceObDate`；当天内未登录账号的玩家会被强制分配为观察者。到次日日期不匹配时自动失效。
+---
 
-解除投票：
+## 5. IP 防熊（`accountIpGuard.kts`）与已知边界
 
-- `/vote guestObOff`
-- `/vote 解除游客观战`
-- `/vote 解除未登录观战`
-- `/vote 游客观战解除`
+- 允许单 IP 登录多个已有账号（不再强制 `1IP=1账号`）。
+- **同 IP 小号提示**：同 IP 在默认 24 小时窗口内换号/换 UUID 入服，延迟 3 秒检查并公开广播「可能为上次同 IP 玩家的小号」，**仅显示名字与短 ID，不公开完整游戏 UUID**（服务端日志仍留完整记录供管理排查）；同一组合 60 秒内去重。
+- **风险 IP 规则**：某 IP 触发 `/banX` 或已有封禁账号从该 IP 尝试进入时立即标记风险 IP（默认 24 小时）；同 IP 24 小时内累计 2 次投票踢出触发风险标记。风险期内禁止注册新账号、未登录玩家强制观战并轻度禁言，已登录或手动 `/login` 账号不受影响；本机/内网 IP 默认忽略。
+- **已知设计局限（维持现状，不做行为规则扩展）**：风险期会被封禁账号重连续期；`/login` 入口本身不单独二次校验封禁状态（登录态仍受封禁系统拦截）；按维护者决策不引入复杂行为语义风控规则。
 
-解除投票通过后会清空当天设置，并尝试把当前在线且处于观察者队伍的未登录玩家重新分配队伍。
+---
 
-为了避免误解除其他限制，当前只释放由“今日游客观战”脚本记录过的游客；安全风控、风险IP、投票强制观战或玩家主动观战需要分别用 `/security release`、`/ipguard unrisk`/`release`、`/forceOB`、`/ob` 处理。
+## 6. 数据库表与权限隔离
 
-当前投票要求：
-
-- 发起者可以是未登录游客；若投票失败，会走投票系统的游客长冷却与同 IP 发起冷却。
-- 只有已登录玩家可参与此投票。
-- 投票资格不再依赖玩家当前单位是否死亡；但被投票/管理强制观战的玩家仍会被普通投票拒绝。
-
-## 密码与登录限制
-
-当前默认密码规则：
-
-- 最少 `6` 位（配置项：`账号密码最小长度`）。
-- 最多 `64` 位。
-- 暂不允许空格或换行。
-
-登录失败限制：
-
-- 同一游戏 UUID 或同一 IP 连续失败 `5` 次会冷却 `60` 秒，用于抵抗绕 UUID 的批量尝试。
-- 登录失败冷却不会因为断开重连而立即清空，只会在登录成功、过期清理或服务端重启/脚本重置时清除。
-- 登录不需要验证码。
-
-注册验证码限制：
-
-- 注册前必须先输入 `/captcha` 获取验证码。
-- 默认获取验证码要求本次服务端启动后该 UUID 累计在线满 `1` 小时；此数据不落盘，重启后重新累计。4级管理员可通过 `/registerrequirement off` 关闭该要求，关闭后可立即获取验证码。
-- 验证码为随机 4 位数字，默认有效期 `5` 分钟。
-- 验证码填写成功或填写错误后都会失效，需要重新获取。
-
-自动登录要求：
-
-- 游戏 UUID 与 USID 匹配上次登录记录。
-- 不再检查 IP；IP 仍可记录为最近登录信息，但不作为自动登录条件。
-
-账号绑定限制：
-
-- 一个 QQ 只对应一个账号。
-- 同一个游戏 UUID 如果已经绑定到某个账号，则不能直接登录/注册到另一个账号；需要管理员介入处理。
-- 同一账号已在线时，其他玩家不能重复登录该账号。
-
-IP防熊限制：
-
-- 允许同一 IP 登录多个已有账号，不再执行 `1IP=1账号` 硬限制。
-- 脚本仍会观察同 IP 的近期账号/游客/USID 数量，但只用于管理员排查，不再因为多身份直接拒绝入服。
-- 同一 IP 在默认 `24` 小时窗口内换账号/UUID入服时，会广播 `xxx进入了游戏，可能为 xxx 的小号`，并显示上次同 IP 身份的名字与短ID；**不显示完整游戏 UUID**（仅服务端日志保留完整身份供管理员排查），仅作提示，不拦截入服。
-- 小号提示会在玩家入服后默认延迟 `3` 秒检查，等待自动登录状态稳定；同一 IP/前后身份组合 60 秒内不会重复广播。正式入服前的 `ConnectAsyncEvent` 只做轻量身份观察，不再额外查询自动登录数据库。
-- 当某 IP 上的玩家被 `/banX` 禁封，或已有封禁账号从该 IP 尝试进入时，该 IP 会被立即标记为风险 IP；投票踢出先按 IP 记录次数，同一 IP 默认 `24` 小时内累计 `2` 次投票踢出后才标记风险 IP。风险默认持续 `24` 小时。
-- 风险 IP 期间：
-  - 不能注册新账号；
-  - 可以 `/login` 登录已有账号；
-  - 已经通过 UUID+USID 自动登录的玩家不受影响；
-  - 未登录玩家会被自动分配为观察者，并被轻量禁言（禁止普通聊天、投票聊天等），提示其登录已有账号。
-- 本地/内网IP默认忽略，方便测试服本机调试。
-- 管理员可用 `/ipguard risk <ip> [原因]` 手动标记风险IP，用 `/ipguard unrisk <ip>` 或 `/ipguard unblock <ip>` 解除风险限制。
-- 脚本会记录由风险IP造成的游客观战；风险解除、风险过期或玩家登录后会释放对应观战残留。若仍卡观战，可先 `/ipguard check <ip>`，确认风险已解除后再 `/ipguard release <ip>`。
-
-## 数据库表
-
-账号系统使用以下表：
-
-- `MdtAccounts`
-  - QQ 账号名、密码哈希、状态、创建/登录时间。
-- `MdtAccountBindings`
-  - 当前用于记录 QQ 绑定，后续可扩展其他绑定类型。
-- `MdtPlayerSubjects`
-  - 游戏 UUID 与账号主体 `account:<id>` 的映射，以及最近 IP/USID/名字/登录时间。
-- `MdtIpAccountBindings`
-  - 旧版IP与QQ账号绑定记录；当前不再用于阻止单IP多账号，仅保留 `/ipguard unbind` 清理兼容。
-- `MdtSettings`
-  - 保存“今日未登录玩家强制观战”、风险IP状态与服务器功能设置。当前功能键包括 `serverFeatures.mdcSettlementMultiplier`、`serverFeatures.forumEnabled`、`serverFeatures.registrationOnlineRequirementEnabled`、`serverFeatures.socialActionsEnabled`、`serverFeatures.defaultBoundTrustLevel`以及一次性兼容标记 `serverFeatures.defaultBoundLevelSeniorityMigrated`。旧键名不改，但默认等级语义已扩展为信任/资历共同下限。
-
-## 注意事项
-
-- 游戏文本输入框不等同于专业密码框，玩家不要把密码发到聊天栏。
-- 未登录在线会话会被信任等级系统视为 `0` 级游客；即使该 UUID/UID 在数据库中曾经有等级，或该连接带有 Mindustry 原生 admin 标记，只要当前会话没有完成登录/自动登录，就不会继承脚本侧等级/管理权限。
-- 权限判断会额外过滤未登录会话的 UUID、历史主体 ID 权限组与原生 `@admin` 组；因此管理、Wiki/帖子编辑、管理员技能等脚本侧敏感操作都要求当前会话先完成登录/自动登录。
-- 账号系统只负责认证身份；信任等级/资历等级、在线时长、MDC、赞踩、认可等业务仍在各自脚本里处理。
-- 游客 MDC 迁移只发生在“注册新账号并成功登录”的流程中；迁移只合并 `MdtTrustProfiles` 的当前/累计 MDC，不迁移游客 UUID 上可能存在的手动信任等级或等级锁。
-- 旧 `[危险]服务器测试模式` 已完全弃用：对应脚本与 `ServerTestMode` 服务已删除，账号、MDC、资历和信任逻辑只使用正式主体/数据库。旧键 `serverTestMode.enabled` 会在新设置脚本加载时强制写为 `false`，旧临时文件仅被忽略，不自动删除。
-- 删除/注销账号会删除 `MdtAccounts`、`MdtAccountBindings`，并清空该账号主体 `account:<id>` 及已绑定游戏 UUID 主体下的业务数据，范围包括MDC、资历/在线时长、称号、赞踩、认可、成就、技能、随机形态、禁言、帖子/评论、红包记录等。此操作不可逆，执行前请确认目标账号。
-- 本轮服务器功能设置不新增表或列，可直接兼容旧数据库。修改默认绑定等级时会按账号主体分块查询并在单个事务中只升不降；生产库操作前仍建议保留数据库备份。
+- 主要数据表：`MdtAccounts`、`MdtAccountBindings`、`MdtPlayerSubjects`、`MdtIpAccountBindings`（旧兼容清理用）、`MdtSettings`（保存今日游客观战日期、风险 IP、服务器功能设置与邮箱绑定索引）。
+- **会话权限隔离**：未登录在线会话始终按 `0` 级游客处理，不会继承数据库中该 UUID 的历史等级或 Mindustry 原生 `@admin` 标记；管理、Wiki/帖子编辑与管理员技能均要求当前会话完成登录或自动登录。

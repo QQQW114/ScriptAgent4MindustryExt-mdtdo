@@ -3,8 +3,9 @@
 > 状态：2026-10-17 实现并在本机开发服（MindustryX B509）完成验证；与 Web 门户（`web-portal`）按本文数据契约对接。
 > **2026-10-18 更新**：轮转改为保留 **12 份**旋转历史（`keepRotatedFiles=12`）、`maxPlayerChars` 默认 **256（最低按 128 钳制）**；
 > Web 端 `/api/events/history` 会消费这些旋转文件（见 `web-portal.md` §4.5/§7.4）。
-> 实现文件：`mdtdo/mdtserver/config/scripts/wayzer/ext/liveEventFeed.kts`。
-> 运行数据：`mdtdo/mdtserver/config/stats/live-events.jsonl`（位于 `config/stats/`，该目录不进 git）。
+> 实现文件：`scripts/wayzer/ext/liveEventFeed.kts`。
+> 运行数据：`mdtserver/config/stats/live-events.jsonl`（位于 `config/stats/`，不入库）。
+> **隐私约定**：公开事件流已脱敏，不再写入 `playerId`（玩家 UUID）；Web 后端同时过滤旧文件中的 `playerId` 记录及 `/login`、`/register` 等指令聊天。
 
 ## 概述
 
@@ -36,20 +37,21 @@ mdtserver/config/stats/live-events.jsonl
 | `type` | string | 是 | 枚举：`chat` / `join` / `leave` / `vote_start` / `vote_pass` / `vote_fail` / `map_change` / `system` |
 | `text` | string | 是 | **Mindustry 原始颜色标记文本**（如 `[red]`、`[#RRGGBB]`、`[]`）。脚本只做 JSON 转义，不剥离颜色标记、不 HTML 转义（渲染/转义由前端做）；超长按字符截断到 `maxTextChars`（默认 500）。 |
 | `player` | string | 是 | 玩家显示名（原始文本，可能含颜色标记）。`system` / `map_change` 为空串。 |
-| `playerId` | string | 否 | Mindustry UUID。`system` / `map_change` 省略该字段；无法取得合法 UUID 时（如本地假玩家 `[LOCAL]`）也省略。 |
+
+> `playerId` 字段已于 2026-11 隐私加固时从写入契约移除；历史文件中的旧 `playerId` 记录会在门户 Web API 侧自动过滤。
 
 各 `type` 语义：
 
-| type | text 内容 | player / playerId |
+| type | text 内容 | player |
 | --- | --- | --- |
-| `chat` | 玩家聊天原文（含颜色标记） | 发言人 |
-| `join` | 固定文案「加入了服务器」 | 加入者 + uuid |
-| `leave` | 固定文案「离开了服务器」 | 离开者 + uuid |
-| `map_change` | `[accent]加载地图：[white]<图名> [gray]模式：[white]<本地化模式> [gray]作者：[white]<作者> [gray]ID：[white]<id>` | 空 / 省略 |
-| `vote_start` | `[gold]投票开始：[white]<发起人>[yellow] 发起 <投票描述>` | 发起人 + uuid |
-| `vote_pass` | `[green]投票通过：[white]<发起人>[yellow] 发起的 <投票描述>` | 发起人 + uuid |
-| `vote_fail` | `[red]投票失败：[white]<发起人>[yellow] 发起的 <投票描述>` | 发起人 + uuid |
-| `system` | 系统/运维修消息（目前为事件流启停） | 空 / 省略 |
+| `chat` | 玩家聊天原文（含颜色标记；指令类聊天在 Web 侧隐藏） | 发言人 |
+| `join` | 固定文案「加入了服务器」 | 加入者 |
+| `leave` | 固定文案「离开了服务器」 | 离开者 |
+| `map_change` | `[accent]加载地图：[white]<图名> [gray]模式：[white]<本地化模式> [gray]作者：[white]<作者> [gray]ID：[white]<id>` | 空 |
+| `vote_start` | `[gold]投票开始：[white]<发起人>[yellow] 发起 <投票描述>` | 发起人 |
+| `vote_pass` | `[green]投票通过：[white]<发起人>[yellow] 发起的 <投票描述>` | 发起人 |
+| `vote_fail` | `[red]投票失败：[white]<发起人>[yellow] 发起的 <投票描述>` | 发起人 |
+| `system` | 系统/运维消息（如事件流启停） | 空 |
 
 实测样例（`system` / `map_change` 为真实游戏事件落盘行；两条 `chat` 为验证阶段用控制台构造事件产生）：
 
@@ -79,9 +81,8 @@ mdtserver/config/stats/live-events.jsonl
 1. **单玩家快速投票**：`VoteEvent` 的 `supportSingle` 快速成功路径在把事件注册为 `active` **之前**就结束（`vote.lib.kt` 里 `active.compareAndSet` 之前的分支），轮询永远看不到 → 该投票不会进事件流；
 2. **开始与结束都发生在两次轮询之间**（间隔 <250ms，实际几乎只可能是上述快速路径）→ 同样可能漏采。
 
-**后续最小改造方案**（本轮不做，因为写作用域只允许本脚本 + 本文档，且 `vote.lib.kt` 在禁止改动清单里）：
-在 `vote.lib.kt` 的 `VoteEvent` 进入/退出 `active` 的位置各 `emitAsync` 一个 SA 自定义事件（带 `starter` / `voteDesc` / `succeed`），
-本脚本改成 `listenTo` 即可做到零轮询、零漏采。在改造前，普通投票（≥1 秒）可正常采集。
+**后续改造思路**（当前不修改核心库 `vote.lib.kt`）：
+若未来需要彻底覆盖单人快速投票，可在 `vote.lib.kt` 的 `VoteEvent` 进入/退出 `active` 的位置 `emitAsync` 自定义 SA 事件，本脚本改为 `listenTo` 即可做到零轮询。普通持续投票（≥1 秒）当前均可正常采集。
 
 ## 写入策略与线程模型
 
@@ -192,30 +193,11 @@ sa config set wayzer.ext.liveEventFeed.rotateBytes 2097152
 
 > 部署后一旦有真实玩家加入/聊天/投票，脚本会自动采集，无需额外操作；建议首次多人时段抽查 `join`/`leave`/`vote_*` 三类行是否符合契约。
 
-## 已知边界与 TODO
+## 已知边界与集成注意
 
-- **投票快速路径漏采**：见上文「投票接入的已知边界」；彻底修复需在 `vote.lib.kt` 增加 SA 事件（本轮按写作用域限制未改，留 TODO）。
-- **`join`/`leave` 的 text 是固定文案**：未接入欢迎语/地区（需要依赖 `ipRegion` 等脚本的数据，本轮未做；契约允许 text 放欢迎语/地区，后续可补）。
-- **广播类系统消息采集不到**：Mindustry 的 `broadcast`/控制台 `say` 没有事件可监听；如需把全服公告也进门户，可后续加轻量 hook 或提供 `livefeed say <text>` 运维广播命令（本轮未做）。
-- **轮转阈值存在一批过冲**：写前检查，单文件最坏为阈值 + 一批（≤约 130KB），符合「约 2MB 轮转」的约定；
-  保留 12 份旋转后磁盘占用上限约 26MB（主文件 + 12 份，各 ≤阈值+一批），可用 `keepRotatedFiles` 调整。
+- **投票快速路径漏采**：见上文「投票接入的已知边界」；普通投票（≥1 秒）均可正常采集。
+- **`join`/`leave` 的 text 是固定文案**：未接入地区欢迎语。
+- **广播类系统消息采集不到**：Mindustry 的 `broadcast`/控制台 `say` 没有事件可监听。
+- **轮转阈值存在一批过冲**：写前检查，单文件最坏为阈值 + 一批（≤约 130KB）；保留 12 份旋转后磁盘占用上限约 26MB，可用 `keepRotatedFiles` 调整。
 - **热重载会产生 `system` 停/启两条事件**：属正常行为，门户可直接展示或按 type 过滤。
-- **同进程多实例**（旧实例未停干净又加载新实例）理论上可能出现双写；正常 SA 热重载是「先停旧再启新」，停用收尾会 flush，实测正常。
-
-## 集成注意：SA 自定义事件必须用 `listenTo`（本轮实测踩坑）
-
-- **Mindustry/arc 事件**（`EventType.PlayerJoin`、`EventType.PlayerChatEvent` 等）用 `listen<T> { }`；
-- **ScriptAgent 自定义事件**（`cf.wayzer.scriptAgent.Event` 的子类，如 `MapLoadFinishedEvent`、`TrustLevelChangedEvent`）必须用 `listenTo<T> { }`。
-
-本轮首次实现时误用了 `listen<MapLoadFinishedEvent>`：**编译通过、脚本 Enabled、无任何报错，但换图时监听器完全不触发**（`listen` 只把监听器挂到 `arc.Events`，而 SA 自定义事件由 `Event.Handler` 自己分派）。
-改为 `listenTo` 后立即生效。
-
-顺带发现的三处同类误用**已由 task-14 修复并审计**（2026-10-17，提交 `69d4932`；详见
-[listen/listenTo 审计](listener-listen-vs-listenTo-audit.md)）：
-
-- `wayzer/ext/serverStats.kts:311` `listen<TrustLevelChangedEvent>` → `listenTo`（等级分布即时迁移此前从未触发，
-  属"即时性丢失"，玩家进服路径会自愈）；
-- `wayzer/map/betterTeam.kts:97`、`wayzer/map/pvpProtect.kts:152` `listen<MapLoadFinishedEvent>` → `listenTo`
-  （换图后禁用队伍刷新此前未执行；**PVP 保护此前完全失效**，修复后 PVP 图加载完成会真正开始保护）。
-- **未验证**：`TrustLevelChangedEvent` 需真实玩家等级变化才能端到端确认；`betterTeam` 有 8+ 个 `contextScript` 依赖方，
-  单脚本热重载不级联，建议低峰期冷启动一次彻底刷新。
+- **SA 自定义事件必须用 `listenTo<T>`**：Mindustry/Arc 事件（如 `EventType.PlayerJoin`）用 `listen<T>`；`cf.wayzer.scriptAgent.Event` 子类（如 `MapLoadFinishedEvent`、`TrustLevelChangedEvent`）必须用 `listenTo<T>`，否则编译通过但永不触发。该约束已纳入 `tools/mdt-dev.ps1 check` 自动静态检查（详见 [dev-and-debug.md](dev-and-debug.md)）。

@@ -30,3 +30,9 @@ stats-web/web-data/
 updater/backups/
 updater/logs/
 updater/.update-temp/
+
+# local scratchpad & dev tool config (never commit)
+.scratch/*
+!.scratch/README.md
+tools/dev-local.json
+tools/.dev-server.pid

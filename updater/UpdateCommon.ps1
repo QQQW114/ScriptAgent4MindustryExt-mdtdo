@@ -268,6 +268,9 @@ function Get-DefaultConfig {
         ProtectedEmailDirs       = @('logs', 'dist')
         ProtectedEmailFiles      = @('config.json')
         EmailServicePruneDeleted = $false
+        # 同步 email-service 后自动重启计划任务（让新 server.ps1 立即生效）；未安装任务时只提示。
+        EmailServiceTaskName            = 'MDT Email Service'
+        RestartEmailServiceAfterUpdate  = $true
         CachePath            = ''
         # 运行中热更新（console socket + 脚本加载日志）；缺字段时使用这些内置默认值，老配置无需修改
         HotReloadMode               = 'socket'
@@ -339,6 +342,8 @@ function Get-EffectiveConfig {
         @{ Json = 'protectedEmailDirs'; Key = 'ProtectedEmailDirs'; Kind = 'stringArray' },
         @{ Json = 'protectedEmailFiles'; Key = 'ProtectedEmailFiles'; Kind = 'stringArray' },
         @{ Json = 'emailServicePruneDeleted'; Key = 'EmailServicePruneDeleted'; Kind = 'bool' },
+        @{ Json = 'emailServiceTaskName'; Key = 'EmailServiceTaskName'; Kind = 'string' },
+        @{ Json = 'restartEmailServiceAfterUpdate'; Key = 'RestartEmailServiceAfterUpdate'; Kind = 'bool' },
         @{ Json = 'cachePath'; Key = 'CachePath'; Kind = 'string' },
         @{ Json = 'hotReloadMode'; Key = 'HotReloadMode'; Kind = 'string' },
         @{ Json = 'hotReloadAnnounce'; Key = 'HotReloadAnnounce'; Kind = 'bool' },
@@ -485,6 +490,44 @@ function Get-EffectiveConfig {
         throw 'REFUSED: 尚未配置 backupPath（备份根目录），请先编辑 config.json。'
     }
     return $config
+}
+
+# 重启邮箱验证码服务（计划任务）。供 email-service 更新后调用；失败只提示，不影响更新退出码。
+function Restart-MdtEmailService {
+    param(
+        [string]$TaskName = 'MDT Email Service',
+        [string]$HealthUrl = 'http://127.0.0.1:40150/health',
+        [int]$WaitSeconds = 25
+    )
+    $result = [pscustomobject]@{ Ok = $false; Skipped = $false; Message = '' }
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $task) {
+            $result.Skipped = $true
+            $result.Message = ('未安装计划任务 {0}；新文件已落盘，但需手动重启 email-service 才会生效。' -f $TaskName)
+            return $result
+        }
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        Start-ScheduledTask -TaskName $TaskName
+        $deadline = (Get-Date).AddSeconds([Math]::Max(5, $WaitSeconds))
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
+                if ($health -and $health.ok) {
+                    $result.Ok = $true
+                    $result.Message = ('已重启邮箱服务，health ok：{0}' -f ($health | ConvertTo-Json -Compress))
+                    return $result
+                }
+            } catch { }
+            Start-Sleep -Seconds 1
+        }
+        $result.Message = ('已启动任务 {0}，但 {1} 秒内 health 未通过；请查看 email-service\logs。' -f $TaskName, $WaitSeconds)
+        return $result
+    } catch {
+        $result.Message = ('重启邮箱服务任务失败：{0}；新文件已落盘，请手动重启 email-service。' -f $_.Exception.Message)
+        return $result
+    }
 }
 
 function Get-KindSettings {

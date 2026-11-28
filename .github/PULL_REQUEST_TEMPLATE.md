@@ -1,33 +1,36 @@
 # PR 检查清单
 
-> 提交前请逐项勾选；未完成的项要在描述里说明原因。完整纪律见 `docs/collaboration-discipline.md`。
+> 提交前请逐项确认；未验证项请如实填写，不要留空或伪造。完整规范见 `AGENTS.md` 与 `docs/workflow.md`。
 
 ## 改动说明
 
-- [ ] 改了什么：
-- [ ] 为什么（需求/issue 链接）：
-- [ ] 影响范围：脚本 / Web / 更新器 / 文档 / 兼容性（勾选并简述）
+- **关联 Issue**（中/大改动必填）：`Closes #` / `Refs #` / 小改动免 Issue
+- **改了什么**：
+- **为什么**：
+- **影响范围**（勾选）：
+  - [ ] `scripts/`（游戏插件脚本）
+  - [ ] `scripts/wayzer/lib/*.kt` 或 `vote.lib.kt`（⚠️ 核心库变更，必须清缓存冷启动）
+  - [ ] `stats-web/`（门户 Web）
+  - [ ] `email-service/`（主服邮件服务）
+  - [ ] `updater/`（更新器）
+  - [ ] `tools/` / `docs/`
+  - [ ] 需要同步至分服 `mdc-do`
 
-## 红线自查
+## 门禁与红线自查
 
-- [ ] 未修改 `scripts/wayzer/vote.lib.kt` 或 `scripts/wayzer/lib/*.kt`
-- [ ] 块注释内无字面量 `/**`，KDoc 扫描 0 命中
-- [ ] SA 自定义事件使用 `listenTo<T>`
-- [ ] 新增/修改的 `.ps1` 为 UTF-8 with BOM
-- [ ] 未提交密钥/凭据/生产配置/运行数据
+- [ ] 已运行 `pwsh -NoProfile -File tools\mdt-dev.ps1 check` 并 **PASS（0 报错）**
+- [ ] 未提交密钥、凭据、生产配置、运行数据或 `.scratch/` 临时文件
+- [ ] 文档仅记录现行事实，未新增 `*-test-plan.md` / `*-audit.md` / `*-report.md` 等过程文档，无会话黑话
+- [ ] 如涉及玩家可见或运维变更，已在 `CHANGELOG.md` 顶部补充 1 行摘要
 
-## 验证记录
+## 验证记录（请直接粘贴 `mdt-dev.ps1` 输出摘要）
 
-- [ ] 脚本：开发服冷启动通过（banner `出错0`）、`scriptdiag count` 失败 0、`sa listFailed` 空、相关脚本 `Enabled`
-- [ ] KDoc 扫描：0 命中
-- [ ] Web / 更新器验证（如适用）：
-- [ ] 测试后已恢复现场（停开发服、清测试数据）
+```text
+# 示例：
+# 静态体检：PASS（KDoc 0 / listen 0 / Depends 0 / 编码 PASS / 文档卫生 PASS）
+# 冷启动汇总：共找到N脚本,加载成功N,启用成功N,出错0
+# scriptdiag count：... | sa listFailed：(空)
+```
 
-## 文档与风险
-
-- [ ] 已同步文档：`scripts-maintenance.md` 批次 / 设计文档 / `current-issues.md` / `help-menu.md`
-- [ ] 未验证项（如有）：
-- [ ] 风险与回滚方式：
-
----
-AI 辅助生成的改动请注明，并确保已通过上述验证。
+- **未覆盖 / 待真实客户端验证项**：
+- **回滚方式与风险**：
